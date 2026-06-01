@@ -57,7 +57,7 @@ import shapely
 from bpy_extras.image_utils import load_image
 from bpy_extras.io_utils import ImportHelper
 from lxml import etree
-from mathutils import Color, Vector
+from mathutils import Color, Matrix, Vector
 
 import bonsai.bim.export_ifc
 import bonsai.bim.handler
@@ -594,6 +594,44 @@ class CreateDrawing(bpy.types.Operator):
 
         return LineworkContexts(body_contexts, annotation_contexts)
 
+    def build_linked_obj_map(self, ifc_path: str) -> dict[str, bpy.types.Object]:
+        """Map GlobalId → Blender chunk object for a linked file's cache blend.
+
+        LoadLinkedProject creates batched chunk objects (multiple IFC elements per
+        Blender object). Each chunk stores obj["guids"] = [GlobalId, ...] as a raw
+        custom property. The chunk's matrix_world + bound_box are correct because
+        the NATIVE/OCC pass resolved all placements (including Tekla-style
+        MappedRepresentation) when building the cache blend.
+        """
+        cache_blend = Path(ifc_path).with_suffix(".ifc.cache.blend")
+
+        target_lib = None
+        for lib in bpy.data.libraries:
+            lib_path = Path(bpy.path.abspath(lib.filepath))
+            if lib_path == cache_blend:
+                target_lib = lib
+                break
+            try:
+                if lib_path.resolve() == cache_blend.resolve():
+                    target_lib = lib
+                    break
+            except OSError:
+                pass
+
+        if target_lib is None:
+            available = [bpy.path.abspath(lib.filepath) for lib in bpy.data.libraries]
+            self._draw_log_msg(f"[LINKMAP] no library match for {cache_blend}, loaded libs: {available}")
+            return {}
+
+        result: dict[str, bpy.types.Object] = {}
+        for obj in bpy.data.objects:
+            if obj.library == target_lib:
+                for guid in (obj.get("guids") or []):
+                    result[guid] = obj
+
+        self._draw_log_msg(f"[LINKMAP] {len(result)} GlobalIds mapped across chunk objects")
+        return result
+
     def serialize_contexts_elements(
         self,
         ifc: ifcopenshell.file,
@@ -609,6 +647,9 @@ class CreateDrawing(bpy.types.Operator):
             with profile(f"Processing {context_type} context"):
                 if not context or not drawing_elements:
                     continue
+
+                elements_to_render = drawing_elements
+
                 geom_settings = ifcopenshell.geom.settings()
                 geom_settings.set("dimensionality", ifcopenshell.ifcopenshell_wrapper.CURVES_SURFACES_AND_SOLIDS)
                 geom_settings.set("iterator-output", ifcopenshell.ifcopenshell_wrapper.NATIVE)
@@ -619,7 +660,7 @@ class CreateDrawing(bpy.types.Operator):
 
                 geom_settings.set("context-ids", context)
                 it = ifcopenshell.geom.iterator(
-                    geom_settings, ifc, multiprocessing.cpu_count(), include=drawing_elements
+                    geom_settings, ifc, multiprocessing.cpu_count(), include=elements_to_render
                 )
                 processed = set()
                 for elem in it:
@@ -924,16 +965,28 @@ class CreateDrawing(bpy.types.Operator):
         bim_props = tool.Blender.get_bim_props()
         prefs = tool.Blender.get_addon_preferences()
         files = {bim_props.ifc_file: tool.Ifc.get()}
+        link_obj_maps: dict[str, dict[int, bpy.types.Object]] = {}
+
+        self._draw_log: list[str] = []
 
         props = tool.Project.get_project_props()
         for link in props.get_loaded_links_for_drawings():
+            resolved = tool.Ifc.resolve_uri(link.filepath)
             files[link.filepath] = self.get_linked_file(link)
+            obj_map = self.build_linked_obj_map(resolved)
+            link_obj_maps[link.filepath] = obj_map
 
         target_view = ifcopenshell.util.element.get_psets(self.camera_element)["EPset_Drawing"]["TargetView"]
         self.setup_serialiser(target_view)
 
         tree = ifcopenshell.geom.tree()
         tree.enable_face_styles(True)
+
+        cam_inv = self.camera.matrix_world.inverted()
+        x = self.cprops.width
+        y = self.cprops.height
+        clip_start = self.camera.data.clip_start
+        clip_end = self.camera.data.clip_end
 
         for ifc_path, ifc in files.items():
             # Don't use draw.main() just whilst we're prototyping and experimenting
@@ -943,6 +996,33 @@ class CreateDrawing(bpy.types.Operator):
 
             self.serialiser.setFile(ifc)
             drawing_elements = tool.Drawing.get_drawing_elements(self.camera_element, ifc_file=ifc)
+            is_linked = ifc is not tool.Ifc.get()
+
+            if is_linked:
+                obj_map = link_obj_maps.get(ifc_path, {})
+                before = len(drawing_elements)
+                # Use Blender object bboxes — correct for all IFC export styles including
+                # Tekla-style MappedRepresentation placement (use-world-coords on the
+                # triangulated iterator does NOT resolve these; Blender objects do).
+                drawing_elements = {
+                    e for e in drawing_elements
+                    if (obj := obj_map.get(getattr(e, "GlobalId", None))) is None
+                    or tool.Drawing.is_in_camera_view(obj, cam_inv, x, y, clip_start, clip_end)
+                }
+                self._draw_log_msg(f"[BBOX] {ifc_path}: {len(drawing_elements)}/{before} elements in view")
+                # threshold=100: elements with ≤100 edges (thin pipes, simple cylinders) use
+                # full HLR so their outlines are visible. Elements with >100 edges (radiators,
+                # complex fittings) use profile/silhouette mode, bypassing the O(n²) HLR cost.
+                # IfcWall and IfcSlab are hardcoded HLR exceptions in C++ regardless of this setting.
+                self.serialiser.setProfileThreshold(0)
+            else:
+                before = len(drawing_elements)
+                drawing_elements = {
+                    e for e in drawing_elements
+                    if (obj := tool.Ifc.get_object(e)) is None
+                    or tool.Drawing.is_in_camera_view(obj, cam_inv, x, y, clip_start, clip_end)
+                }
+                self._draw_log_msg(f"[LOCAL] {ifc_path}: {len(drawing_elements)}/{before} elements in view")
 
             # Get all representation contexts to see what we're dealing with.
             # Drawings only draw bodies and annotations (and facetation, due to a Revit bug).
@@ -961,11 +1041,27 @@ class CreateDrawing(bpy.types.Operator):
                     for elem in it:
                         self.serialiser.write(elem)
 
+        if getattr(self, "_draw_log", None):
+            try:
+                with open("/tmp/bonsai_draw.log", "w") as _f:
+                    _f.write("\n".join(self._draw_log) + "\n")
+            except Exception:
+                pass
+
+        self._draw_log_msg("[PHASE] finalize() starting...")
         with profile("Finalizing"):
             self.serialiser.finalize()
+        self._draw_log_msg("[PHASE] finalize() done, reading SVG buffer...")
         results = self.svg_buffer.get_value()
-
+        self._draw_log_msg(f"[PHASE] SVG buffer {len(results)//1024}KB, parsing XML...")
         root = etree.fromstring(results)
+        self._draw_log_msg("[PHASE] XML parsed, filtering short paths...")
+        min_mm = ifcopenshell.util.element.get_pset(self.camera_element, "EPset_Drawing", "MinLineLengthMm")
+        self.filter_short_svg_paths(root, min_mm=float(min_mm) if min_mm is not None else 0.1)
+        self.filter_material_layer_overlaps(root)
+        self.filter_cut_projection_overlaps(root)
+        self.apply_layer_styles_to_svg(root)
+        self._draw_log_msg("[PHASE] Filter done, writing SVG...")
 
         group = root.find("{http://www.w3.org/2000/svg}g")
         if group is None:
@@ -1295,7 +1391,7 @@ class CreateDrawing(bpy.types.Operator):
         self.serialiser.setPolygonal(True)
         self.serialiser.setUseHlrPoly(True)
         # Objects with more than these edges are rendered as wireframe instead of HLR for optimisation
-        self.serialiser.setProfileThreshold(10000)
+        self.serialiser.setProfileThreshold(0)
         self.serialiser.setUseNamespace(True)
         self.serialiser.setAlwaysProject(True)
         self.serialiser.setAutoElevation(False)
@@ -1319,6 +1415,18 @@ class CreateDrawing(bpy.types.Operator):
 
     def get_svg_classes(self, element, layer=None):
         classes = [element.is_a()]
+
+        # ─── Wall type sub-layers ───────────────────────────────────
+        if element.is_a("IfcWall"):
+            pset_common = ifcopenshell.util.element.get_psets(element).get("Pset_WallCommon", {})
+            is_external = bool(pset_common.get("IsExternal", False))
+            is_loadbearing = bool(pset_common.get("LoadBearing", False))
+            if is_external and is_loadbearing:
+                classes.insert(0, "IfcWallExternalLoadBearing")
+            elif is_external:
+                classes.insert(0, "IfcWallExternal")
+            elif is_loadbearing:
+                classes.insert(0, "IfcWallLoadBearing")
 
         # ─── Material ──────────────────────────────────────────────
         material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
@@ -1371,6 +1479,203 @@ class CreateDrawing(bpy.types.Operator):
                 return False
         self.is_manifold_cache[obj.data.name] = True
         return True
+
+    def filter_short_svg_paths(self, root: "etree._Element", min_mm: float = 0.5) -> None:
+        """Remove SVG paths too short to be visible at the drawing's print scale.
+
+        SVG viewBox units equal paper mm (the serialiser outputs coordinates in mm),
+        so the threshold is constant regardless of drawing scale.
+        """
+        import math
+        import re
+
+        SVG = "{http://www.w3.org/2000/svg}"
+        coord_re = re.compile(r"[ML]\s*([-\d.e]+)[,\s]+([-\d.e]+)")
+        min_sq = min_mm * min_mm  # squared threshold avoids sqrt for single-segment paths
+
+        removed = 0
+        deduped = 0
+        for parent in root.iter(f"{SVG}g"):
+            to_drop = []
+            seen = set()
+            for child in parent:
+                if child.tag != f"{SVG}path":
+                    continue
+                d = child.get("d", "")
+                pts = coord_re.findall(d)
+                if len(pts) < 2:
+                    continue
+                # Fast path: single segment — compare squared distance, then deduplicate
+                if len(pts) == 2:
+                    dx = float(pts[1][0]) - float(pts[0][0])
+                    dy = float(pts[1][1]) - float(pts[0][1])
+                    if dx * dx + dy * dy < min_sq:
+                        to_drop.append(child)
+                        continue
+                    # Normalize endpoints so A→B and B→A hash the same
+                    key = tuple(sorted(pts))
+                    if key in seen:
+                        to_drop.append(child)
+                        deduped += 1
+                    else:
+                        seen.add(key)
+                    continue
+                # Multi-segment: sum actual lengths, then deduplicate by exact d string
+                coords = [(float(x), float(y)) for x, y in pts]
+                length = sum(
+                    math.sqrt((coords[i][0] - coords[i-1][0]) ** 2 + (coords[i][1] - coords[i-1][1]) ** 2)
+                    for i in range(1, len(coords))
+                )
+                if length < min_mm:
+                    to_drop.append(child)
+                    continue
+                if d in seen:
+                    to_drop.append(child)
+                    deduped += 1
+                else:
+                    seen.add(d)
+            for child in to_drop:
+                parent.remove(child)
+            removed += len(to_drop)
+
+        self._draw_log_msg(f"[SHORTPATH] removed {removed - deduped} paths shorter than {min_mm}mm, {deduped} duplicates")
+
+    def filter_material_layer_overlaps(self, root: "etree._Element") -> None:
+        """Remove IfcMaterialLayer paths that coincide with wall outline paths.
+
+        For single-material walls the material boundary IS the wall outline.
+        For multi-layer walls the outermost layer faces coincide with the hull.
+        Removing them leaves only interior boundary lines between layers.
+        """
+        import re
+
+        SVG = "{http://www.w3.org/2000/svg}"
+        coord_re = re.compile(r"[ML]\s*([-\d.e]+)[,\s]+([-\d.e]+)")
+
+        def path_key(d):
+            pts = coord_re.findall(d)
+            if len(pts) == 2:
+                return tuple(sorted(pts))
+            return d
+
+        # Collect path keys from wall hull groups (IfcWall* but NOT material layer groups)
+        wall_keys = set()
+        for g in root.iter(f"{SVG}g"):
+            classes = g.get("class", "").split()
+            ifc_classes = [c for c in classes if c.startswith("Ifc")]
+            if not ifc_classes or not ifc_classes[0].startswith("IfcWall"):
+                continue
+            if "IfcMaterialLayer" in classes:
+                continue
+            for path in g.findall(f"{SVG}path"):
+                wall_keys.add(path_key(path.get("d", "")))
+
+        # Strip coinciding paths from material layer groups
+        removed = 0
+        for g in root.iter(f"{SVG}g"):
+            if "IfcMaterialLayer" not in g.get("class", "").split():
+                continue
+            to_drop = [p for p in g.findall(f"{SVG}path") if path_key(p.get("d", "")) in wall_keys]
+            for p in to_drop:
+                g.remove(p)
+            removed += len(to_drop)
+
+        if removed:
+            self._draw_log_msg(f"[MATLAYER] removed {removed} material layer paths overlapping wall outlines")
+
+    def filter_cut_projection_overlaps(self, root: "etree._Element") -> None:
+        """Remove projection paths that coincide with cut paths.
+
+        When a face is both cut and projected at the same location the cut line
+        takes priority; the projection duplicate adds nothing and can shift
+        the apparent line weight.
+        """
+        import re
+
+        SVG = "{http://www.w3.org/2000/svg}"
+        coord_re = re.compile(r"[ML]\s*([-\d.e]+)[,\s]+([-\d.e]+)")
+
+        def path_key(d):
+            pts = coord_re.findall(d)
+            if len(pts) == 2:
+                return tuple(sorted(pts))
+            return d
+
+        # Collect all path keys from cut groups
+        cut_keys = set()
+        for g in root.iter(f"{SVG}g"):
+            if "cut" not in g.get("class", "").split():
+                continue
+            for path in g.findall(f"{SVG}path"):
+                cut_keys.add(path_key(path.get("d", "")))
+
+        # Strip matching paths from projection groups
+        removed = 0
+        for g in root.iter(f"{SVG}g"):
+            if "projection" not in g.get("class", "").split():
+                continue
+            to_drop = [p for p in g.findall(f"{SVG}path") if path_key(p.get("d", "")) in cut_keys]
+            for p in to_drop:
+                g.remove(p)
+            removed += len(to_drop)
+
+        if removed:
+            self._draw_log_msg(f"[CUTPROJ] removed {removed} projection paths overlapping cut lines")
+
+    def apply_layer_styles_to_svg(self, root: "etree._Element") -> None:
+        """Apply per-layer SVG styles (color, stroke-width) from DocProperties.layer_styles."""
+        SVG = "{http://www.w3.org/2000/svg}"
+        props = tool.Drawing.get_document_props()
+        if not props.layer_styles:
+            return
+
+        styles = {ls.name: ls for ls in props.layer_styles}
+        hidden_parents: list = []
+
+        for g in root.iter(f"{SVG}g"):
+            classes = g.get("class", "").split()
+            ifc_classes = [c for c in classes if c.startswith("Ifc")]
+            if not ifc_classes:
+                continue
+            if "cut" in classes:
+                layer_name = f"{ifc_classes[0]}-cut"
+            elif "projection" in classes:
+                layer_name = f"{ifc_classes[0]}-projection"
+            else:
+                continue
+
+            ls = styles.get(layer_name)
+            if ls is None:
+                continue
+
+            if not ls.visible:
+                parent = g.getparent()
+                if parent is not None:
+                    hidden_parents.append((parent, g))
+                continue
+
+            parts = []
+            if ls.svg_color and ls.svg_color != "#000000":
+                parts.append(f"stroke:{ls.svg_color}")
+            if ls.svg_fill:
+                parts.append(f"fill:{ls.svg_fill}")
+            if ls.line_weight > 0:
+                parts.append(f"stroke-width:{ls.line_weight:.3f}mm")
+            if parts:
+                existing = g.get("style", "")
+                combined = (existing + ";" if existing else "") + ";".join(parts)
+                g.set("style", combined)
+
+        for parent, g in hidden_parents:
+            parent.remove(g)
+
+    def _draw_log_msg(self, msg: str) -> None:
+        from datetime import datetime
+        stamped = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+        print(stamped)
+        if not hasattr(self, "_draw_log"):
+            self._draw_log = []
+        self._draw_log.append(stamped)
 
     def get_linked_file(self, link: "Link") -> ifcopenshell.file:
         link_path = link.filepath
@@ -4000,6 +4305,59 @@ class ConvertSVGToDXF(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class ConvertSVGToPDF(bpy.types.Operator):
+    bl_idname = "bim.convert_svg_to_pdf"
+    bl_label = "Convert SVG to PDF"
+    bl_options = {"REGISTER", "UNDO"}
+    view: bpy.props.StringProperty()
+    bl_description = "Convert selected drawing's .svg to .pdf.\n\nSHIFT+CLICK to convert all shown checked drawings"
+    convert_all: bpy.props.BoolProperty(name="Convert All", default=False, options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Drawing.get_active_drawing_item():
+            cls.poll_message_set("No drawing selected.")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        if event.type == "LEFTMOUSE" and event.shift:
+            self.convert_all = True
+        return self.execute(context)
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        if self.convert_all:
+            drawings = [
+                tool.Ifc.get().by_id(d.ifc_definition_id) for d in props.drawings if d.is_drawing and d.is_selected
+            ]
+        else:
+            drawings = [tool.Ifc.get().by_id(props.drawings.get(self.view).ifc_definition_id)]
+
+        drawing_uris: list[Path] = []
+        drawings_not_found: list[str] = []
+
+        for drawing in drawings:
+            drawing_uri = tool.Drawing.get_document_uri(tool.Drawing.get_drawing_document(drawing))
+            if drawing_uri is None or not os.path.exists(drawing_uri):
+                drawings_not_found.append(drawing.Name)
+            else:
+                drawing_uris.append(Path(drawing_uri))
+
+        if drawings_not_found:
+            msg = "Some drawings .svg files were not found, need to print them first: \n{}.".format(
+                "\n".join(drawings_not_found)
+            )
+            self.report({"ERROR"}, msg)
+            return {"CANCELLED"}
+
+        for drawing_uri in drawing_uris:
+            tool.Drawing.convert_svg_to_pdf(drawing_uri, drawing_uri.with_suffix(".pdf"))
+
+        self.report({"INFO"}, f"{len(drawing_uris)} drawings were converted to .pdf.")
+        return {"FINISHED"}
+
+
 class OpenDocumentationWebUi(bpy.types.Operator):
     bl_idname = "bim.open_documentation_web_ui"
     bl_label = "Open Documentation Web UI"
@@ -4011,6 +4369,80 @@ class OpenDocumentationWebUi(bpy.types.Operator):
         else:
             bpy.ops.bim.open_web_browser(page="documentation")
         return {"FINISHED"}
+
+
+class ExcludeHiddenFromDrawing(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.exclude_hidden_from_drawing"
+    bl_label = "Exclude Hidden from Drawing"
+    bl_description = (
+        "Reads which drawing elements are currently hidden in the viewport and appends them to the drawing's "
+        "Exclude filter.\n\nWorkflow: activate drawing → hide objects with H → click this button"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        camera = context.scene.camera
+        if not camera or not (drawing := tool.Ifc.get_entity(camera)):
+            return
+        ifc = tool.Ifc.get()
+
+        # Elements the current filter says should be visible
+        drawing_elements = tool.Drawing.get_drawing_elements(drawing)
+
+        # Find which of those the user manually hid (H key) since drawing activation
+        hidden_elements = set()
+        for element in drawing_elements:
+            obj = tool.Ifc.get_object(element)
+            if obj and obj.hide_get():
+                hidden_elements.add(element)
+
+        if not hidden_elements:
+            self.report({"INFO"}, "No hidden drawing elements found.")
+            return
+
+        # Group by IFC class — if ALL instances of a class are hidden use the class name,
+        # otherwise fall back to individual GlobalIds
+        from collections import defaultdict
+        by_class: dict[str, list] = defaultdict(list)
+        class_totals: dict[str, int] = defaultdict(int)
+        for element in drawing_elements:
+            by_class[element.is_a()].append(element) if element in hidden_elements else None
+            class_totals[element.is_a()] += 1
+
+        hidden_by_class: dict[str, list] = defaultdict(list)
+        for el in hidden_elements:
+            hidden_by_class[el.is_a()].append(el)
+
+        class_queries = []
+        guid_queries = []
+        for ifc_class, hidden in hidden_by_class.items():
+            if len(hidden) == class_totals[ifc_class]:
+                class_queries.append(ifc_class)
+            else:
+                guid_queries.extend([f'GlobalId="{el.GlobalId}"' for el in hidden])
+
+        parts = class_queries[:]
+        if guid_queries:
+            parts.append(", ".join(guid_queries))
+        new_query = ", ".join(parts)
+
+        # Merge with existing Exclude filter
+        pset = tool.Pset.get_element_pset(drawing, "EPset_Drawing")
+        if not pset:
+            pset = ifcopenshell.api.pset.add_pset(ifc, product=drawing, name="EPset_Drawing")
+        existing = ifcopenshell.util.element.get_pset(drawing, "EPset_Drawing", "Exclude") or ""
+        if existing:
+            # Avoid duplicating already-excluded classes
+            existing_parts = [p.strip() for p in existing.split(",")]
+            new_parts = [p.strip() for p in new_query.split(",")]
+            merged = existing_parts + [p for p in new_parts if p not in existing_parts]
+            combined = ", ".join(merged)
+        else:
+            combined = new_query
+
+        ifcopenshell.api.pset.edit_pset(ifc, pset=pset, properties={"Exclude": combined})
+        self.report({"INFO"}, f"Excluded: {new_query}")
+        bpy.ops.bim.activate_drawing(drawing=drawing.id(), should_view_from_camera=False)
 
 
 class ExcludeAnnotation(bpy.types.Operator, tool.Ifc.Operator):
@@ -4200,6 +4632,266 @@ class SelectSimilarTextLiteralValue(bpy.types.Operator):
             f"{verb} {count} objects with {self.attribute_type} '{self.literal_value}'.",
         )
 
+        return {"FINISHED"}
+
+
+_STANDARD_IFC_LAYER_CLASSES = [
+    # ── Walls (architecture) ──────────────────────────────────────────────
+    "IfcWallExternalLoadBearing",
+    "IfcWallExternal",
+    "IfcWallLoadBearing",
+    "IfcWall",
+    "IfcCurtainWall",
+    # ── Horizontal structure ──────────────────────────────────────────────
+    "IfcSlab",
+    "IfcRoof",
+    # ── Vertical structure ────────────────────────────────────────────────
+    "IfcColumn",
+    "IfcBeam",
+    "IfcMember",
+    "IfcPlate",
+    "IfcFooting",
+    "IfcPile",
+    "IfcReinforcingBar",
+    # ── Openings & infill ─────────────────────────────────────────────────
+    "IfcDoor",
+    "IfcWindow",
+    "IfcOpeningElement",
+    # ── Circulation ───────────────────────────────────────────────────────
+    "IfcStair",
+    "IfcStairFlight",
+    "IfcRamp",
+    "IfcRampFlight",
+    "IfcRailing",
+    # ── Finishes ──────────────────────────────────────────────────────────
+    "IfcCovering",
+    # ── MEP ───────────────────────────────────────────────────────────────
+    "IfcFlowSegment",
+    "IfcFlowFitting",
+    "IfcFlowTerminal",
+    "IfcFlowController",
+    "IfcFlowTreatmentDevice",
+    "IfcEnergyConversionDevice",
+    # ── Catch-all ─────────────────────────────────────────────────────────
+    "IfcBuildingElementProxy",
+]
+
+# Cut-only layers (no projection variant makes sense)
+_CUT_ONLY_LAYERS = {"IfcMaterialLayer", "IfcOpeningElement"}
+
+# Default styles — suffix keys apply to all layers of that type,
+# full layer-name keys override for specific layers.
+_LAYER_DEFAULTS: dict[str, dict] = {
+    "-cut":        {"dxf_color": 3, "line_weight": 0.30, "svg_color": "#000000"},
+    "-projection": {"dxf_color": 1, "line_weight": 0.13, "svg_color": "#888888"},
+    # ── Exceptions ────────────────────────────────────────────────────────
+    "IfcWall-cut":                        {"dxf_color": 1, "line_weight": 0.13, "svg_color": "#000000"},
+    "IfcWallExternal-cut":                {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
+    "IfcWallExternalLoadBearing-cut":     {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
+    "IfcSlab-projection":                 {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowSegment-projection":          {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowFitting-projection":          {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowTerminal-projection":         {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowController-projection":       {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowTreatmentDevice-projection":  {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcEnergyConversionDevice-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+}
+
+
+def _apply_layer_defaults(item) -> None:
+    name = item.name
+    # Specific layer name takes priority, then suffix fallback
+    defaults = _LAYER_DEFAULTS.get(name)
+    if defaults is None:
+        suffix = "-cut" if name.endswith("-cut") else "-projection"
+        defaults = _LAYER_DEFAULTS.get(suffix, {})
+    for key, value in defaults.items():
+        setattr(item, key, value)
+
+
+class RescanLayerStyles(bpy.types.Operator):
+    bl_idname = "bim.rescan_layer_styles"
+    bl_label = "Populate Layers"
+    bl_description = "Add all standard IFC layer names to the list (existing entries are kept)"
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        existing = {s.name for s in props.layer_styles}
+
+        added = 0
+        for cls in _STANDARD_IFC_LAYER_CLASSES:
+            for suffix in ("-cut", "-projection"):
+                if cls in _CUT_ONLY_LAYERS and suffix == "-projection":
+                    continue
+                name = f"{cls}{suffix}"
+                if name not in existing:
+                    item = props.layer_styles.add()
+                    item.name = name
+                    _apply_layer_defaults(item)
+                    added += 1
+
+        # IfcMaterialLayer cut-only
+        if "IfcMaterialLayer-cut" not in existing:
+            item = props.layer_styles.add()
+            item.name = "IfcMaterialLayer-cut"
+            _apply_layer_defaults(item)
+            added += 1
+
+        self.report({"INFO"}, f"Added {added} new layers ({len(props.layer_styles)} total)")
+        return {"FINISHED"}
+
+
+class SaveLayerStylesToIfc(bpy.types.Operator):
+    bl_idname = "bim.save_layer_styles_to_ifc"
+    bl_label = "Save Layer Styles to IFC"
+    bl_description = "Store layer styles as JSON in EPset_DrawingLayerStyles on IfcProject"
+
+    def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            self.report({"WARNING"}, "No IFC file loaded")
+            return {"CANCELLED"}
+        props = tool.Drawing.get_document_props()
+        data = {
+            ls.name: {
+                "visible": ls.visible,
+                "svg_color": ls.svg_color,
+                "svg_fill": ls.svg_fill,
+                "dxf_layer_name": ls.dxf_layer_name,
+                "dxf_color": ls.dxf_color,
+                "line_weight": ls.line_weight,
+                "linetype": ls.linetype,
+            }
+            for ls in props.layer_styles
+        }
+        project = ifc.by_type("IfcProject")[0]
+        psets = ifcopenshell.util.element.get_psets(project, should_inherit=False)
+        if "EPset_DrawingLayerStyles" in psets:
+            pset = ifc.by_id(psets["EPset_DrawingLayerStyles"]["id"])
+        else:
+            pset = ifcopenshell.api.run("pset.add_pset", ifc, product=project, name="EPset_DrawingLayerStyles")
+        ifcopenshell.api.run("pset.edit_pset", ifc, pset=pset, properties={"LayerStyles": json.dumps(data)})
+        self.report({"INFO"}, f"Saved {len(data)} layer styles to IFC")
+        return {"FINISHED"}
+
+
+class LoadLayerStylesFromIfc(bpy.types.Operator):
+    bl_idname = "bim.load_layer_styles_from_ifc"
+    bl_label = "Load Layer Styles from IFC"
+    bl_description = "Read layer styles from EPset_DrawingLayerStyles on IfcProject"
+
+    def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return {"CANCELLED"}
+        props = tool.Drawing.get_document_props()
+        project = ifc.by_type("IfcProject")[0]
+        json_str = ifcopenshell.util.element.get_pset(project, "EPset_DrawingLayerStyles", "LayerStyles")
+        if not json_str:
+            return {"CANCELLED"}
+        try:
+            data = json.loads(json_str)
+        except Exception:
+            return {"CANCELLED"}
+        props.layer_styles.clear()
+        for name, values in data.items():
+            ls = props.layer_styles.add()
+            ls.name = name
+            ls.visible = bool(values.get("visible", True))
+            ls.svg_color = values.get("svg_color", "#000000")
+            ls.svg_fill = values.get("svg_fill", "")
+            ls.dxf_layer_name = values.get("dxf_layer_name", "")
+            ls.dxf_color = int(values.get("dxf_color", 256))
+            ls.line_weight = float(values.get("line_weight", 0.25))
+            ls.linetype = values.get("linetype", "CONTINUOUS")
+        self.report({"INFO"}, f"Loaded {len(data)} layer styles from IFC")
+        return {"FINISHED"}
+
+
+class SaveLayerStylesToJSON(bpy.types.Operator):
+    bl_idname = "bim.save_layer_styles_to_json"
+    bl_label = "Save Layer Styles"
+    bl_description = "Save layer styles to a JSON template file"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH", default="layer_styles.json")
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        data = {}
+        for ls in props.layer_styles:
+            data[ls.name] = {
+                "visible": ls.visible,
+                "svg_color": ls.svg_color,
+                "svg_fill": ls.svg_fill,
+                "dxf_layer_name": ls.dxf_layer_name,
+                "dxf_color": ls.dxf_color,
+                "line_weight": ls.line_weight,
+                "linetype": ls.linetype,
+            }
+        with open(self.filepath, "w") as f:
+            json.dump(data, f, indent=2)
+        self.report({"INFO"}, f"Saved {len(data)} layer styles to {self.filepath}")
+        return {"FINISHED"}
+
+
+class LoadLayerStylesFromJSON(bpy.types.Operator):
+    bl_idname = "bim.load_layer_styles_from_json"
+    bl_label = "Load Layer Styles"
+    bl_description = "Load layer styles from a JSON template file"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        try:
+            with open(self.filepath) as f:
+                data = json.load(f)
+        except Exception as e:
+            self.report({"ERROR"}, f"Failed to load JSON: {e}")
+            return {"CANCELLED"}
+
+        existing = {s.name: s for s in props.layer_styles}
+        updated = added = 0
+        for name, values in data.items():
+            if name in existing:
+                ls = existing[name]
+                updated += 1
+            else:
+                ls = props.layer_styles.add()
+                ls.name = name
+                added += 1
+            ls.visible = bool(values.get("visible", True))
+            ls.svg_color = values.get("svg_color", "#000000")
+            ls.svg_fill = values.get("svg_fill", "")
+            ls.dxf_layer_name = values.get("dxf_layer_name", "")
+            ls.dxf_color = int(values.get("dxf_color", 256))
+            ls.line_weight = float(values.get("line_weight", 0.25))
+            ls.linetype = values.get("linetype", "CONTINUOUS")
+
+        self.report({"INFO"}, f"Loaded: {added} new, {updated} updated")
+        return {"FINISHED"}
+
+
+class ClearLayerSvgFill(bpy.types.Operator):
+    bl_idname = "bim.clear_layer_svg_fill"
+    bl_label = "Clear SVG Fill"
+    bl_description = "Reset SVG fill to 'as material' (no override)"
+    layer_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        for ls in props.layer_styles:
+            if ls.name == self.layer_name:
+                ls.svg_fill = ""
+                break
         return {"FINISHED"}
 
 

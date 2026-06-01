@@ -76,6 +76,7 @@ modules = {
     "pset_template": None,
     "clash": None,
     "csv": None,
+    "schedule": None,
     "tester": None,
     "diff": None,
     "patch": None,
@@ -270,6 +271,7 @@ def register():
     bpy.app.handlers.redo_post.append(handler.redo_post)
     bpy.app.handlers.load_post.append(handler.load_post)
     bpy.app.handlers.load_post.append(handler.loadIfcStore)
+    bpy.app.handlers.save_pre.append(handler.save_pre)
     bpy.types.Scene.BIMProperties = bpy.props.PointerProperty(type=prop.BIMProperties)
     bpy.types.Scene.BIMSnapProperties = bpy.props.PointerProperty(type=prop.BIMSnapProperties)
     bpy.types.Scene.BIMSnapGroups = bpy.props.PointerProperty(type=prop.BIMSnapGroups)
@@ -327,6 +329,7 @@ def unregister():
 
     bpy.app.handlers.load_post.remove(handler.load_post)
     bpy.app.handlers.load_post.remove(handler.loadIfcStore)
+    bpy.app.handlers.save_pre.remove(handler.save_pre)
     del bpy.types.Scene.BIMProperties
     del bpy.types.Collection.BIMCollectionProperties
     del bpy.types.Object.BIMObjectProperties

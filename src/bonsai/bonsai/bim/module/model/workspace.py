@@ -580,6 +580,21 @@ class CreateObjectUI:
             if context.space_data.type == "VIEW_3D":  # Wall polyline tool works only in 3D Space
                 op = row.operator("bim.hotkey", text="Add", icon_value=custom_icon_previews["ADD"].icon_id)
                 op.hotkey = "S_A"
+                snap_row = row.row(align=True)
+                snap_row.enabled = False
+                snap_row.scale_x = 0.2
+                snap_row.prop(context.window_manager, "bonsai_snap_color", text="")
+                ifc_class = AuthoringData.data["ifc_class_current"]
+                active_obj = context.active_object
+                active_is_slab = (
+                    active_obj is not None
+                    and tool.Ifc.get_entity(active_obj) is not None
+                    and tool.Ifc.get_entity(active_obj).is_a("IfcSlab")
+                )
+                if ifc_class == "IfcWallType" or active_is_slab:
+                    row.operator("bim.convert_edges_to_walls", text="Walls from Edges")
+                if ifc_class == "IfcSlabType":
+                    row.operator("bim.convert_edges_to_slab", text="Floor from Edges")
         else:
             row.label(text="No Construction Type", icon="FILE_3D")
 
@@ -592,6 +607,9 @@ class CreateObjectUI:
             return
 
         ifc_class = AuthoringData.data["ifc_class_current"]
+        row.prop(data=cls.props, property="wall_container", text="Storey" if ui_context != "TOOL_HEADER" else "S")
+        row = cls.layout.row(align=True) if ui_context != "TOOL_HEADER" else row
+
         if ifc_class == "IfcWallType":
             row.prop(data=cls.props, property="rl1", text="Relative Level" if ui_context != "TOOL_HEADER" else "RL")
             row = cls.layout.row(align=True) if ui_context != "TOOL_HEADER" else row
@@ -774,13 +792,26 @@ class EditObjectUI:
         row = cls.layout.row(align=True)
         row.label(text="Parameter Adjustments") if ui_context != "TOOL_HEADER" else row
         row = cls.layout.row(align=True)
+        row.operator("bim.get_element_storey", icon="TRIA_RIGHT", text="")
+        row.prop(data=cls.props, property="target_storey", text="Storey" if ui_context != "TOOL_HEADER" else "S")
+        op = row.operator("bim.change_wall_storey", icon="FILE_REFRESH", text="")
+        try:
+            op.storey_id = int(cls.props.target_storey)
+        except (ValueError, TypeError):
+            op.storey_id = 0
+        row.operator("bim.get_wall_offset", icon="TRIA_RIGHT", text="")
+        row.prop(data=cls.props, property="wall_offset_from_level", text="Offset")
+        row.operator("bim.change_wall_offset", icon="FILE_REFRESH", text="")
+        row = cls.layout.row(align=True) if ui_context != "TOOL_HEADER" else row
 
         if AuthoringData.data["active_material_usage"] == "LAYER2":
+            row.operator("bim.get_wall_height", icon="TRIA_RIGHT", text="")
             row.prop(data=cls.props, property="extrusion_depth", text="Height" if ui_context != "TOOL_HEADER" else "H")
             op = row.operator("bim.change_extrusion_depth", icon="FILE_REFRESH", text="")
             op.depth = cls.props.extrusion_depth
 
             row = cls.layout.row(align=True) if ui_context != "TOOL_HEADER" else row
+            row.operator("bim.get_wall_length", icon="TRIA_RIGHT", text="")
             row.prop(data=cls.props, property="length", text="Length" if ui_context != "TOOL_HEADER" else "L")
             op = row.operator("bim.change_layer_length", icon="FILE_REFRESH", text="")
             op.length = cls.props.length

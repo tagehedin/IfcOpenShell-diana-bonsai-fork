@@ -46,6 +46,7 @@ class Raycast(bonsai.core.tool.Raycast):
         (offset, -offset),
     )
     snap_objs = []
+    bvh_cache: dict = {}  # obj.name → (BVHTree, vert_count, matrix, matrix_inv)
 
     @classmethod
     def get_visible_objects(cls, context: bpy.types.Context):
@@ -402,7 +403,7 @@ class Raycast(bonsai.core.tool.Raycast):
             else:
                 edge_verts[e] = (v1_2d, v2_2d)
 
-        snap_threshold = 10.0
+        snap_threshold = 20.0
 
         for i, point in enumerate(verts_2d):
             if not point:
@@ -907,10 +908,91 @@ class Raycast(bonsai.core.tool.Raycast):
         return snap_obj
 
     @classmethod
+    def get_bvh_build_data(cls, obj):
+        """Extract raw vertex/polygon data from a mesh object (main thread, fast).
+        Returns a build-data dict for the background worker, or None if cache is already current."""
+        if obj.type != "MESH" or obj.data is None or not obj.data.polygons:
+            return None
+        vert_count = len(obj.data.vertices)
+        matrix = obj.matrix_world.copy()
+        cached = cls.bvh_cache.get(obj.name)
+        if cached and cached[1] == vert_count and cached[2] == matrix:
+            return None
+        verts = [v.co.copy() for v in obj.data.vertices]
+        polys = [tuple(p.vertices) for p in obj.data.polygons]
+        return {
+            "obj_name": obj.name,
+            "vertices": verts,
+            "polygons": polys,
+            "vert_count": vert_count,
+            "matrix": matrix,
+        }
+
+    @classmethod
+    def build_bvh_for_obj(cls, obj, depsgraph):
+        """Build or return a cached BVHTree for a solid mesh object. Main thread only."""
+        from mathutils.bvhtree import BVHTree
+        if obj.type != "MESH" or obj.data is None or not obj.data.polygons:
+            return None
+        vert_count = len(obj.data.vertices)
+        matrix = obj.matrix_world.copy()
+        cached = cls.bvh_cache.get(obj.name)
+        if cached and cached[1] == vert_count and cached[2] == matrix:
+            return cached
+        bvh = BVHTree.FromObject(obj, depsgraph)
+        entry = (bvh, vert_count, matrix, matrix.inverted())
+        cls.bvh_cache[obj.name] = entry
+        return entry
+
+    @classmethod
+    def clear_bvh_cache(cls):
+        cls.bvh_cache.clear()
+
+    @classmethod
+    def bvh_ray_cast_objects(cls, bvh_items, rays):
+        """Thread-safe: queries pre-built BVH trees with 9-ray approach. No bpy calls.
+
+        bvh_items: list of (obj_name, BVHTree, matrix, matrix_inv)
+        rays: list of (ray_origin, ray_direction) in world space — center ray first, then ±10px offsets.
+        Returns list of hit dicts with keys: obj_name, point, face_index, type, group, distance, distance_sq.
+        """
+        from mathutils import Vector
+        center_origin = Vector(rays[0][0])
+        hits = []
+        for obj_name, bvh, matrix, matrix_inv in bvh_items:
+            hit_world = None
+            hit_face_idx = None
+            mat3_inv = matrix_inv.to_3x3()
+            for ray_origin, ray_direction in rays:
+                ro = Vector(ray_origin)
+                ld = mat3_inv @ Vector(ray_direction)
+                if ld.length_squared < 1e-14:
+                    continue
+                ld.normalize()
+                hit_l, _normal, face_idx, _dist = bvh.ray_cast(matrix_inv @ ro, ld)
+                if hit_l is not None:
+                    hit_world = matrix @ hit_l
+                    hit_face_idx = face_idx
+                    break  # first hit wins — matches cast_rays_to_single_object behaviour
+            if hit_world is not None:
+                hits.append({
+                    "obj_name": obj_name,
+                    "point": hit_world,
+                    "face_index": hit_face_idx,
+                    "type": "Face",
+                    "group": "Object",
+                    "distance": 9,
+                    "distance_sq": (hit_world - center_origin).length_squared,
+                })
+        return hits
+
+    @classmethod
     def clear_snap_objs(cls):
         TreeNode.__clear_all__()
         SnapObj.__clear_all__()
         cls.snap_objs.clear()
+        # BVH cache intentionally NOT cleared here — it persists across tool invocations
+        # and is invalidated per-object by vertex count + matrix checks in build_bvh_for_obj.
 
 
 class TreeNode:

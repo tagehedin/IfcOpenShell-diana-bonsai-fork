@@ -21,6 +21,8 @@ from __future__ import annotations
 from typing import Literal, Union
 
 import bpy
+import bpy_extras.view3d_utils
+import numpy as np
 import ifcopenshell
 import ifcopenshell.util.unit
 from mathutils import Vector
@@ -33,17 +35,18 @@ class PolylineOperator:
     # TODO Fill doc strings
     """ """
 
-    objs_2d_bbox: list[tuple[bpy.types.Object, list[float]]]
-
     @classmethod
     def poll(cls, context: bpy.types.Context) -> bool:
         return context.space_data.type == "VIEW_3D"
 
     def __init__(self):
-        self.mousemove_count = 0
         self.action_count = 0
-        self.visible_objs = []
-        self.objs_2d_bbox = []
+        self.mousemove_count = 0
+        self._requested_should_round = True
+        self._snap_timer = None
+        self._is_navigating = False
+        self._last_navigating_vm = None
+        self._original_button_color = None
         self.number_options = {
             "0",
             "1",
@@ -74,7 +77,7 @@ class PolylineOperator:
         self.input_ui = tool.Polyline.create_input_ui(input_options=self.input_options)
         self.is_typing = False
         self.snap_angle = None
-        self.snapping_points = []
+        self.snapping_points = [{"type": "Plane", "point": Vector((0, 0, 0)), "object": None, "group": "Plane", "distance": 10}]
         self.instructions = {
             "Cycle Input": {"icons": True, "keys": ["EVENT_TAB"]},
             "Distance Input": {"icons": True, "keys": ["EVENT_D"]},
@@ -383,6 +386,7 @@ class PolylineOperator:
                 PolylineDecorator.uninstall()
                 tool.Polyline.clear_polyline()
                 tool.Blender.update_viewport()
+                self._remove_snap_timer(context)
                 return {"CANCELLED"}
 
     def handle_mouse_move(
@@ -395,32 +399,16 @@ class PolylineOperator:
                 self.tool_state.is_input_on = False
                 self.input_type = None
                 self.tool_state.input_type = None
-                PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
                 tool.Snap.clear_snapping_ref()
-                tool.Blender.update_viewport()
             else:
                 self.mousemove_count = 0
 
-            if self.mousemove_count == 2:
-                self.objs_2d_bbox = []
-                for obj in self.visible_objs:
-                    if bbox_2d := tool.Raycast.get_on_screen_2d_bounding_boxes(context, obj):
-                        self.objs_2d_bbox.append(bbox_2d)
-
+            # Guard: skip the first few MOUSEMOVE events after a click or key press.
+            # Removing this causes noticeable slowdown on heavy files — do not remove.
             if self.mousemove_count > 3:
-                detected_snaps = tool.Snap.detect_snapping_points(context, event, self.objs_2d_bbox, self.tool_state)
-                self.snapping_points = tool.Snap.select_snapping_points(context, event, self.tool_state, detected_snaps)
+                self._requested_should_round = should_round
+                self._do_snap(context, event)
 
-                if self.snapping_points[0]["type"] not in {"Plane", "Axis"}:
-                    should_round = False
-
-                tool.Polyline.calculate_distance_and_angle(
-                    context, self.input_ui, self.tool_state, should_round=should_round
-                )
-                if should_round:
-                    tool.Polyline.calculate_x_y_and_z(context, self.input_ui, self.tool_state)
-
-                tool.Blender.update_viewport()
             return {"RUNNING_MODAL"}
 
     def set_offset(self, context: bpy.types.Context, relating_type: ifcopenshell.entity_instance) -> None:
@@ -450,8 +438,191 @@ class PolylineOperator:
     def modal(self, context: bpy.types.Context, event: bpy.types.Event) -> Union[set[str], None]:
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
         tool.Blender.update_viewport()
-        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+        if event.type == "MIDDLEMOUSE":
+            self._is_navigating = event.value == "PRESS"
             return {"PASS_THROUGH"}
+        if event.type in {"WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+    def _rebuild_objs_2d_bbox(self, context: bpy.types.Context) -> bool:
+        view_matrix = context.region_data.view_matrix.copy()
+        if view_matrix == self._last_view_matrix:
+            return False
+        self._last_view_matrix = view_matrix
+
+        rv3d = context.region_data
+        is_ortho = rv3d.view_perspective == "ORTHO" or (
+            rv3d.view_perspective == "CAMERA"
+            and hasattr(context.scene, "camera")
+            and context.scene.camera
+            and context.scene.camera.data.type == "ORTHO"
+        )
+        ortho_distance_cap = rv3d.view_distance * 2 if is_ortho else None
+        view_location = rv3d.view_matrix.inverted().translation
+
+        self._set_snap_indicator("rebuilding")
+        self.objs_2d_bbox = []
+        for obj in self.visible_objs:
+            if is_ortho and ortho_distance_cap is not None:
+                obj_center = obj.matrix_world.translation
+                if (view_location - obj_center).length > ortho_distance_cap:
+                    continue
+            if bbox_2d := tool.Raycast.get_on_screen_2d_bounding_boxes(context, obj):
+                self.objs_2d_bbox.append(bbox_2d)
+
+        builds = []
+        for obj, _bbox in self.objs_2d_bbox:
+            data = tool.Raycast.get_bvh_build_data(obj)
+            if data is not None:
+                builds.append(data)
+        if builds:
+            with self._snap_lock:
+                self._bvh_build_queue.extend(builds)
+            self._snap_event.set()
+        self._last_filter_mouse_pos = None  # invalidate filter cache — bbox list changed
+        return True
+
+    def _set_snap_indicator(self, state: str) -> None:
+        colors = {
+            "idle": (0.35, 0.35, 0.35),
+            "timer": (0.9, 0.8, 0.1),
+            "rebuilding": (0.8, 0.2, 0.2),
+            "done": (0.2, 0.8, 0.2),
+        }
+        if color := colors.get(state):
+            bpy.context.window_manager.bonsai_snap_color = color
+
+    def _remove_snap_timer(self, context: bpy.types.Context) -> None:
+        if self._snap_timer is not None:
+            context.window_manager.event_timer_remove(self._snap_timer)
+            self._snap_timer = None
+        self._set_snap_indicator("idle")
+
+    # 100ms timer: keeps snap live when the mouse is stationary.
+    # Without this, _do_snap only fires on MOUSEMOVE, so holding CTRL on a
+    # wall without moving would show no snap. scene.ray_cast() is a cheap C
+    # call so running it at 10Hz idle is negligible.
+    def _handle_snap_timer(self, context: bpy.types.Context, event: bpy.types.Event) -> bool:
+        if event.type != "TIMER":
+            return False
+        if event.ctrl and not self._is_navigating:
+            self._run_scene_ray_snap(context, event)
+        return True
+
+    # Plane + axis intersection only — no object raycasting.
+    def _run_plane_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
+        detected_snaps = tool.Snap.detect_snapping_points(context, event, [], self.tool_state)
+        self.snapping_points = tool.Snap.select_snapping_points(context, event, self.tool_state, detected_snaps)
+        tool.Polyline.calculate_distance_and_angle(context, self.input_ui, self.tool_state)
+        PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
+        tool.Blender.update_viewport()
+
+    # Object snap via Blender's C-level scene BVH (context.scene.ray_cast).
+    # One ray gives the hit face; we check the face's vertices, midpoints, and
+    # edges in screen space. Replaces a custom Python BVH pipeline that needed
+    # a background thread and per-frame bbox rebuilds.
+    # Priority: vertex (30px) > midpoint (20px) > edge sliding (15px).
+    def _run_scene_ray_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
+        origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, _normal, face_index, obj, matrix = context.scene.ray_cast(depsgraph, origin, direction)
+
+        if not hit:
+            self._run_plane_snap(context, event)
+            return
+
+        eval_mesh = obj.evaluated_get(depsgraph).data
+        face = eval_mesh.polygons[face_index]
+        world_verts = [matrix @ eval_mesh.vertices[vi].co for vi in face.vertices]
+
+        region = context.region
+        rv3d = context.region_data
+        cursor_2d = Vector((event.mouse_region_x, event.mouse_region_y))
+        n = len(world_verts)
+
+        # Three-phase priority: vertices beat midpoints beat edge-sliding.
+        # Larger threshold on vertices makes them "stickier" — intentional.
+        best_3d = None
+        best_type = "Face"
+        best_dist = 9
+        best_edge_verts = None
+        v_threshold = 30
+        best_v_dist = v_threshold
+        for v in world_verts:
+            v2d = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, v)
+            if v2d and (d := (v2d - cursor_2d).length) < best_v_dist:
+                best_v_dist, best_3d, best_type, best_dist = d, v.copy(), "Vertex", d
+
+        # Phase 2 — midpoints: only if no vertex found.
+        if best_3d is None:
+            best_m_dist = 20
+            for i in range(n):
+                v1, v2 = world_verts[i], world_verts[(i + 1) % n]
+                mid = v1.lerp(v2, 0.5)
+                m2d = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, mid)
+                if m2d and (d := (m2d - cursor_2d).length) < best_m_dist:
+                    best_m_dist, best_3d, best_type, best_dist = d, mid, "Vertex", d
+                    best_edge_verts = (v1.copy(), v2.copy())
+
+        # Phase 3 — edge sliding: only if no vertex or midpoint found.
+        if best_3d is None:
+            best_e_dist = 15
+            for i in range(n):
+                v1, v2 = world_verts[i], world_verts[(i + 1) % n]
+                p1 = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, v1)
+                p2 = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, v2)
+                if not p1 or not p2:
+                    continue
+                e2d = p2 - p1
+                lensq = e2d.dot(e2d)
+                if lensq < 1e-6:
+                    continue
+                t = max(0.0, min(1.0, (cursor_2d - p1).dot(e2d) / lensq))
+                if (d := ((p1 + t * e2d) - cursor_2d).length) < best_e_dist:
+                    best_e_dist, best_3d, best_type, best_dist = d, v1.lerp(v2, t), "Edge", d
+                    best_edge_verts = (v1.copy(), v2.copy())
+
+        object_snap = {
+            "type": best_type,
+            "point": best_3d if best_3d is not None else location,
+            "object": obj,
+            "group": "Object",
+            "face_index": face_index,
+            "distance": best_dist,
+            "is_closest_to_camera": True,
+        }
+        if best_edge_verts is not None:
+            object_snap["edge_verts"] = best_edge_verts
+
+        detected_snaps = tool.Snap.detect_snapping_points(context, event, [], self.tool_state)
+        detected_snaps.append(object_snap)
+
+        self.snapping_points = tool.Snap.select_snapping_points(context, event, self.tool_state, detected_snaps)
+        should_round = self._requested_should_round
+        if self.snapping_points[0]["type"] not in {"Plane", "Axis"}:
+            should_round = False
+        tool.Polyline.calculate_distance_and_angle(context, self.input_ui, self.tool_state, should_round=should_round)
+        if should_round:
+            tool.Polyline.calculate_x_y_and_z(context, self.input_ui, self.tool_state)
+        PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
+        tool.Blender.update_viewport()
+
+    # Snap on MOUSEMOVE: plane/axis always, object snap (CTRL) via scene.ray_cast.
+    # MOUSEMOVE keeps it immediate and zero-cost when idle; the 100ms timer
+    # (_handle_snap_timer) covers the stationary-mouse case.
+    def _do_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
+        if self._is_navigating:
+            current_vm = context.region_data.view_matrix.copy()
+            if current_vm != self._last_navigating_vm:
+                self._last_navigating_vm = current_vm
+                return
+            self._is_navigating = False
+
+        if not event.ctrl:
+            self._run_plane_snap(context, event)
+            return
+
+        self._run_scene_ray_snap(context, event)
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
         PolylineDecorator.install(context)
@@ -461,14 +632,16 @@ class PolylineOperator:
         self.tool_state.axis_method = None
         self.tool_state.plane_method = None
         self.tool_state.mode = "Mouse"
-        tool.Raycast.clear_snap_objs()
-        self.visible_objs = tool.Raycast.get_visible_objects(context)
-        for obj in self.visible_objs:
-            if bbox_2d := tool.Raycast.get_on_screen_2d_bounding_boxes(context, obj):
-                self.objs_2d_bbox.append(bbox_2d)
-        detected_snaps = tool.Snap.detect_snapping_points(context, event, self.objs_2d_bbox, self.tool_state)
-        self.snapping_points = tool.Snap.select_snapping_points(context, event, self.tool_state, detected_snaps)
-        tool.Polyline.calculate_distance_and_angle(context, self.input_ui, self.tool_state)
+
+        # Pre-select the current default container in the storey dropdown for all create tools.
+        if container := tool.Root.get_default_container():
+            if container.is_a("IfcBuildingStorey"):
+                tool.Model.get_model_props().wall_container = str(container.id())
+
+        # Run plane snap once now to initialise input_ui with valid float values.
+        # Without this, clicking before the first MOUSEMOVE crashes on "D" field division.
+        self._run_plane_snap(context, event)
 
         tool.Blender.update_viewport()
         context.window_manager.modal_handler_add(self)
+        self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)

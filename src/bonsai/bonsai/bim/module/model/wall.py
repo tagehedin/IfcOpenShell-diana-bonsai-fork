@@ -175,12 +175,18 @@ class ExtendWallsToPolylinePoint(bpy.types.Operator, PolylineOperator, tool.Ifc.
         return IfcStore.execute_ifc_operator(self, context, event, method="MODAL")
 
     def _modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
         tool.Blender.update_viewport()
         self.handle_lock_axis(context, event)  # Must come before "PASS_THROUGH"
-        self.handle_mouse_move(context, event)
 
-        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+        if event.type == "MIDDLEMOUSE":
+            self._is_navigating = event.value == "PRESS"
+            self.handle_mouse_move(context, event)
+            return {"PASS_THROUGH"}
+        if event.type in {"WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
             self.handle_mouse_move(context, event)
             return {"PASS_THROUGH"}
 
@@ -236,6 +242,7 @@ class ExtendWallsToPolylinePoint(bpy.types.Operator, PolylineOperator, tool.Ifc.
             context.workspace.status_text_set(text=None)
             PolylineDecorator.uninstall()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -551,6 +558,145 @@ class ChangeLayerLength(bpy.types.Operator, tool.Ifc.Operator):
             joiner.set_length(obj, self.length)
 
 
+class GetWallHeight(bpy.types.Operator):
+    bl_idname = "bim.get_wall_height"
+    bl_label = "Get Value"
+    bl_description = "Read the actual current height of this wall from its IFC geometry"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from math import cos
+        obj = context.active_object
+        if not obj:
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return {"CANCELLED"}
+        representation = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
+        if not representation:
+            return {"CANCELLED"}
+        extrusion = tool.Model.get_extrusion(representation)
+        if not extrusion:
+            return {"CANCELLED"}
+        si = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        x, y, z = extrusion.ExtrudedDirection.DirectionRatios
+        from mathutils import Vector
+        x_angle = Vector((0, 1)).angle_signed(Vector((y, z)))
+        tool.Model.get_model_props().extrusion_depth = abs(extrusion.Depth * si * cos(x_angle))
+        return {"FINISHED"}
+
+
+class GetWallLength(bpy.types.Operator):
+    bl_idname = "bim.get_wall_length"
+    bl_label = "Get Value"
+    bl_description = "Read the actual current length of this wall from its axis"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj:
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return {"CANCELLED"}
+        axis = tool.Model.get_wall_axis(obj)["reference"]
+        tool.Model.get_model_props().length = (axis[1] - axis[0]).length
+        return {"FINISHED"}
+
+
+class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.change_wall_storey"
+    bl_label = "Change Wall Storey"
+    bl_description = "Move all selected walls to a different storey, preserving each wall's vertical offset from its current storey"
+    bl_options = {"REGISTER", "UNDO"}
+    storey_id: bpy.props.IntProperty()
+
+    def _execute(self, context):
+        ifc_file = tool.Ifc.get()
+        new_storey = ifc_file.by_id(self.storey_id)
+        if not new_storey or not new_storey.is_a("IfcBuildingStorey"):
+            return
+        import bonsai.core.spatial as spatial_core
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+        new_storey_z = ifcopenshell.util.placement.get_storey_elevation(new_storey) * unit_scale
+        for obj in tool.Model.get_selected_mesh_ifc_objects():
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            current_container = ifcopenshell.util.element.get_container(element)
+            current_z = ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale \
+                if current_container and current_container.is_a("IfcBuildingStorey") else 0.0
+            offset = obj.location.z - current_z
+            spatial_core.assign_container(tool.Ifc, tool.Collector, tool.Spatial, container=new_storey, objs=[obj])
+            obj.location.z = new_storey_z + offset
+            bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+
+
+class GetElementStorey(bpy.types.Operator):
+    bl_idname = "bim.get_element_storey"
+    bl_label = "Get Value"
+    bl_description = "Read the storey of the active object, update the dropdown and set it as the default container"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj:
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return {"CANCELLED"}
+        container = ifcopenshell.util.element.get_container(element)
+        if not container or not container.is_a("IfcBuildingStorey"):
+            return {"CANCELLED"}
+        tool.Model.get_model_props().target_storey = str(container.id())
+        tool.Spatial.set_default_container(container)
+        return {"FINISHED"}
+
+
+class GetWallOffset(bpy.types.Operator):
+    bl_idname = "bim.get_wall_offset"
+    bl_label = "Get Value"
+    bl_description = "Read the actual current offset of this wall from its storey elevation"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj:
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            return {"CANCELLED"}
+        container = ifcopenshell.util.element.get_container(element)
+        if not container or not container.is_a("IfcBuildingStorey"):
+            return {"CANCELLED"}
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        storey_z = ifcopenshell.util.placement.get_storey_elevation(container) * unit_scale
+        tool.Model.get_model_props().wall_offset_from_level = obj.location.z - storey_z
+        return {"FINISHED"}
+
+
+class ChangeWallOffset(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.change_wall_offset"
+    bl_label = "Change Wall Offset From Level"
+    bl_description = "Move all selected walls to the given offset from their respective storey elevations"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        ifc_file = tool.Ifc.get()
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+        new_offset = tool.Model.get_model_props().wall_offset_from_level
+        for obj in tool.Model.get_selected_mesh_ifc_objects():
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            container = ifcopenshell.util.element.get_container(element)
+            if not container or not container.is_a("IfcBuildingStorey"):
+                continue
+            storey_z = ifcopenshell.util.placement.get_storey_elevation(container) * unit_scale
+            obj.location.z = storey_z + new_offset
+            bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+
+
 class OffsetWalls(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.offset_walls"
     bl_label = "Offset Walls"
@@ -603,6 +749,36 @@ class AddWallsFromSlab(bpy.types.Operator, tool.Ifc.Operator):
                 DumbWallJoiner().connect(wall2["obj"], wall1["obj"])
 
 
+class ConvertEdgesToWalls(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.convert_edges_to_walls"
+    bl_label = "Walls from Edges"
+    bl_description = "Create a wall for every edge in the active mesh object using the selected wall type."
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            cls.poll_message_set("Active object must be a mesh.")
+            return False
+        if not obj.data.edges:
+            cls.poll_message_set("Active mesh has no edges.")
+            return False
+        try:
+            props = tool.Model.get_model_props()
+            if not props.relating_type_id:
+                cls.poll_message_set("No wall type selected.")
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _execute(self, context):
+        props = tool.Model.get_model_props()
+        relating_type = tool.Ifc.get().by_id(int(props.relating_type_id))
+        DumbWallGenerator(relating_type).generate("MESH")
+
+
 class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
     bl_idname = "bim.draw_polyline_wall"
     bl_label = "Draw Polyline Wall"
@@ -652,10 +828,14 @@ class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         return IfcStore.execute_ifc_operator(self, context, event, method="MODAL")
 
     def _modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         if not self.relating_type:
             self.report({"WARNING"}, "You need to select a wall type.")
             PolylineDecorator.uninstall()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
@@ -663,7 +843,11 @@ class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
 
         self.handle_lock_axis(context, event)  # Must come before "PASS_TRHOUGH"
 
-        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+        if event.type == "MIDDLEMOUSE":
+            self._is_navigating = event.value == "PRESS"
+            self.handle_mouse_move(context, event)
+            return {"PASS_THROUGH"}
+        if event.type in {"WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
             self.handle_mouse_move(context, event)
             return {"PASS_THROUGH"}
 
@@ -709,6 +893,7 @@ class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
             PolylineDecorator.uninstall()
             tool.Polyline.clear_polyline()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -717,6 +902,7 @@ class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         cancel = self.handle_cancelation(context, event)
         if cancel is not None:
             ProductDecorator.uninstall()
+            self._remove_snap_timer(context)
             return cancel
 
         return {"RUNNING_MODAL"}
@@ -729,6 +915,7 @@ class DrawPolylineWall(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         ProductDecorator.install(context)
         self.tool_state.use_default_container = True
         self.tool_state.plane_method = "XY"
+        tool.Model.get_model_props().direction_sense = "POSITIVE"
         self.set_offset(context, self.relating_type)
         return {"RUNNING_MODAL"}
 
@@ -861,6 +1048,43 @@ class DumbWallGenerator:
             return self.derive_from_slab()
         elif insertion_type == "CURSOR":
             return self.derive_from_cursor()
+        elif insertion_type == "MESH":
+            return self.derive_from_mesh_object()
+
+    def derive_from_mesh_object(self) -> list:
+        obj = bpy.context.active_object
+        vert_walls: dict[int, list] = {}  # vertex index → walls that touch it
+        walls = []
+        seen_xy_edges: set[tuple] = set()
+        for edge in obj.data.edges:
+            v0_idx, v1_idx = edge.vertices[0], edge.vertices[1]
+            v0 = obj.matrix_world @ obj.data.vertices[v0_idx].co
+            v1 = obj.matrix_world @ obj.data.vertices[v1_idx].co
+            # Deduplicate edges that project to the same XY line (e.g. top/bottom of a box).
+            # Also drops vertical edges whose XY projection is near-zero length.
+            xy0 = (round(v0.x, 4), round(v0.y, 4))
+            xy1 = (round(v1.x, 4), round(v1.y, 4))
+            if xy0 == xy1:
+                continue
+            key = (min(xy0, xy1), max(xy0, xy1))
+            if key in seen_xy_edges:
+                continue
+            seen_xy_edges.add(key)
+            wall_data = self.create_wall_from_2_points((v0, v1))
+            if wall_data:
+                walls.append(wall_data)
+                vert_walls.setdefault(v0_idx, []).append(wall_data)
+                vert_walls.setdefault(v1_idx, []).append(wall_data)
+
+        # Connect walls that share a source vertex — handles L, T, and X junctions.
+        joiner = DumbWallJoiner()
+        for touching in vert_walls.values():
+            if len(touching) >= 2:
+                for i in range(len(touching)):
+                    for j in range(i + 1, len(touching)):
+                        joiner.connect(touching[i]["obj"], touching[j]["obj"])
+
+        return walls
 
     def derive_from_polyline(self) -> tuple[list[Union[dict[str, Any], None]], bool]:
         polyline_props = tool.Model.get_polyline_props()

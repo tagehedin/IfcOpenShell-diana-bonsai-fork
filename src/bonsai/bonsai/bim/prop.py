@@ -562,6 +562,7 @@ class BIMProperties(PropertyGroup):
     )
     has_blend_warning: BoolProperty(name="Has Blend Warning", default=False)
     ifc_file: StringProperty(name="IFC File")
+    ifc_timestamp: StringProperty(name="IFC Timestamp")
     last_transaction: StringProperty(name="Last Transaction")
     should_section_selected_objects: BoolProperty(name="Section Selected Objects", default=False)
     section_plane_colour: FloatVectorProperty(
@@ -648,6 +649,7 @@ class BIMProperties(PropertyGroup):
         has_blend_warning: bool
         pset_dir: str
         ifc_file: str
+        ifc_timestamp: str
         last_transaction: str
         should_section_selected_objects: bool
         section_plane_colour: tuple[float, float, float]

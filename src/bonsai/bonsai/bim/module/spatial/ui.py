@@ -124,6 +124,8 @@ class BIM_PT_spatial_decomposition(Panel):
             row = self.layout.row(align=True)
             row.label(text="Warning: No Default Container", icon="ERROR")
         row.operator("bim.import_spatial_decomposition", icon="FILE_REFRESH", text="")
+        row.operator("bim.collapse_all_storeys", icon="TRIA_RIGHT", text="Collapse Storeys")
+        row.operator("bim.import_storeys_from_link", icon="LINKED", text="Import from Link")
 
         if self.props.active_container:
             ifc_definition_id = self.props.active_container.ifc_definition_id

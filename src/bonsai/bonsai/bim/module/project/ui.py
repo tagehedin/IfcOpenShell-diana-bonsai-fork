@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import bpy
@@ -170,9 +171,12 @@ class BIM_PT_project(Panel):
                 box = self.layout.box()
                 box.alert = True
                 row = box.row(align=True)
-                row.label(text="Your Model May Be Outdated", icon="ERROR")
+                row.label(text="Your IFC Has Changed Since Last Save", icon="ERROR")
                 op = row.operator("bim.open_uri", text="", icon="QUESTION")
                 op.uri = "https://docs.bonsaibim.org/guides/troubleshooting.html#saving-and-loading-blend-files"
+                op = row.operator("bim.load_project", text="Reload IFC", icon="FILE_REFRESH")
+                op.filepath = props.ifc_file
+                op.should_start_fresh_session = False
                 row.operator("bim.close_blend_warning", text="", icon="CANCEL")
 
             if props.ifc_file:
@@ -511,6 +515,31 @@ class BIM_PT_links(Panel):
                     row.operator("bim.load_link", text="", icon="LINKED").link_index = index
                 row.operator("bim.unlink_ifc", text="", icon="X").link_index = index
             self.layout.template_list("BIM_UL_links", "", self.props, "links", self.props, "active_link_index")
+
+        if self.props.active_link and self.props.active_link.is_loaded:
+            link = self.props.active_link
+            index = self.props.active_link_index
+            library_filepath = tool.Blender.ensure_blender_path_is_abs(
+                Path(link.filepath).with_suffix(".ifc.cache.blend")
+            )
+            root_col = next(
+                (
+                    c
+                    for c in bpy.data.collections
+                    if "IfcProject" in c.name and c.library and Path(c.library.filepath) == library_filepath
+                ),
+                None,
+            )
+            if root_col and root_col.children:
+                box = self.layout.box()
+                box.label(text="Storey Visibility", icon="OUTLINER_COLLECTION")
+                for storey_col in root_col.children:
+                    objs = list(storey_col.all_objects)
+                    is_hidden = bool(objs) and all(obj.hide_viewport for obj in objs)
+                    icon = "HIDE_ON" if is_hidden else "HIDE_OFF"
+                    op = box.operator("bim.toggle_link_storey_visibility", text=storey_col.name, icon=icon)
+                    op.link_index = index
+                    op.storey_collection_name = storey_col.name
 
         if LinksData.enable_culling:
             row = self.layout.row(align=True)

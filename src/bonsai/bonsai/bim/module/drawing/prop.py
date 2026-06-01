@@ -30,6 +30,7 @@ from bpy.props import (
     CollectionProperty,
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -390,6 +391,113 @@ class RasterStyleProperty(enum.Enum):
 RASTER_STYLE_PROPERTIES_EXCLUDE = ("scene.render.filepath",)
 
 
+def _hex_to_rgb(hex_str: str) -> list[float]:
+    h = hex_str.lstrip("#")
+    try:
+        return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    except (ValueError, IndexError):
+        return [0.0, 0.0, 0.0]
+
+
+def _rgb_to_hex(rgb) -> str:
+    return "#{:02x}{:02x}{:02x}".format(round(rgb[0] * 255), round(rgb[1] * 255), round(rgb[2] * 255))
+
+
+def _get_svg_color_picker(self):
+    return _hex_to_rgb(self.svg_color)
+
+
+def _set_svg_color_picker(self, value):
+    self.svg_color = _rgb_to_hex(value)
+
+
+def _get_svg_fill_picker(self):
+    return _hex_to_rgb(self.svg_fill) if self.svg_fill else [1.0, 1.0, 1.0]
+
+
+def _set_svg_fill_picker(self, value):
+    self.svg_fill = _rgb_to_hex(value)
+
+
+def _get_svg_fill_null(self):
+    return self.get("svg_fill", "") == ""
+
+
+def _set_svg_fill_null(self, value):
+    if value:
+        self["svg_fill"] = ""
+    else:
+        if not self.get("svg_fill"):
+            self["svg_fill"] = "#ffffff"
+
+
+def _get_dxf_layer_null(self):
+    return self.get("dxf_layer_name", "") == ""
+
+
+def _set_dxf_layer_null(self, value):
+    if value:
+        self["dxf_layer_name"] = ""
+    else:
+        if not self.get("dxf_layer_name"):
+            self["dxf_layer_name"] = self.name
+
+
+class BIMLayerStyle(PropertyGroup):
+    name: StringProperty(name="Layer Name")
+    visible: BoolProperty(name="Visible", default=True)
+    svg_color: StringProperty(name="SVG Stroke (hex)", default="#000000")
+    svg_color_picker: FloatVectorProperty(
+        name="SVG Stroke",
+        subtype="COLOR", size=3, min=0.0, max=1.0,
+        get=_get_svg_color_picker, set=_set_svg_color_picker,
+    )
+    svg_fill: StringProperty(name="SVG Fill (hex)", default="",
+                             description="Fill color override. Empty = use material CSS")
+    svg_fill_picker: FloatVectorProperty(
+        name="SVG Fill",
+        subtype="COLOR", size=3, min=0.0, max=1.0,
+        get=_get_svg_fill_picker, set=_set_svg_fill_picker,
+    )
+    svg_fill_is_null: BoolProperty(
+        name="As Material",
+        description="When active, fill uses the material CSS color",
+        get=_get_svg_fill_null, set=_set_svg_fill_null,
+    )
+    dxf_layer_name: StringProperty(name="DXF Layer Name", default="",
+                                   description="Override DXF layer name. Empty = use IFC class name")
+    dxf_layer_name_is_null: BoolProperty(
+        name="Auto",
+        description="When active, layer name is derived from IFC class",
+        get=_get_dxf_layer_null, set=_set_dxf_layer_null,
+    )
+    dxf_color: IntProperty(name="DXF Color (ACI)", default=256, min=0, max=256,
+                           description="AutoCAD Color Index (256=ByLayer/black, 7=white, 1=red, 2=yellow, 3=green, 4=cyan, 5=blue)")
+    line_weight: FloatProperty(name="Line Weight (mm)", default=0.25, min=0.0, max=2.0, precision=2)
+    linetype: EnumProperty(
+        name="Linetype",
+        items=[
+            ("CONTINUOUS", "Continuous", ""),
+            ("DASHED", "Dashed", ""),
+            ("CENTER", "Center", ""),
+            ("HIDDEN", "Hidden", ""),
+            ("PHANTOM", "Phantom", ""),
+            ("OVERHEAD", "Overhead", ""),
+        ],
+        default="CONTINUOUS",
+    )
+
+    if TYPE_CHECKING:
+        name: str
+        visible: bool
+        svg_color: str
+        svg_fill: str
+        dxf_layer_name: str
+        dxf_color: int
+        line_weight: float
+        linetype: str
+
+
 class DocProperties(PropertyGroup):
     # Note that options are global in descriptions to prevent confusion,
     # as options are available through Active Drawing UI, but they're actually global.
@@ -432,6 +540,8 @@ class DocProperties(PropertyGroup):
     active_sheet_index: IntProperty(name="Active Sheet Index")
     drawing_styles: CollectionProperty(name="Drawing Styles", type=DrawingStyle)
     should_draw_decorations: BoolProperty(name="Should Draw Decorations", update=update_should_draw_decorations)
+    layer_styles: CollectionProperty(name="Layer Styles", type=BIMLayerStyle)
+    active_layer_style_index: IntProperty(name="Active Layer Style Index")
 
     if TYPE_CHECKING:
         should_use_underlay_cache: bool
@@ -457,6 +567,8 @@ class DocProperties(PropertyGroup):
         active_sheet_index: int
         drawing_styles: bpy.types.bpy_prop_collection_idprop[DrawingStyle]
         should_draw_decorations: bool
+        layer_styles: bpy.types.bpy_prop_collection_idprop[BIMLayerStyle]
+        active_layer_style_index: int
 
     def get_active_drawing(self) -> Union[ifcopenshell.entity_instance, None]:
         drawing_id = self.active_drawing_id
@@ -473,6 +585,89 @@ class DocProperties(PropertyGroup):
 
 def update_width_height(self: "BIMCameraProperties", context: bpy.types.Context) -> None:
     self.update_camera_resolution()
+    update_layer(self, context, "Width", self.width)
+    update_layer(self, context, "Height", self.height)
+
+
+def get_depth(self: "BIMCameraProperties") -> float:
+    camera = bpy.context.scene.camera
+    if not camera:
+        return 10.0
+    return camera.data.clip_end
+
+
+def set_depth(self: "BIMCameraProperties", value: float) -> None:
+    camera = bpy.context.scene.camera
+    if not camera:
+        return
+    camera.data.clip_end = value
+    update_layer(self, bpy.context, "Depth", value)
+
+
+def get_min_line_length(self: "BIMCameraProperties") -> float:
+    camera = bpy.context.scene.camera
+    if not camera:
+        return 0.1
+    element = tool.Ifc.get_entity(camera)
+    if not element:
+        return 0.1
+    value = ifcopenshell.util.element.get_pset(element, "EPset_Drawing", "MinLineLengthMm")
+    return float(value) if value is not None else 0.5
+
+
+def set_min_line_length(self: "BIMCameraProperties", value: float) -> None:
+    update_layer(self, bpy.context, "MinLineLengthMm", value)
+
+
+
+
+
+def _get_storey_elevation(camera_z: float) -> float:
+    import bonsai.tool as tool
+
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return 0.0
+
+    # Prefer the explicitly stored storey GlobalId from EPset_Drawing.
+    camera_obj = bpy.context.scene.camera
+    if camera_obj:
+        entity = tool.Ifc.get_entity(camera_obj)
+        if entity:
+            guid = ifcopenshell.util.element.get_pset(entity, "EPset_Drawing", "AssociatedLevel")
+            if guid:
+                try:
+                    storey = ifc.by_guid(guid)
+                    storey_obj = tool.Ifc.get_object(storey)
+                    if storey_obj:
+                        return storey_obj.matrix_world.translation.z
+                except Exception:
+                    pass
+
+    # Fallback: highest storey at or below the camera (works for simple buildings).
+    best_z = None
+    for storey in ifc.by_type("IfcBuildingStorey"):
+        storey_obj = tool.Ifc.get_object(storey)
+        if not storey_obj:
+            continue
+        z = storey_obj.matrix_world.translation.z
+        if z <= camera_z and (best_z is None or z > best_z):
+            best_z = z
+    return best_z if best_z is not None else 0.0
+
+
+def get_cut_height(self: "BIMCameraProperties") -> float:
+    camera_obj = bpy.context.scene.camera
+    if not camera_obj:
+        return 0.0
+    return camera_obj.location.z - _get_storey_elevation(camera_obj.location.z)
+
+
+def set_cut_height(self: "BIMCameraProperties", value: float) -> None:
+    camera_obj = bpy.context.scene.camera
+    if not camera_obj:
+        return
+    camera_obj.location.z = _get_storey_elevation(camera_obj.location.z) + value
 
 
 def update_camera_type(self: "BIMCameraProperties", context: bpy.types.Context) -> None:
@@ -553,6 +748,9 @@ class BIMCameraProperties(PropertyGroup):
     dpi: IntProperty(name="DPI", default=75, update=get_update_layer_callback("dpi", "DPI"))
     width: FloatProperty(name="Width", default=50, subtype="DISTANCE", update=update_width_height)
     height: FloatProperty(name="Height", default=50, subtype="DISTANCE", update=update_width_height)
+    cut_height: FloatProperty(name="Cut Height", subtype="DISTANCE", get=get_cut_height, set=set_cut_height)
+    depth: FloatProperty(name="Depth", subtype="DISTANCE", get=get_depth, set=set_depth)
+    min_line_length: FloatProperty(name="Min Line Length (mm)", default=0.1, min=0.0, soft_max=5.0, get=get_min_line_length, set=set_min_line_length)
     # Bonsai property is needed to prevent user from using unsupported panoramic camera.
     camera_type: EnumProperty(
         name="Camera Type",

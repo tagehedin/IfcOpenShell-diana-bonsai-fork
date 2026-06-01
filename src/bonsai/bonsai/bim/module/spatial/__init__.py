@@ -22,6 +22,8 @@ from . import operator, prop, ui, workspace
 
 classes = (
     operator.AssignContainer,
+    operator.CollapseAllStoreys,
+    operator.ImportStoreysFromLink,
     operator.ContractContainer,
     operator.CopyToContainer,
     operator.DeleteContainer,

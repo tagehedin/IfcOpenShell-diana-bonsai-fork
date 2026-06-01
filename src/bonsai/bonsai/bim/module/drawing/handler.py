@@ -30,6 +30,7 @@ def load_post(*args):
         decoration.DecorationsHandler.install(bpy.context)
     else:
         decoration.DecorationsHandler.uninstall()
+    bpy.ops.bim.load_layer_styles_from_ifc()
 
 
 @persistent

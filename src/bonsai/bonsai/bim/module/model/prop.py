@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Union, get_args
 
 import bpy
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
 from bpy.types import NodeTree, PropertyGroup
 from mathutils import Vector
 
@@ -40,6 +41,32 @@ from bonsai.bim.prop import ObjProperty
 
 if TYPE_CHECKING:
     import sverchok.node_tree
+
+
+# Module-level cache keeps items alive — Blender enum callbacks must not return garbage-collected lists.
+_storey_items_cache: list[tuple[str, str, str]] = []
+
+def _get_storey_items() -> list[tuple[str, str, str]]:
+    global _storey_items_cache
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return [("0", "No IFC file", "")]
+    storeys = sorted(ifc.by_type("IfcBuildingStorey"),
+                     key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s))
+    _storey_items_cache = [(str(s.id()), s.Name or "Unnamed", "") for s in storeys] or [("0", "No Storeys", "")]
+    return _storey_items_cache
+
+
+def _update_wall_container(self: "BIMModelProperties", context: bpy.types.Context) -> None:
+    # Immediately propagate the selected storey as the default container for new elements.
+    try:
+        container_id = int(self.wall_container)
+        if container_id and tool.Ifc.get():
+            container = tool.Ifc.get().by_id(container_id)
+            if container:
+                tool.Spatial.set_default_container(container)
+    except (ValueError, TypeError):
+        pass
 
 
 def get_ifc_class(self: "BIMModelProperties", context: bpy.types.Context) -> list[tuple[str, str, str]]:
@@ -227,6 +254,13 @@ class BIMModelProperties(PropertyGroup):
     updating: bpy.props.BoolProperty(default=False)
     getter_enum = {"ifc_class": get_ifc_class, "relating_type": get_relating_type_id}
     extrusion_depth: bpy.props.FloatProperty(name="Extrusion Depth", min=0.001, default=42.0, subtype="DISTANCE")
+    target_storey: bpy.props.EnumProperty(name="Storey", items=lambda self, ctx: _get_storey_items())
+    wall_offset_from_level: bpy.props.FloatProperty(name="Offset", default=0.0, subtype="DISTANCE")
+    wall_container: bpy.props.EnumProperty(
+        name="Container",
+        items=lambda self, ctx: _get_storey_items(),
+        update=_update_wall_container,
+    )
     cardinal_point: bpy.props.EnumProperty(
         items=(
             # TODO: complain to buildingSMART

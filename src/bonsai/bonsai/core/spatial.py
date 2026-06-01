@@ -146,7 +146,9 @@ def contract_container(
     spatial: type[tool.Spatial], container: ifcopenshell.entity_instance, is_recursive: bool
 ) -> None:
     spatial.contract_container(container, is_recursive=is_recursive)
-    spatial.import_spatial_decomposition()
+    # Incremental list update — avoids full rebuild when collapsing.
+    # Expand still uses import_spatial_decomposition (needs IFC queries to add children).
+    spatial.contract_container_in_list(container)
 
 
 def expand_container(spatial: type[tool.Spatial], container: ifcopenshell.entity_instance, is_recursive: bool) -> None:

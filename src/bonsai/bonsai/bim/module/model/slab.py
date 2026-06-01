@@ -82,10 +82,14 @@ class DumbSlabGenerator:
         self.location = Vector((0, 0, 0))
         self.x_angle = 0 if tool.Cad.is_x(props.x_angle, 0, tolerance=0.001) else props.x_angle
 
+        self.direction_sense = "POSITIVE"
+
         if insertion_type == "POLYLINE":
             return self.derive_from_polyline()
         elif insertion_type == "WALLS":
             return self.derive_from_walls()
+        elif insertion_type == "MESH":
+            return self.derive_from_mesh_object()
         elif insertion_type == "CURSOR":
             return self.derive_from_cursor()
 
@@ -100,6 +104,57 @@ class DumbSlabGenerator:
             return
 
         # Always assume a closed polyline
+        if self.polyline[0] != self.polyline[-1]:
+            self.polyline.append(self.polyline[0])
+
+        return self.create_slab()
+
+    def derive_from_mesh_object(self):
+        from collections import defaultdict
+
+        obj = bpy.context.active_object
+        mesh = obj.data
+
+        # Use boundary edges (shared by exactly 1 face) so filled meshes work correctly.
+        # If there are no faces, treat every edge as a boundary edge.
+        if mesh.polygons:
+            edge_face_count = defaultdict(int)
+            for poly in mesh.polygons:
+                verts = poly.vertices[:]
+                for i in range(len(verts)):
+                    key = tuple(sorted((verts[i], verts[(i + 1) % len(verts)])))
+                    edge_face_count[key] += 1
+            outline_edges = [(k[0], k[1]) for k, cnt in edge_face_count.items() if cnt == 1]
+        else:
+            outline_edges = [(e.vertices[0], e.vertices[1]) for e in mesh.edges]
+
+        if not outline_edges:
+            return
+
+        # Walk edges into an ordered closed loop.
+        adj = defaultdict(list)
+        for v0, v1 in outline_edges:
+            adj[v0].append(v1)
+            adj[v1].append(v0)
+
+        start = outline_edges[0][0]
+        loop = [start]
+        prev, current = None, start
+        for _ in range(len(outline_edges)):
+            nxt = next((n for n in adj[current] if n != prev), None)
+            if nxt is None or nxt == start:
+                break
+            loop.append(nxt)
+            prev, current = current, nxt
+
+        if len(loop) < 3:
+            return
+
+        container_z = self.container_obj.location.z if self.container_obj else 0.0
+        world_pts = [obj.matrix_world @ mesh.vertices[vi].co for vi in loop]
+
+        self.location = Vector((world_pts[0].x, world_pts[0].y, container_z))
+        self.polyline = [(p.x - self.location.x, p.y - self.location.y, 0.0) for p in world_pts]
         if self.polyline[0] != self.polyline[-1]:
             self.polyline.append(self.polyline[0])
 
@@ -159,6 +214,7 @@ class DumbSlabGenerator:
             tool.Ifc.get(),
             context=self.body_context,
             depth=self.depth,
+            direction_sense=self.direction_sense,
             x_angle=self.x_angle,
             polyline=self.polyline,
         )
@@ -846,6 +902,53 @@ class AddSlabFromWall(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
+class ConvertEdgesToSlab(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.convert_edges_to_slab"
+    bl_label = "Floor from Edges"
+    bl_description = "Create a floor slab for every closed edge loop in the active mesh object using the selected slab type."
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            cls.poll_message_set("Active object must be a mesh.")
+            return False
+        if not obj.data.edges:
+            cls.poll_message_set("Active mesh has no edges.")
+            return False
+        try:
+            props = tool.Model.get_model_props()
+            if not props.relating_type_id:
+                cls.poll_message_set("No slab type selected.")
+                return False
+            relating_type = tool.Ifc.get().by_id(int(props.relating_type_id))
+            if not relating_type.is_a("IfcSlabType"):
+                cls.poll_message_set("Selected type must be an IfcSlabType.")
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _execute(self, context):
+        props = tool.Model.get_model_props()
+        relating_type = tool.Ifc.get().by_id(int(props.relating_type_id))
+        slab = DumbSlabGenerator(relating_type).generate("MESH")
+        if not slab:
+            return
+        model = tool.Ifc.get()
+        element = tool.Ifc.get_entity(slab)
+        material = ifcopenshell.util.element.get_material(element)
+        material_set_usage = model.by_id(material.id())
+        if getattr(material_set_usage, "ForLayerSet", False):
+            ifcopenshell.api.material.edit_layer_usage(
+                model,
+                usage=material_set_usage,
+                attributes={"DirectionSense": "NEGATIVE"},
+            )
+            DumbSlabPlaner().regenerate_from_occurence(element, material_set_usage)
+
+
 class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
     bl_idname = "bim.draw_polyline_slab"
     bl_label = "Draw Polyline Slab"
@@ -893,10 +996,14 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         return IfcStore.execute_ifc_operator(self, context, event, method="MODAL")
 
     def _modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         if not self.relating_type:
             self.report({"WARNING"}, "You need to select a slab type.")
             PolylineDecorator.uninstall()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
@@ -947,6 +1054,7 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
             PolylineDecorator.uninstall()
             tool.Polyline.clear_polyline()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -967,6 +1075,9 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         ProductDecorator.install(context)
         self.tool_state.use_default_container = True
         self.tool_state.plane_method = "XY"
+        props = tool.Model.get_model_props()
+        props.direction_sense = "NEGATIVE"
+        props.offset_type_horizontal = "BOTTOM"
         self.set_offset(context, self.relating_type)
         return {"RUNNING_MODAL"}
 

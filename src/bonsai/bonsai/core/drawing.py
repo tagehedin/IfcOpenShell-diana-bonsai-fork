@@ -315,6 +315,7 @@ def add_drawing(
         human_scale = '1/8"=1\'-0"'
 
     shading_styles_path = drawing.get_default_drawing_resource_path("ShadingStyles")
+    associated_level = ifc.get().by_id(location_hint).GlobalId if isinstance(location_hint, int) and location_hint else ""
     ifc.run(
         "pset.edit_pset",
         pset=pset,
@@ -326,6 +327,7 @@ def add_drawing(
             "HasLinework": True,
             "HasAnnotation": True,
             "GlobalReferencing": True,
+            "AssociatedLevel": associated_level,
             "Stylesheet": drawing.get_default_drawing_resource_path("Stylesheet"),
             "Markers": drawing.get_default_drawing_resource_path("Markers"),
             "Symbols": drawing.get_default_drawing_resource_path("Symbols"),

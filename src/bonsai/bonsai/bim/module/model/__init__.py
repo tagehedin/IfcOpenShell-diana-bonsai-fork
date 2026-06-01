@@ -69,6 +69,7 @@ classes = (
     workspace.Hotkey,
     workspace.BIM_MT_add_representation_item,
     wall.AddWallsFromSlab,
+    wall.ConvertEdgesToWalls,
     wall.AlignWall,
     wall.ChangeExtrusionDepth,
     wall.ChangeExtrusionXAngle,
@@ -77,6 +78,12 @@ classes = (
     wall.ExtendWallsToUnderside,
     wall.ExtendWallsToWall,
     wall.ExtendWallsToPolylinePoint,
+    wall.ChangeWallOffset,
+    wall.ChangeWallStorey,
+    wall.GetElementStorey,
+    wall.GetWallHeight,
+    wall.GetWallLength,
+    wall.GetWallOffset,
     wall.FlipWall,
     wall.MergeWall,
     wall.OffsetWalls,
@@ -106,6 +113,7 @@ classes = (
     profile.Rotate90,
     profile.PatchNonParametricMepSegment,
     roof.GenerateHippedRoof,
+    slab.ConvertEdgesToSlab,
     slab.DisableEditingExtrusionProfile,
     slab.DisableEditingSketchExtrusionProfile,
     slab.AddSlabFromWall,
@@ -219,6 +227,13 @@ classes = (
 addon_keymaps = []
 
 
+def walls_from_edges_menu(self, context):
+    obj = context.active_object
+    if obj and obj.type == "MESH" and obj.data and obj.data.edges:
+        self.layout.operator("bim.convert_edges_to_walls")
+        self.layout.operator("bim.convert_edges_to_slab")
+
+
 class ToolsData(NamedTuple):
     tool: type[bpy.types.WorkSpaceTool]
     after: set[str]
@@ -274,7 +289,12 @@ def register():
         type=prop.BIMExternalParametricGeometryProperties
     )
 
+    bpy.types.WindowManager.bonsai_snap_color = bpy.props.FloatVectorProperty(
+        subtype="COLOR_GAMMA", size=3, default=(0.35, 0.35, 0.35), min=0.0, max=1.0
+    )
+
     bpy.types.VIEW3D_MT_add.prepend(ui.add_menu)
+    bpy.types.VIEW3D_MT_object_context_menu.append(walls_from_edges_menu)
     bpy.app.handlers.load_post.append(handler.load_post)
 
     workspace.load_custom_icons()
@@ -285,6 +305,7 @@ def unregister():
         for tool_data in reversed(tools):
             bpy.utils.unregister_tool(tool_data.tool)
 
+    del bpy.types.WindowManager.bonsai_snap_color
     del bpy.types.Scene.BIMModelProperties
     del bpy.types.Scene.BIMPolylineProperties
     del bpy.types.Object.BIMArrayProperties
@@ -298,5 +319,6 @@ def unregister():
 
     bpy.app.handlers.load_post.remove(handler.load_post)
     bpy.types.VIEW3D_MT_add.remove(ui.add_menu)
+    bpy.types.VIEW3D_MT_object_context_menu.remove(walls_from_edges_menu)
 
     workspace.unload_custom_icons()

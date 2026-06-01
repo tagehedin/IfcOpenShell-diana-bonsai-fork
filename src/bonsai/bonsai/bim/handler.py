@@ -19,12 +19,13 @@
 import os
 import weakref
 from collections.abc import Callable
-from math import cos
+from math import cos, pi
 from typing import Union
 
 import bpy
 import ifcopenshell.api.owner.settings
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
 import ifcopenshell.util.representation
 import ifcopenshell.util.unit
 from bpy.app.handlers import persistent
@@ -171,10 +172,21 @@ def update_bim_tool_props():
 
     elif AuthoringData.data["active_material_usage"] == "LAYER3":
         x_angle = get_x_angle(extrusion)
+        x_angle = 0 if tool.Cad.is_x(x_angle, 0, tolerance=0.001) else x_angle
+        x_angle = 0 if tool.Cad.is_x(x_angle, pi, tolerance=0.001) else x_angle
+        x_angle = 0 if tool.Cad.is_x(x_angle, 2 * pi, tolerance=0.001) else x_angle
         props.x_angle = x_angle
 
     elif AuthoringData.data["active_material_usage"] == "PROFILE":
         props.extrusion_depth = extrusion.Depth * si_conversion
+
+    # Pre-select the element's current storey and compute live offset — applies to all element types.
+    if container := ifcopenshell.util.element.get_container(element):
+        if container.is_a("IfcBuildingStorey"):
+            props.target_storey = str(container.id())
+            unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+            storey_z = ifcopenshell.util.placement.get_storey_elevation(container) * unit_scale
+            props.wall_offset_from_level = obj.location.z - storey_z
 
 
 def active_material_index_callback(obj, data):
@@ -393,7 +405,9 @@ def load_post(scene):
 
     if tool.Ifc.get() and bpy.data.is_saved:
         props = tool.Blender.get_bim_props()
-        props.has_blend_warning = True
+        ifc = tool.Ifc.get()
+        current_timestamp = ifc.header.file_name.time_stamp if ifc.header.file_name else ""
+        props.has_blend_warning = bool(props.ifc_timestamp and props.ifc_timestamp != current_timestamp)
 
     # Bonsai overlays
     georeference_props = tool.Georeference.get_georeference_props()
@@ -425,3 +439,12 @@ def load_post(scene):
         scene.tool_settings.snap_elements_base = {"EDGE", "EDGE_PERPENDICULAR", "VERTEX", "EDGE_MIDPOINT", "FACE"}
 
     tool.Blender.sync_old_preferences()
+
+
+@persistent
+def save_pre(scene):
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return
+    props = tool.Blender.get_bim_props()
+    props.ifc_timestamp = ifc.header.file_name.time_stamp if ifc.header.file_name else ""

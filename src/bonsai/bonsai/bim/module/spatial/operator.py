@@ -19,10 +19,16 @@
 from typing import TYPE_CHECKING
 
 import bpy
+import ifcopenshell
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
+
+import ifcopenshell.util.unit
 
 import bonsai.bim.handler
 import bonsai.core.spatial as core
+import bonsai.core.aggregate
+import bonsai.core.geometry
 import bonsai.tool as tool
 
 
@@ -322,6 +328,143 @@ class ImportSpatialDecomposition(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        core.import_spatial_decomposition(tool.Spatial)
+        return {"FINISHED"}
+
+
+class ImportStoreysFromLink(bpy.types.Operator):
+    bl_idname = "bim.import_storeys_from_link"
+    bl_label = "Import Storeys from Link"
+    bl_description = "Create IfcBuildingStoreys in this file matching those in a loaded linked IFC file"
+    bl_options = {"REGISTER", "UNDO"}
+
+    link_index: bpy.props.IntProperty(default=0)
+
+    def invoke(self, context, event):
+        links = self._get_loaded_links()
+        if not links:
+            self.report({"WARNING"}, "No loaded IFC links found. Load a link first via Project > Links.")
+            return {"CANCELLED"}
+        if len(links) == 1:
+            self.link_index = links[0][0]
+            return self.execute(context)
+        return context.window_manager.invoke_props_dialog(self, width=350)
+
+    def draw(self, context):
+        links = self._get_loaded_links()
+        self.layout.label(text="Import storeys from:")
+        for idx, name, filepath in links:
+            row = self.layout.row()
+            row.operator(
+                "bim.import_storeys_from_link",
+                text=name,
+            ).link_index = idx
+
+    def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            self.report({"WARNING"}, "No active IFC file.")
+            return {"CANCELLED"}
+
+        links = self._get_loaded_links()
+        match = next((l for l in links if l[0] == self.link_index), None)
+        if not match:
+            if links:
+                match = links[0]
+            else:
+                self.report({"WARNING"}, "No loaded links.")
+                return {"CANCELLED"}
+
+        _, link_name, filepath = match
+        try:
+            linked_ifc = ifcopenshell.open(filepath)
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not open linked IFC: {e}")
+            return {"CANCELLED"}
+
+        link_storeys = linked_ifc.by_type("IfcBuildingStorey")
+        if not link_storeys:
+            self.report({"WARNING"}, f"No IfcBuildingStoreys found in {link_name}.")
+            return {"CANCELLED"}
+
+        # Find the IfcBuilding in the active file to aggregate storeys under.
+        buildings = ifc.by_type("IfcBuilding")
+        if not buildings:
+            self.report({"WARNING"}, "No IfcBuilding found in the active file.")
+            return {"CANCELLED"}
+        building = buildings[0]
+        building_obj = tool.Ifc.get_object(building)
+        if not building_obj:
+            self.report({"WARNING"}, "IfcBuilding has no Blender object.")
+            return {"CANCELLED"}
+
+        # Find existing storey names to avoid duplicates.
+        existing_names = {s.Name for s in ifc.by_type("IfcBuildingStorey") if s.Name}
+
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+        created = 0
+
+        for link_storey in sorted(
+            link_storeys,
+            key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s),
+        ):
+            name = link_storey.Name or f"Level {created + 1}"
+            if name in existing_names:
+                continue
+
+            elevation_si = ifcopenshell.util.placement.get_storey_elevation(link_storey)
+            elevation_blender = elevation_si * unit_scale
+
+            storey_obj = tool.Blender.create_ifc_object(ifc_class="IfcBuildingStorey", name=name)
+            storey_obj.location.z = elevation_blender
+
+            bonsai.core.aggregate.assign_object(
+                tool.Ifc,
+                tool.Aggregate,
+                tool.Collector,
+                relating_obj=building_obj,
+                related_obj=storey_obj,
+            )
+
+            # Force Blender to recalculate matrix_world before writing to IFC.
+            context.view_layer.update()
+            bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=storey_obj)
+
+            existing_names.add(name)
+            created += 1
+
+        if created == 0:
+            self.report({"INFO"}, "All storeys already exist — nothing imported.")
+        else:
+            self.report({"INFO"}, f"Imported {created} storey(s) from {link_name}.")
+
+        core.import_spatial_decomposition(tool.Spatial)
+        return {"FINISHED"}
+
+    def _get_loaded_links(self):
+        props = bpy.context.scene.BIMProjectProperties
+        result = []
+        for i, link in enumerate(props.links):
+            if link.is_loaded:
+                result.append((i, link.name or link.filepath.split("/")[-1], link.filepath))
+        return result
+
+
+class CollapseAllStoreys(bpy.types.Operator):
+    bl_idname = "bim.collapse_all_storeys"
+    bl_label = "Collapse All Storeys"
+    bl_description = "Collapse all IfcBuildingStorey items in the spatial tree"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        import json
+        props = tool.Spatial.get_spatial_props()
+        contracted = set(json.loads(props.contracted_containers))
+        for container in props.containers:
+            if container.ifc_class == "IfcBuildingStorey":
+                contracted.add(container.ifc_definition_id)
+        props.contracted_containers = json.dumps(list(contracted))
+        # Rebuild is fast now — storeys are contracted so their spaces are skipped.
         core.import_spatial_decomposition(tool.Spatial)
         return {"FINISHED"}
 

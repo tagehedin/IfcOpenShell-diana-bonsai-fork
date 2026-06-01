@@ -222,7 +222,7 @@ class BIMStylesProperties(PropertyGroup):
         name="Transparency", default=0.0, min=0.0, max=1.0, update=update_shader_graph
     )
     # TODO: do something on null?
-    is_diffuse_colour_null: BoolProperty(name="Is Null")
+    is_diffuse_colour_null: BoolProperty(name="Is Null", default=True)
     diffuse_colour_class: EnumProperty(
         items=[(x, x, "") for x in get_args(ColourClass)],
         name="Diffuse Colour Class",

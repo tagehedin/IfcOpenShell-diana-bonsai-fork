@@ -66,6 +66,7 @@ from bonsai.bim.module.model.polyline import PolylineOperator
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
 from bonsai.bim.module.project.decorator import (
     ClippingPlaneDecorator,
+    LaserDecorator,
     MeasureDecorator,
     ProjectDecorator,
 )
@@ -1101,6 +1102,7 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
 
             # To be safe from any accidental IFC data in the previous session.
             if not self.is_advanced and not self.should_start_fresh_session:
+                shader_assignments = self._save_shader_assignments()
                 bpy.ops.bim.convert_to_blender()
 
             tool.Ifc.set_path(filepath)
@@ -1129,9 +1131,17 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
                 bpy.ops.bim.load_project_elements()
                 if self.import_without_ifc_data:
                     bpy.ops.bim.convert_to_blender()
+                elif not self.should_start_fresh_session:
+                    self._restore_shader_assignments(shader_assignments)
         except:
             bonsai.last_error = traceback.format_exc()
             raise
+        # Clear the blend warning and update stored timestamp after a successful reload.
+        ifc = tool.Ifc.get()
+        if ifc:
+            bim_props = tool.Blender.get_bim_props()
+            bim_props.ifc_timestamp = ifc.header.file_name.time_stamp if ifc.header.file_name else ""
+            bim_props.has_blend_warning = False
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -1146,6 +1156,96 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
         self.layout.prop(self, "should_start_fresh_session")
         self.layout.prop(self, "import_without_ifc_data")
         IFCFileSelector.draw(self, context)
+
+    def _save_shader_assignments(self) -> dict:
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return {}
+        assignments = {}
+        for obj in bpy.data.objects:
+            if obj.library or not obj.data:
+                continue
+            props = tool.Blender.get_object_bim_props(obj)
+            if not props.ifc_definition_id:
+                continue
+            try:
+                element = ifc.by_id(props.ifc_definition_id)
+                global_id = getattr(element, "GlobalId", None)
+                if not global_id:
+                    continue
+                # Only save materials that are custom (not IFC-backed surface styles).
+                # IFC-backed materials (ifc_definition_id != 0) are recreated correctly
+                # by load_project_elements and don't need saving.
+                mats = []
+                has_custom = False
+                for m in obj.data.materials:
+                    if m is None:
+                        mats.append("")
+                    elif tool.Style.get_material_style_props(m).ifc_definition_id == 0:
+                        mats.append(m.name)
+                        has_custom = True
+                    else:
+                        mats.append("")  # placeholder — will be restored from IFC
+                uvs = {}
+                for uv_layer in obj.data.uv_layers:
+                    uvs[uv_layer.name] = [list(loop.uv) for loop in uv_layer.data]
+                if has_custom or uvs:
+                    assignments[global_id] = {
+                        "materials": mats,
+                        "uvs": uvs,
+                        "loop_count": len(obj.data.loops) if hasattr(obj.data, "loops") else 0,
+                    }
+            except Exception:
+                continue
+        return assignments
+
+    def _restore_shader_assignments(self, assignments: dict) -> None:
+        if not assignments:
+            return
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return
+        restored = skipped_uvs = 0
+        seen_meshes = set()
+        for obj in bpy.data.objects:
+            if obj.library or not obj.data:
+                continue
+            if id(obj.data) in seen_meshes:
+                continue
+            props = tool.Blender.get_object_bim_props(obj)
+            if not props.ifc_definition_id:
+                continue
+            try:
+                element = ifc.by_id(props.ifc_definition_id)
+                global_id = getattr(element, "GlobalId", None)
+                if not global_id or global_id not in assignments:
+                    continue
+                saved = assignments[global_id]
+                saved_mats = saved.get("materials", [])
+                while len(obj.data.materials) < len(saved_mats):
+                    obj.data.materials.append(None)
+                for i, name in enumerate(saved_mats):
+                    if not name:
+                        continue
+                    mat = bpy.data.materials.get(name)
+                    if mat:
+                        obj.data.materials[i] = mat
+                saved_uvs = saved.get("uvs", {})
+                cur_loops = len(obj.data.loops) if hasattr(obj.data, "loops") else 0
+                if saved_uvs and cur_loops == saved.get("loop_count", -1):
+                    for uv_name, uv_data in saved_uvs.items():
+                        if uv_name not in obj.data.uv_layers:
+                            obj.data.uv_layers.new(name=uv_name)
+                        uv_layer = obj.data.uv_layers[uv_name]
+                        for loop, uv in zip(uv_layer.data, uv_data):
+                            loop.uv = uv
+                elif saved_uvs:
+                    skipped_uvs += 1
+                seen_meshes.add(id(obj.data))
+                restored += 1
+            except Exception:
+                continue
+        print(f"[SHADER RESTORE] Restored {restored} objects, skipped UVs for {skipped_uvs} (geometry changed)")
 
 
 class ClearRecentIFCProjects(bpy.types.Operator):
@@ -1463,9 +1563,11 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
         with bpy.data.libraries.load(str(filepath), link=True) as (data_from, data_to):
             data_to.collections = [c for c in data_from.collections if "IfcProject" in c]
 
-        # Find the linked collection
+        # Find the linked root collection (sub-collections are implicit dependencies and also appear in bpy.data.collections)
         for collection in bpy.data.collections:
             if not collection.library or Path(collection.library.filepath) != filepath:
+                continue
+            if "IfcProject" not in collection.name:
                 continue
             # Create unique empty instance for this link
             empty_name = collection.name
@@ -1668,7 +1770,7 @@ class ToggleLinkVisibility(bpy.types.Operator):
     link_index: bpy.props.IntProperty(name="Link Index")
     mode: bpy.props.EnumProperty(
         name="Visibility Mode",
-        items=((i, i, "") for i in ("WIREFRAME", "VISIBLE")),
+        items=[("WIREFRAME", "WIREFRAME", ""), ("VISIBLE", "VISIBLE", "")],
     )
 
     if TYPE_CHECKING:
@@ -1715,6 +1817,45 @@ class ToggleLinkVisibility(bpy.types.Operator):
             for c in bpy.data.collections
             if "IfcProject" in c.name and c.library and Path(c.library.filepath) == self.library_filepath
         ]
+
+
+class ToggleLinkStoreyVisibility(bpy.types.Operator):
+    bl_idname = "bim.toggle_link_storey_visibility"
+    bl_label = "Toggle Storey Visibility"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Show/hide this storey in the viewport to control snapping"
+
+    link_index: bpy.props.IntProperty(name="Link Index")
+    storey_collection_name: bpy.props.StringProperty(name="Storey Collection Name")
+
+    if TYPE_CHECKING:
+        link_index: int
+        storey_collection_name: str
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        link = props.links[self.link_index]
+        library_filepath = tool.Blender.ensure_blender_path_is_abs(
+            Path(link.filepath).with_suffix(".ifc.cache.blend")
+        )
+        storey_col = next(
+            (
+                c
+                for c in bpy.data.collections
+                if c.name == self.storey_collection_name
+                and c.library
+                and Path(c.library.filepath) == library_filepath
+            ),
+            None,
+        )
+        if storey_col is None:
+            self.report({"WARNING"}, f"Storey collection '{self.storey_collection_name}' not found.")
+            return {"CANCELLED"}
+        objs = list(storey_col.all_objects)
+        new_hidden = any(not obj.hide_viewport for obj in objs)
+        for obj in objs:
+            obj.hide_viewport = new_hidden
+        return {"FINISHED"}
 
 
 class EnableEditingLink(bpy.types.Operator):
@@ -2096,6 +2237,28 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                 self.elements |= set(self.file.by_type("IfcSpatialElement"))
             self.elements -= set(self.file.by_type("IfcFeatureElement"))
 
+        # Create storey sub-collections so each storey can be hidden independently in the viewport
+        guid_to_storey: dict[str, int | None] = {}
+        storey_collections: dict[int | None, bpy.types.Collection] = {}
+        storeys = sorted(self.file.by_type("IfcBuildingStorey"), key=lambda s: s.Elevation or 0.0)
+        if storeys:
+            for storey in storeys:
+                name = storey.Name or f"Storey {storey.id()}"
+                col = bpy.data.collections.new(name)
+                self.collection.children.link(col)
+                storey_collections[storey.id()] = col
+            unassigned_col = bpy.data.collections.new("(Unassigned)")
+            self.collection.children.link(unassigned_col)
+            storey_collections[None] = unassigned_col
+        else:
+            storey_collections[None] = self.collection
+        for element in self.elements:
+            if element.is_a("IfcBuildingStorey"):
+                guid_to_storey[element.GlobalId] = element.id()
+            else:
+                storey = ifcopenshell.util.element.get_container(element, ifc_class="IfcBuildingStorey")
+                guid_to_storey[element.GlobalId] = storey.id() if storey else None
+
         if tool.Loader.settings.false_origin_mode == "MANUAL" and tool.Loader.settings.false_origin:
             tool.Loader.set_manual_blender_offset(self.file)
         elif tool.Loader.settings.false_origin_mode == "AUTOMATIC":
@@ -2137,27 +2300,28 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             blender_mats: dict[tuple[float, float, float, float], bpy.types.Material] = {}
 
             default_mat = np.array([[1, 1, 1, 1]], dtype=np.float32)
-            chunked_guids: list[str] = []
-            chunked_guid_ids: list[int] = []
-            chunked_verts: list[np.ndarray] = []
-            chunked_faces: list[np.ndarray] = []
-            # List of material colors.
-            chunked_materials: list[np.ndarray] = []
-            # List of material indices for each face.
-            chunked_material_ids: list[np.ndarray] = []
-            material_offset = 0
             chunk_size = 10000
-            # Vertex offset.
-            offset = 0
-
             ci = 0
 
-            def process_chunk() -> None:
-                mats = np.concatenate(chunked_materials)
-                midx = np.concatenate(chunked_material_ids)
+            # Per-storey chunk buffers keyed by storey id() (None = unassigned)
+            storey_bufs: dict[int | None, dict] = {}
+
+            def _empty_buf() -> dict:
+                return {
+                    "guids": [], "guid_ids": [],
+                    "verts": [], "faces": [],
+                    "materials": [], "material_ids": [],
+                    "material_offset": 0, "offset": 0,
+                }
+
+            def _flush_buf(storey_id: int | None) -> None:
+                buf = storey_bufs.get(storey_id)
+                if not buf or not buf["verts"]:
+                    return
+                mats = np.concatenate(buf["materials"])
+                midx = np.concatenate(buf["material_ids"])
                 mats, mapping = np.unique(mats, axis=0, return_inverse=True)
                 midx = mapping[midx]
-
                 mat_results: list[bpy.types.Material] = []
                 for mat in mats:
                     mat = tuple(mat)
@@ -2167,16 +2331,17 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                         blender_mat.diffuse_color = mat
                         blender_mats[mat] = blender_mat
                     mat_results.append(blender_mat)
-
-                # Create object for current chunk.
+                target_col = storey_collections.get(storey_id, storey_collections[None])
                 self.create_object(
-                    np.concatenate(chunked_verts),
-                    np.concatenate(chunked_faces),
+                    target_col,
+                    np.concatenate(buf["verts"]),
+                    np.concatenate(buf["faces"]),
                     mat_results,
                     midx,
-                    chunked_guids,
-                    chunked_guid_ids,
+                    buf["guids"],
+                    buf["guid_ids"],
                 )
+                storey_bufs[storey_id] = _empty_buf()
 
             if iterator.initialize():
                 while True:  # Main loop.
@@ -2185,13 +2350,15 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                     results.add(self.file.by_id(shape.id))
                     geometry = shape.geometry
 
+                    storey_id = guid_to_storey.get(shape.guid)
+                    target_col = storey_collections.get(storey_id, storey_collections[None])
+
                     # Elements with a lot of geometry benefit from instancing to save memory
                     if ifcopenshell.util.shape.get_faces(geometry).shape[0] > 333:  # 333 tris
-                        self.process_occurrence(shape)
+                        self.process_occurrence(shape, target_col)
                         if not iterator.next():
-                            if not chunked_verts:
-                                break
-                            process_chunk()
+                            for sid in list(storey_bufs.keys()):
+                                _flush_buf(sid)
                             break  # Break from main loop.
                         continue
 
@@ -2199,16 +2366,16 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                     if ci % 50 == 0:
                         print("Doing chunk", ci)
 
-                    has_processed_chunk = False
+                    buf = storey_bufs.setdefault(storey_id, _empty_buf())
 
                     ms = np.vstack([default_mat, ifcopenshell.util.shape.get_material_colors(shape.geometry)])
                     mi = ifcopenshell.util.shape.get_faces_material_style_ids(shape.geometry)
                     for geom_material_idx, geom_material in enumerate(shape.geometry.materials):
                         if not geom_material.instance_id():
                             ms[geom_material_idx + 1] = (0.8, 0.8, 0.8, 1)
-                    chunked_materials.append(ms)
-                    chunked_material_ids.append(mi + material_offset + 1)
-                    material_offset += len(ms)
+                    buf["materials"].append(ms)
+                    buf["material_ids"].append(mi + buf["material_offset"] + 1)
+                    buf["material_offset"] += len(ms)
 
                     matrix = np.frombuffer(shape.transformation_buffer).reshape((4, 4), order="F")
                     if gprops.has_blender_offset:
@@ -2225,31 +2392,22 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                     vs = (np.asmatrix(matrix) * np.asmatrix(vs).T).T.A
                     vs = vs[:, :3].ravel()
                     fs = ifcopenshell.util.shape.get_faces(shape.geometry).ravel()
-                    chunked_verts.append(vs)
-                    chunked_faces.append(fs + offset)
-                    offset += len(vs) // 3
+                    buf["verts"].append(vs)
+                    buf["faces"].append(fs + buf["offset"])
+                    buf["offset"] += len(vs) // 3
 
-                    chunked_guids.append(shape.guid)
-                    if chunked_guid_ids:
-                        chunked_guid_ids.append((len(fs) // 3) + chunked_guid_ids[-1])
+                    buf["guids"].append(shape.guid)
+                    if buf["guid_ids"]:
+                        buf["guid_ids"].append((len(fs) // 3) + buf["guid_ids"][-1])
                     else:
-                        chunked_guid_ids.append(len(fs) // 3)
+                        buf["guid_ids"].append(len(fs) // 3)
 
-                    if offset > chunk_size:
-                        has_processed_chunk = True
-                        process_chunk()
-                        chunked_guids = []
-                        chunked_guid_ids = []
-                        chunked_verts = []
-                        chunked_faces = []
-                        chunked_materials = []
-                        chunked_material_ids = []
-                        material_offset = 0
-                        offset = 0
+                    if buf["offset"] > chunk_size:
+                        _flush_buf(storey_id)
 
                     if not iterator.next():
-                        if not has_processed_chunk:
-                            process_chunk()
+                        for sid in list(storey_bufs.keys()):
+                            _flush_buf(sid)
                         break  # Break main loop.
             self.elements -= results
 
@@ -2257,7 +2415,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         print("Finished", time.time() - start)
         return {"FINISHED"}
 
-    def process_occurrence(self, shape: W.TriangulationElement) -> None:
+    def process_occurrence(self, shape: W.TriangulationElement, collection: bpy.types.Collection) -> None:
         element = self.file.by_id(shape.id)
 
         mat = ifcopenshell.util.shape.get_shape_matrix(shape)
@@ -2320,10 +2478,11 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         obj["db"] = self.db_filepath
         obj["ifc_filepath"] = self.filepath
 
-        self.collection.objects.link(obj)
+        collection.objects.link(obj)
 
     def create_object(
         self,
+        collection: bpy.types.Collection,
         verts: np.ndarray,
         faces: np.ndarray,
         materials: list[bpy.types.Material],
@@ -2349,7 +2508,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         obj["db"] = self.db_filepath
         obj["ifc_filepath"] = self.filepath
 
-        self.collection.objects.link(obj)
+        collection.objects.link(obj)
 
 
 class QueryLinkedElement(bpy.types.Operator):
@@ -2635,12 +2794,15 @@ class RefreshClippingPlanes(bpy.types.Operator):
     bl_label = "Refresh Clipping Planes"
     bl_options = {"REGISTER"}
 
+    is_running: bool = False  # class-level guard — prevents multiple concurrent modals
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
 
     def invoke(self, context, event):
+        RefreshClippingPlanes.is_running = True
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
@@ -2755,8 +2917,18 @@ class CreateClippingPlane(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        # Clean up deleted planes
         props = tool.Project.get_project_props()
+        # Remove stale entries whose object was deleted (modal may not be running to do this)
+        for i in range(len(props.clipping_planes) - 1, -1, -1):
+            cp = props.clipping_planes[i]
+            stale = not cp.obj
+            if not stale:
+                try:
+                    cp.obj.name
+                except Exception:
+                    stale = True
+            if stale:
+                props.clipping_planes.remove(i)
         if len(props.clipping_planes) > 5:
             self.report({"INFO"}, "Maximum of six clipping planes allowed.")
             return {"FINISHED"}
@@ -2802,7 +2974,8 @@ class CreateClippingPlane(bpy.types.Operator):
         tool.Blender.set_active_object(plane_obj)
 
         ClippingPlaneDecorator.install(context)
-        bpy.ops.bim.refresh_clipping_planes("INVOKE_DEFAULT")
+        if not RefreshClippingPlanes.is_running:
+            bpy.ops.bim.refresh_clipping_planes("INVOKE_DEFAULT")
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -2966,6 +3139,9 @@ class MeasureTool(bpy.types.Operator, PolylineOperator):
         self.input_ui = tool.Polyline.create_input_ui(input_options=self.input_options)
 
     def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
         tool.Blender.update_viewport()
 
@@ -3010,6 +3186,7 @@ class MeasureTool(bpy.types.Operator, PolylineOperator):
             tool.Polyline.clear_polyline()
             MeasureDecorator.install(context)
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -3071,6 +3248,9 @@ class MeasureFaceAreaTool(bpy.types.Operator, PolylineOperator):
             self.unit_scale = tool.Blender.get_unit_scale()
 
     def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         def select_face(mouse_pos):
             objs_to_raycast = tool.Raycast.filter_objects_to_raycast(context, event, self.objs_2d_bbox)
             obj, _, face_index = tool.Raycast.cast_rays_and_get_best_object(
@@ -3136,6 +3316,7 @@ class MeasureFaceAreaTool(bpy.types.Operator, PolylineOperator):
             PolylineDecorator.uninstall()
             FaceAreaDecorator.uninstall()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"CANCELLED"}
 
         return {"RUNNING_MODAL"}
@@ -3195,6 +3376,9 @@ class ImageScalingTool(bpy.types.Operator, PolylineOperator):
             self.unit_scale = tool.Blender.get_unit_scale()
 
     def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         if not self.target_object or not context.active_object or context.active_object != self.target_object:
             self.report({"ERROR"}, "Image annotation was deselected. Tool cancelled.")
             return self.cancel_tool(context)
@@ -3269,6 +3453,7 @@ class ImageScalingTool(bpy.types.Operator, PolylineOperator):
             self.tool_state.plane_method = None
         PolylineDecorator.uninstall()
         tool.Blender.update_viewport()
+        self._remove_snap_timer(context)
         return {"CANCELLED"}
 
     def handle_custom_instructions(self, context: bpy.types.Context) -> None:
@@ -3343,7 +3528,7 @@ class ImageScalingTool(bpy.types.Operator, PolylineOperator):
         self.tool_state.plane_method = None
         PolylineDecorator.uninstall()
         tool.Blender.update_viewport()
-
+        self._remove_snap_timer(context)
         return {"FINISHED"}
 
 
@@ -3404,3 +3589,91 @@ class GenerateUVMap(bpy.types.Operator):
         tool.Loader.load_generated_uv_map(obj.data)
         self.report({"INFO"}, "Generated UV map for selected mesh.")
         return {"FINISHED"}
+
+
+class LaserTool(bpy.types.Operator):
+    bl_idname = "bim.laser_tool"
+    bl_label = "Laser Tool"
+    bl_description = "Shoot rays from a face along its normal and tangent axes to measure room dimensions"
+    bl_options = {"REGISTER"}
+
+    # Axis colors: red (face tangent), green (face bitangent), blue (face normal)
+    _COLORS = [
+        (0.9, 0.25, 0.25),
+        (0.9, 0.25, 0.25),
+        (0.25, 0.85, 0.25),
+        (0.25, 0.85, 0.25),
+        (0.25, 0.50, 1.0),
+        (0.25, 0.50, 1.0),
+    ]
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data.type == "VIEW_3D"
+
+    def invoke(self, context, event):
+        LaserDecorator.install(context)
+        context.window_manager.modal_handler_add(self)
+        context.window.cursor_set("CROSSHAIR")
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"}:
+            LaserDecorator.uninstall()
+            context.window.cursor_set("DEFAULT")
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+        if event.type == "MOUSEMOVE":
+            self._update(context, event)
+            tool.Blender.update_viewport()
+
+        return {"RUNNING_MODAL"}
+
+    def _update(self, context, event):
+        depsgraph = context.evaluated_depsgraph_get()
+
+        try:
+            ray_origin, _, ray_direction = tool.Raycast.get_viewport_ray_data(context, event)
+        except Exception:
+            LaserDecorator.update(None, [])
+            return
+
+        hit, location, _, face_index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, ray_direction)
+        if not hit or obj is None:
+            LaserDecorator.update(None, [])
+            return
+
+        try:
+            eval_mesh = obj.evaluated_get(depsgraph).data
+            polygon = eval_mesh.polygons[face_index]
+            verts = [matrix @ eval_mesh.vertices[vi].co for vi in polygon.vertices]
+        except Exception:
+            LaserDecorator.update(None, [])
+            return
+
+        face_normal = (matrix.to_3x3() @ polygon.normal).normalized()
+        tangent = (verts[1] - verts[0]).normalized()
+        bitangent = face_normal.cross(tangent).normalized()
+
+        shoot_dirs = [
+            tangent,
+            -tangent,
+            bitangent,
+            -bitangent,
+            face_normal,
+            -face_normal,
+        ]
+
+        axes = []
+        for i, direction_vec in enumerate(shoot_dirs):
+            ray_start = location + direction_vec * 0.001
+            h, loc2, _, _, _, _ = context.scene.ray_cast(depsgraph, ray_start, direction_vec)
+            if h:
+                axes.append((Vector(loc2), self._COLORS[i]))
+
+        LaserDecorator.update(location, axes)
+

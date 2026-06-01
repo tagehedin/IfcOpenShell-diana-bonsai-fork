@@ -1198,6 +1198,75 @@ class AssignStyleToSelected(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
+class PickStyleByFace(bpy.types.Operator):
+    bl_idname = "bim.pick_style_by_face"
+    bl_label = "Pick Style by Face"
+    bl_description = "Click on a face in the 3D viewport to select its IfcSurfaceStyle in this list"
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set("EYEDROPPER")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            context.window.cursor_modal_restore()
+            return self._pick(context, event)
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            context.window.cursor_modal_restore()
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}
+
+    def _pick(self, context, event):
+        from bpy_extras import view3d_utils
+
+        region = rv3d = None
+        for area in context.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for r in area.regions:
+                if r.type == "WINDOW":
+                    if r.x <= event.mouse_x <= r.x + r.width and r.y <= event.mouse_y <= r.y + r.height:
+                        region = r
+                        rv3d = area.spaces[0].region_3d
+                        break
+
+        if not region or not rv3d:
+            self.report({"WARNING"}, "Click inside the 3D viewport")
+            return {"CANCELLED"}
+
+        coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, _loc, _norm, face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+
+        if not hit:
+            self.report({"WARNING"}, "No face hit — click on a mesh surface")
+            return {"CANCELLED"}
+
+        eval_obj = obj.evaluated_get(depsgraph)
+        eval_mesh = eval_obj.to_mesh()
+        try:
+            mat_index = eval_mesh.polygons[face_index].material_index
+        finally:
+            eval_obj.to_mesh_clear()
+
+        material = obj.material_slots[mat_index].material if mat_index < len(obj.material_slots) else None
+        if not material:
+            self.report({"WARNING"}, "Face has no material assigned")
+            return {"CANCELLED"}
+
+        style_id = tool.Style.get_material_style_props(material).ifc_definition_id
+        if not style_id:
+            self.report({"WARNING"}, f"'{material.name}' is not an IfcSurfaceStyle material")
+            return {"CANCELLED"}
+
+        bpy.ops.bim.styles_ui_select(style_id=style_id)
+        return {"FINISHED"}
+
+
 class SelectStyleInStylesUI(bpy.types.Operator):
     bl_idname = "bim.styles_ui_select"
     bl_label = "Select Style In Styles UI"
@@ -1216,6 +1285,39 @@ class SelectStyleInStylesUI(bpy.types.Operator):
             f"Style '{style.Name or 'Unnamed'}' is selected in Styles UI.",
         )
         return {"FINISHED"}
+
+
+class CopySurfaceColourToDiffuse(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.copy_surface_colour_to_diffuse"
+    bl_label = "Copy Surface Colour to Diffuse"
+    bl_description = (
+        "For all IfcSurfaceStyleRendering elements: set DiffuseColour to the same RGB as SurfaceColour.\n"
+        "Fixes styles where DiffuseColour was left as default white"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        ifc = tool.Ifc.get()
+        updated = 0
+        for ifc_style in ifc.by_type("IfcSurfaceStyle"):
+            rendering = next(
+                (s for s in ifc_style.Styles if s.is_a("IfcSurfaceStyleRendering")), None
+            )
+            if rendering is None:
+                continue
+            sc = rendering.SurfaceColour
+            if sc is None:
+                continue
+            ifcopenshell.api.style.edit_surface_style(
+                ifc,
+                style=rendering,
+                attributes={"DiffuseColour": {"Name": None, "Red": sc.Red, "Green": sc.Green, "Blue": sc.Blue}},
+            )
+            material = tool.Ifc.get_object(ifc_style)
+            if material:
+                tool.Loader.create_surface_style_rendering(material, rendering)
+            updated += 1
+        self.report({"INFO"}, f"Synced DiffuseColour for {updated} styles")
 
 
 class RemoveSurfaceStyle(bpy.types.Operator, tool.Ifc.Operator):

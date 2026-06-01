@@ -73,6 +73,7 @@ class BIM_PT_styles(Panel):
             style = active_style
 
             row.operator("bim.duplicate_style", text="", icon="DUPLICATE").style = style.ifc_definition_id
+            row.operator("bim.pick_style_by_face", text="", icon="EYEDROPPER")
             row.operator("bim.select_by_style", text="", icon="RESTRICT_SELECT_OFF").style = style.ifc_definition_id
             op = row.operator("bim.assign_style_to_selected", text="", icon="BRUSH_DATA")
             op.style_id = style.ifc_definition_id
@@ -82,6 +83,9 @@ class BIM_PT_styles(Panel):
             row.operator("bim.remove_style", text="", icon="X").style = style.ifc_definition_id
 
         self.layout.template_list("BIM_UL_styles", "", self.props, "styles", self.props, "active_style_index")
+
+        if self.props.style_type == "IfcSurfaceStyle":
+            self.layout.operator("bim.copy_surface_colour_to_diffuse", icon="BRUSH_DATA")
 
         # adding a new IfcSurfaceStyle
         if self.props.is_adding:

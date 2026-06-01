@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shutil
 import tempfile
 import zipfile
 from logging import Logger
@@ -29,6 +30,7 @@ from typing import Union
 import bpy
 import ifcopenshell
 import ifcopenshell.util.element
+import ifcopenshell.util.representation
 import ifcopenshell.util.unit
 
 import bonsai.core.geometry
@@ -57,7 +59,16 @@ class IfcExporter:
                 ) as zf:
                     zf.write(tmp_file, arcname=tmp_filename)
         elif extension == "ifc":
-            self.file.write(self.ifc_export_settings.output_file)
+            output_file = self.ifc_export_settings.output_file
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".ifc")
+            os.close(tmp_fd)
+            try:
+                self.file.write(tmp_path)
+                shutil.move(tmp_path, output_file)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
         elif extension == "ifcjson":
             import ifcjson
 
@@ -109,17 +120,23 @@ class IfcExporter:
                     obj.scale = (-1, -1, -1)
             # Skip all other scale handling for cameras
         elif tool.Geometry.is_scaled(obj):
-            bpy.ops.bim.update_representation(obj=obj.name)
-            # update_representation might not apply scale if the object has openings
-            # reset it, so let user know that the scale wasn't saved.
-            if tool.Geometry.is_scaled(obj):
-                print(f"WARNING. Object '{obj.name}' scales ({obj.scale[:]}) are reset during project save.")
-                obj.scale = (1.0, 1.0, 1.0)
+            rep = ifcopenshell.util.representation.get_representation(element, "Model", "Body")
+            if rep and tool.Geometry.is_mapped_representation(rep):
+                # Scale comes from the IFC mapping transform (e.g. Revit/Tekla typed instances),
+                # not from the user. Baking it would corrupt the type/instance relationship.
+                pass
             else:
-                # Return and don't handle is_moved as
-                # updata_representation will run edit_object_placement if object is scaled
-                # and had no openings.
-                return element
+                bpy.ops.bim.update_representation(obj=obj.name)
+                # update_representation might not apply scale if the object has openings
+                # reset it, so let user know that the scale wasn't saved.
+                if tool.Geometry.is_scaled(obj):
+                    print(f"WARNING. Object '{obj.name}' scales ({obj.scale[:]}) are reset during project save.")
+                    obj.scale = (1.0, 1.0, 1.0)
+                else:
+                    # Return and don't handle is_moved as
+                    # updata_representation will run edit_object_placement if object is scaled
+                    # and had no openings.
+                    return element
         if not tool.Ifc.is_moved(obj):
             return
         if element.is_a("IfcGridAxis"):

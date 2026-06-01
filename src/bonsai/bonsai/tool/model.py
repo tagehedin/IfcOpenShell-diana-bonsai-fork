@@ -2693,7 +2693,13 @@ class Model(bonsai.core.tool.Model):
 
     @classmethod
     def recreate_wall(cls, element: ifcopenshell.entity_instance, obj: bpy.types.Object) -> None:
-        rep = ifcopenshell.api.geometry.regenerate_wall_representation(tool.Ifc.get(), element)
+        # Pass current length as fallback so walls from other software don't get reset
+        # to 1m when their axis representation is in an unrecognised format.
+        # bound_box is in Blender metres (= SI) — regenerate_wall_representation also expects SI,
+        # so pass it directly without any unit conversion.
+        x_values = [v[0] for v in obj.bound_box]
+        current_length = max(max(x_values) - min(x_values), 0.001)
+        rep = ifcopenshell.api.geometry.regenerate_wall_representation(tool.Ifc.get(), element, length=current_length)
         bonsai.core.geometry.switch_representation(
             tool.Ifc,
             tool.Geometry,

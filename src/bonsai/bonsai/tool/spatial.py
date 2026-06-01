@@ -499,11 +499,13 @@ class Spatial(bonsai.core.tool.Spatial):
         previous_container_index = props.active_container_index
         props.containers.clear()
         cls.contracted_containers = json.loads(props.contracted_containers)
-        cls.import_spatial_element(tool.Ifc.get().by_type("IfcProject")[0], 0)
+        # Compute unit scale once for the whole tree instead of per element.
+        unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+        cls.import_spatial_element(tool.Ifc.get().by_type("IfcProject")[0], 0, unit_scale)
         props.active_container_index = tool.Blender.get_valid_uilist_index(previous_container_index, props.containers)
 
     @classmethod
-    def import_spatial_element(cls, element: ifcopenshell.entity_instance, level_index: int) -> None:
+    def import_spatial_element(cls, element: ifcopenshell.entity_instance, level_index: int, unit_scale: float) -> None:
         if not element.is_a("IfcProject") and not tool.Root.is_spatial_element(element):
             return
         props = cls.get_spatial_props()
@@ -514,22 +516,19 @@ class Spatial(bonsai.core.tool.Spatial):
         new.long_name = element.LongName or ""
         if not element.is_a("IfcProject"):
             elevation = ifcopenshell.util.placement.get_storey_elevation(element)
-            unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
-            elevation_in_meters = elevation * unit_scale
-            new.elevation = tool.Unit.format_distance(elevation_in_meters)
+            new.elevation = tool.Unit.format_distance(elevation * unit_scale)
         new.is_expanded = element.id() not in cls.contracted_containers
         new.level_index = level_index
         children = ifcopenshell.util.element.get_parts(element)
         if children:
-            children = natsorted(
-                children,
-                key=lambda element: (ifcopenshell.util.placement.get_storey_elevation(element), element.Name),
-            )
+            # Pre-compute elevations once so natsorted doesn't call get_storey_elevation per child.
+            elevations = {c.id(): ifcopenshell.util.placement.get_storey_elevation(c) for c in children}
+            children = natsorted(children, key=lambda c: (elevations[c.id()], c.Name))
         new.has_children = bool(children)
         new.ifc_definition_id = element.id()
         if new.is_expanded:
             for child in children or []:
-                cls.import_spatial_element(child, level_index + 1)
+                cls.import_spatial_element(child, level_index + 1, unit_scale)
 
     @classmethod
     def create_orientation_slot(cls, container: ifcopenshell.entity_instance) -> None:
@@ -598,6 +597,27 @@ class Spatial(bonsai.core.tool.Spatial):
                 queue.extend(children)
             contracted_containers.add(item.id())
         props.contracted_containers = json.dumps(list(contracted_containers))
+
+    @classmethod
+    # Remove descendants of a contracted container directly from the flat list.
+    # Much faster than a full import_spatial_decomposition rebuild — no IFC traversal needed.
+    def contract_container_in_list(cls, container: ifcopenshell.entity_instance) -> None:
+        props = cls.get_spatial_props()
+        containers = props.containers
+        idx = next((i for i, c in enumerate(containers) if c.ifc_definition_id == container.id()), None)
+        if idx is None:
+            return
+        item = containers[idx]
+        container_level = item.level_index
+        remove_count = 0
+        for i in range(idx + 1, len(containers)):
+            if containers[i].level_index > container_level:
+                remove_count += 1
+            else:
+                break
+        for _ in range(remove_count):
+            containers.remove(idx + 1)
+        item.is_expanded = False
 
     @classmethod
     def expand_container(cls, container: ifcopenshell.entity_instance, is_recursive: bool) -> None:

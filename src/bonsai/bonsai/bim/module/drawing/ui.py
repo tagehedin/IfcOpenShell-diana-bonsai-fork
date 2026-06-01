@@ -38,6 +38,38 @@ if TYPE_CHECKING:
     from bonsai.bim.module.drawing.prop import DocProperties, Drawing, Sheet
 
 
+def _get_associated_storey_name(camera: bpy.types.Object) -> str:
+    import ifcopenshell.util.element
+
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return "Unknown"
+    entity = tool.Ifc.get_entity(camera)
+    if entity:
+        guid = ifcopenshell.util.element.get_pset(entity, "EPset_Drawing", "AssociatedLevel")
+        if guid:
+            try:
+                storey = ifc.by_guid(guid)
+                return storey.Name or storey.GlobalId
+            except Exception:
+                pass
+    # Fallback: nearest storey at or below camera Z.
+    camera_z = camera.location.z
+    best_storey = None
+    best_z = None
+    for storey in ifc.by_type("IfcBuildingStorey"):
+        storey_obj = tool.Ifc.get_object(storey)
+        if not storey_obj:
+            continue
+        z = storey_obj.matrix_world.translation.z
+        if z <= camera_z and (best_z is None or z > best_z):
+            best_z = z
+            best_storey = storey
+    if best_storey:
+        return (best_storey.Name or best_storey.GlobalId) + " (auto)"
+    return "Unknown"
+
+
 class BIM_PT_camera(Panel):
     bl_label = "Active Drawing"
     bl_idname = "BIM_PT_camera"
@@ -133,7 +165,17 @@ class BIM_PT_camera(Panel):
             box.label(text="Underlay render might crash if VRAM requirement is not met.")
 
         row = self.layout.row()
-        row.prop(camera_data, "clip_end", text="Depth")
+        row.prop(props, "depth", text="Depth")
+        row = self.layout.row()
+        row.prop(props, "min_line_length", text="Min Line (mm)")
+        row = self.layout.row()
+
+        if props.target_view in ("PLAN_VIEW", "REFLECTED_PLAN_VIEW"):
+            row = self.layout.row()
+            row.prop(props, "cut_height", text="Cut Height")
+            storey_name = _get_associated_storey_name(camera)
+            row = self.layout.row()
+            row.label(text=f"Level: {storey_name}", icon="OBJECT_DATA")
 
         row = self.layout.row(align=True)
         row.prop(props, "diagram_scale", text="Scale")
@@ -197,6 +239,7 @@ class BIM_PT_element_filters(Panel):
             text = "Exclude Filter" if ElementFiltersData.data["has_exclude_filter"] else "No Exclude Filter Found"
             icon = "GREASEPENCIL" if ElementFiltersData.data["has_exclude_filter"] else "ADD"
             row.label(text=text, icon="FILTER")
+            row.operator("bim.exclude_hidden_from_drawing", icon="HIDE_ON", text="")
             row.operator("bim.exclude_annotation", icon="REMOVE", text="")
             row.operator("bim.enable_editing_element_filter", icon=icon, text="").filter_mode = "EXCLUDE"
 
@@ -322,6 +365,77 @@ class BIM_PT_drawings(Panel):
             self.layout.template_list(
                 "BIM_UL_drawinglist", "", self.props, "drawings", self.props, "active_drawing_index"
             )
+
+
+class BIM_UL_layer_styles(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        if self.layout_type in {"DEFAULT", "COMPACT"}:
+            row = layout.row(align=True)
+            row.prop(item, "visible", text="", icon="HIDE_OFF" if item.visible else "HIDE_ON", emboss=False)
+            row.label(text=item.name)
+        elif self.layout_type == "GRID":
+            layout.alignment = "CENTER"
+            layout.label(text=item.name)
+
+
+class BIM_PT_layer_properties(Panel):
+    bl_label = "Layer Properties"
+    bl_idname = "BIM_PT_layer_properties"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_parent_id = "BIM_PT_tab_drawings"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        props = tool.Drawing.get_document_props()
+        layout = self.layout
+
+        row = layout.row(align=True)
+        row.operator("bim.rescan_layer_styles", icon="FILE_REFRESH", text="Populate Layers")
+        row.operator("bim.save_layer_styles_to_ifc", icon="FILE_TICK", text="", emboss=True)
+        row.operator("bim.load_layer_styles_from_ifc", icon="LOOP_BACK", text="", emboss=True)
+        row.operator("bim.save_layer_styles_to_json", icon="EXPORT", text="")
+        row.operator("bim.load_layer_styles_from_json", icon="IMPORT", text="")
+
+        layout.template_list(
+            "BIM_UL_layer_styles", "", props, "layer_styles", props, "active_layer_style_index"
+        )
+
+        if props.layer_styles and 0 <= props.active_layer_style_index < len(props.layer_styles):
+            ls = props.layer_styles[props.active_layer_style_index]
+            box = layout.box()
+            box.label(text=ls.name, icon="RENDERLAYERS")
+            col = box.column(align=True)
+            col.prop(ls, "visible")
+            col.separator()
+            col.label(text="SVG")
+            col.prop(ls, "svg_color_picker", text="Stroke")
+            row = col.row(align=True)
+            sub = row.row(align=True)
+            sub.enabled = not ls.svg_fill_is_null
+            sub.prop(ls, "svg_fill_picker", text="Fill")
+            row.prop(
+                ls,
+                "svg_fill_is_null",
+                text="",
+                icon="RADIOBUT_OFF" if ls.svg_fill_is_null else "RADIOBUT_ON",
+            )
+            col.separator()
+            col.label(text="DXF")
+            row = col.row(align=True)
+            sub = row.row(align=True)
+            sub.enabled = not ls.dxf_layer_name_is_null
+            sub.prop(ls, "dxf_layer_name", text="Layer Name")
+            row.prop(
+                ls,
+                "dxf_layer_name_is_null",
+                text="",
+                icon="RADIOBUT_OFF" if ls.dxf_layer_name_is_null else "RADIOBUT_ON",
+            )
+            col.prop(ls, "dxf_color")
+            col.prop(ls, "line_weight")
+            col.prop(ls, "linetype")
 
 
 class BIM_PT_schedules(Panel):

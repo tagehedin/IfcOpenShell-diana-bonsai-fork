@@ -1044,6 +1044,14 @@ class Drawing(bonsai.core.tool.Drawing):
                 camera_props.fill_mode = str(pset["FillMode"])
             if "CutMode" in pset:
                 camera_props.cut_mode = str(pset["CutMode"])
+            if "Width" in pset:
+                camera_props.width = float(pset["Width"])
+            if "Height" in pset:
+                camera_props.height = float(pset["Height"])
+            if "Depth" in pset:
+                camera.clip_end = float(pset["Depth"])
+            # MinLineLengthMm is read directly via get_min_line_length getter — no restore needed.
+            camera_props.update_camera_resolution()
 
         camera_props.update_props = update_props
 
@@ -2517,15 +2525,28 @@ class Drawing(bonsai.core.tool.Drawing):
                     has_context = True
                     break
 
+        # Library-linked objects (linked IFC chunk objects) cannot be selected in Blender,
+        # so isolate_objects (which uses select + hide_view_set) would hide them all.
+        # Save their hide state before isolate and restore it after.
+        linked_hide_states = {
+            obj: obj.hide_get()
+            for obj in bpy.context.view_layer.objects
+            if obj.library is not None
+        }
+
         visible_objects = []
         for obj in bpy.context.view_layer.objects:
             if element := tool.Ifc.get_entity(obj):
                 if element in filtered_elements:
                     visible_objects.append(obj)
             else:
-                if obj.hide_get() is False:
+                if obj.hide_get() is False and obj.library is None:
                     visible_objects.append(obj)
         tool.Blender.isolate_objects(visible_objects)
+
+        # Restore linked object visibility to what it was before drawing activation
+        for obj, was_hidden in linked_hide_states.items():
+            obj.hide_set(was_hidden)
 
         cls.import_camera_props(drawing, camera.data)
 
@@ -2803,12 +2824,62 @@ class Drawing(bonsai.core.tool.Drawing):
             return
         drawing = drawing[0]
 
+        # DXF linetype patterns for standard types
+        _LINETYPES = {
+            "DASHED":   [0.6, 0.5, -0.1],
+            "CENTER":   [2.0, 1.25, -0.25, 0.25, -0.25],
+            "HIDDEN":   [0.25, 0.125, -0.125],
+            "PHANTOM":  [2.0, 1.25, -0.25, 0.25, -0.25, 0.25, -0.25],
+            "OVERHEAD": [1.0, 0.625, -0.125, 0.125, -0.125],
+        }
+
+        def _ensure_linetype(name: str) -> None:
+            if name == "CONTINUOUS" or name in doc.linetypes:
+                return
+            pattern = _LINETYPES.get(name)
+            if pattern:
+                doc.linetypes.new(name, dxfattribs={"description": name.capitalize(), "pattern": pattern})
+
+        # Build layer style lookup from Blender props
+        layer_styles: dict = {}
+        try:
+            import bpy
+            for ls in bpy.context.scene.DocProperties.layer_styles:
+                layer_styles[ls.name] = ls
+        except Exception:
+            pass
+
         NUMBER = r"-?\d+\.?\d+"
         COORD = rf"{NUMBER},{NUMBER}"
         POLYLINE_PATTERN = rf"M{COORD} (?:L{COORD} ?)+Z? ?"
         MULTI_POLYLINE_PATTERN = rf"^({POLYLINE_PATTERN})+$"
 
         for element_g in drawing.findall(f"{SVG}g"):
+            css_classes = element_g.get("class", "").split()
+            ifc_classes = [c for c in css_classes if c.startswith("Ifc")]
+            ifc_class = ifc_classes[0] if ifc_classes else ""
+            if "cut" in css_classes:
+                suffix = "-cut"
+            elif "projection" in css_classes:
+                suffix = "-projection"
+            else:
+                suffix = ""
+            layer_name = (ifc_class + suffix) if ifc_class else "0"
+            ls = layer_styles.get(layer_name)
+            dxf_layer = (ls.dxf_layer_name if (ls and ls.dxf_layer_name) else None) or layer_name
+            if dxf_layer != "0" and dxf_layer not in doc.layers:
+                layer = doc.layers.add(dxf_layer)
+                if ls:
+                    if ls.dxf_color != 256:
+                        layer.dxf.color = ls.dxf_color
+                    if ls.line_weight > 0:
+                        # ezdxf lineweight is in 1/100 mm; nearest standard value
+                        lw_hundredths = round(ls.line_weight * 100)
+                        layer.dxf.lineweight = lw_hundredths
+                    if ls.linetype != "CONTINUOUS":
+                        _ensure_linetype(ls.linetype)
+                        layer.dxf.linetype = ls.linetype
+
             paths = element_g.findall(f"{SVG}path")
 
             for path in paths:
@@ -2838,11 +2909,54 @@ class Drawing(bonsai.core.tool.Drawing):
                     # Z marks closed polylines
                     is_closed_polyline = polyline_path.rstrip().endswith("Z")
                     if is_closed_polyline or len(points) > 2:
-                        msp.add_lwpolyline(points, close=is_closed_polyline)
+                        msp.add_lwpolyline(points, close=is_closed_polyline, dxfattribs={"layer": dxf_layer})
                     else:  # LINE
-                        msp.add_line(*points)
+                        msp.add_line(*points, dxfattribs={"layer": dxf_layer})
 
         finalize_dxf()
+
+    @classmethod
+    def convert_svg_to_pdf(cls, svg_filepath: Path, pdf_filepath: Path) -> None:
+        import platform
+        import shutil
+        import subprocess
+
+        # Each entry is the command prefix; the executable to check is the first token.
+        candidates = [
+            ["inkscape"],
+            ["flatpak", "run", "org.inkscape.Inkscape"],
+        ]
+        if platform.system() == "Darwin":
+            candidates.insert(0, ["/Applications/Inkscape.app/Contents/MacOS/inkscape"])
+        elif platform.system() == "Windows":
+            candidates.insert(0, [r"C:\Program Files\Inkscape\bin\inkscape.exe"])
+
+        for prefix in candidates:
+            if not shutil.which(prefix[0]):
+                continue
+            try:
+                subprocess.run(
+                    prefix + [str(svg_filepath), "--export-type=pdf", f"--export-filename={pdf_filepath}"],
+                    check=True,
+                    capture_output=True,
+                )
+                return
+            except subprocess.CalledProcessError:
+                pass
+
+        try:
+            import cairosvg
+
+            cairosvg.svg2pdf(url=str(svg_filepath), write_to=str(pdf_filepath))
+            return
+        except ImportError:
+            pass
+
+        raise RuntimeError(
+            "PDF export requires either Inkscape (recommended) or cairosvg.\n"
+            "Install Inkscape: https://inkscape.org\n"
+            "Or install cairosvg: pip install cairosvg"
+        )
 
     @classmethod
     def remove_drawing_from_sheet(cls, reference: ifcopenshell.entity_instance) -> None:

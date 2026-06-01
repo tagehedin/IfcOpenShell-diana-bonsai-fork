@@ -1083,9 +1083,12 @@ class BIM_PT_tabs(Panel):
             box = self.layout.box()
             box.alert = True
             row = box.row(align=True)
-            row.label(text="Your model may be outdated", icon="ERROR")
+            row.label(text="Your IFC Has Changed Since Last Save", icon="ERROR")
             op = row.operator("bim.open_uri", text="", icon="QUESTION")
             op.uri = "https://docs.bonsaibim.org/guides/troubleshooting.html#saving-and-loading-blend-files"
+            op = row.operator("bim.load_project", text="Reload IFC", icon="FILE_REFRESH")
+            op.filepath = bim_props.ifc_file
+            op.should_start_fresh_session = False
             row.operator("bim.close_blend_warning", text="", icon="CANCEL")
 
         gprops = tool.Geometry.get_geometry_props()

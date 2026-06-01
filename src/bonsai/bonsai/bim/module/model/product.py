@@ -207,6 +207,9 @@ class DrawOccurrence(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
         return IfcStore.execute_ifc_operator(self, context, event, method="MODAL")
 
     def _modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         # Ensure state of BIM tool props is valid
         props = tool.Model.get_model_props()
         relating_type_id = tool.Blender.get_enum_safe(props, "relating_type_id")
@@ -223,6 +226,7 @@ class DrawOccurrence(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
             self.report({"WARNING"}, "You need to select a type.")
             PolylineDecorator.uninstall()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
@@ -244,6 +248,7 @@ class DrawOccurrence(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
             PolylineDecorator.uninstall()
             tool.Polyline.clear_polyline()
             tool.Blender.update_viewport()
+            self._remove_snap_timer(context)
             return {"FINISHED"}
 
         if event.value == "RELEASE" and event.type == "LEFTMOUSE":
