@@ -15,6 +15,8 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
+#
+# This file was modified with the assistance of an AI coding tool.
 
 import datetime
 import json
@@ -61,6 +63,7 @@ import bonsai.core.project as core
 import bonsai.tool as tool
 from bonsai.bim import export_ifc, import_ifc
 from bonsai.bim.ifc import IfcStore
+from bonsai.bim.module.model import preview_base
 from bonsai.bim.module.model.decorator import FaceAreaDecorator, PolylineDecorator
 from bonsai.bim.module.model.polyline import PolylineOperator
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
@@ -2044,11 +2047,11 @@ class ExportIFC(bpy.types.Operator, ExportHelper):
 
         self.use_relative_path = tool.Project.get_project_props().use_relative_project_path
         props = tool.Blender.get_bim_props()
-        if (filepath := props.ifc_file) and not self.should_save_as:
-            self.filepath = str(tool.Blender.ensure_blender_path_is_abs(Path(filepath)))
-            return self.execute(context)
-
-        return ExportHelper.invoke(self, context, event)
+        filepath = props.ifc_file
+        if not filepath or self.should_save_as:
+            return ExportHelper.invoke(self, context, event)
+        self.filepath = str(tool.Blender.ensure_blender_path_is_abs(Path(filepath)))
+        return self.execute(context)
 
     def check(self, context):
         # ExportHelper is automatically adjusting suffix to `filename_ext`.
@@ -2074,6 +2077,20 @@ class ExportIFC(bpy.types.Operator, ExportHelper):
         return {"FINISHED"}
 
     def _execute(self, context):
+        committed, failed_commits = tool.Parametric.commit_pending_edits()
+        # Previews are session-transient — discard rather than commit. Sibling
+        # gizmo polls gate on each preview's is_active flag, and a stuck flag
+        # persisted through the save would silently hide them on reload.
+        preview_base.discard_pending_previews(context.scene)
+        # Suffix is appended to the IFC save-success report below so the auto-commit
+        # info isn't immediately overwritten by the success message in Blender's
+        # status bar (only the latest self.report({"INFO"}, ...) sticks).
+        commit_suffix = f" (auto-committed {committed} pending parametric edit(s))" if committed else ""
+        if failed_commits:
+            names = ", ".join(o.name for o in failed_commits)
+            msg = f"Auto-commit failed for {len(failed_commits)} object(s): {names}"
+            print(f"Bonsai: {msg} (their drafts are NOT saved to the IFC file).")
+            self.report({"ERROR"}, msg)
         start = time.time()
         logger = logging.getLogger("ExportIFC")
         path_log = tool.Blender.get_data_dir_path("process.log")
@@ -2142,7 +2159,7 @@ class ExportIFC(bpy.types.Operator, ExportHelper):
                     blendmetadata_path = output_file + suffix
                 self.report(
                     {"INFO"},
-                    f'IFC Project "{os.path.basename(output_file)}" And Metadata File Saved to: {os.path.basename(blendmetadata_path)}',
+                    f'IFC Project "{os.path.basename(output_file)}" And Metadata File Saved to: {os.path.basename(blendmetadata_path)}{commit_suffix}',
                 )
             except Exception as e:
                 self.report({"ERROR"}, f"Failed to save blend metadata file: {e}")
@@ -2152,7 +2169,7 @@ class ExportIFC(bpy.types.Operator, ExportHelper):
                 bpy.ops.wm.save_mainfile(filepath=bpy.data.filepath)
             self.report(
                 {"INFO"},
-                f'IFC Project "{os.path.basename(output_file)}" {"" if not save_blend_file else "And Current Blend File Are"} Saved',
+                f'IFC Project "{os.path.basename(output_file)}" {"" if not save_blend_file else "And Current Blend File Are"} Saved{commit_suffix}',
             )
 
         bonsai.bim.handler.refresh_ui_data()

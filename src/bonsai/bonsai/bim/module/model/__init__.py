@@ -15,10 +15,14 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
+#
+# This file was modified with the assistance of an AI coding tool.
 
 from typing import NamedTuple
 
 import bpy
+
+import bonsai.tool as tool
 
 from . import (
     array,
@@ -57,6 +61,8 @@ classes = (
     array.Input3DCursorXArray,
     array.Input3DCursorYArray,
     array.Input3DCursorZArray,
+    array.EnableEditingParametric,
+    array.AddArrayFromFeatureEdit,
     product.AddDefaultType,
     product.AddEmptyType,
     product.AddOccurrence,
@@ -71,11 +77,16 @@ classes = (
     wall.AddWallsFromSlab,
     wall.ConvertEdgesToWalls,
     wall.AlignWall,
+    wall.CancelEditingWall,
     wall.ChangeExtrusionDepth,
     wall.ChangeExtrusionXAngle,
     wall.ChangeLayerLength,
+    wall.CycleWallOffset,
     wall.DrawPolylineWall,
+    wall.EnableEditingWall,
+    wall.ExtendWallHeightToCursor,
     wall.ExtendWallsToUnderside,
+    wall.RegenerateWallToUnderside,
     wall.ExtendWallsToWall,
     wall.ExtendWallsToPolylinePoint,
     wall.ChangeWallOffset,
@@ -84,12 +95,31 @@ classes = (
     wall.GetWallHeight,
     wall.GetWallLength,
     wall.GetWallOffset,
+    wall.ExtendWallToCursor,
+    wall.FinishEditingWall,
     wall.FlipWall,
+    wall.GizmoWallAddOpening,
+    wall.GizmoWallEdition,
+    wall.GizmoWallExtendVertically,
+    wall.GizmoWallFilletPreview,
+    wall.GizmoWallFilletReedit,
+    wall.GizmoWallJoinIntersection,
+    wall.GizmoWallUnjoinSingle,
+    wall.JoinWallsIntersection,
     wall.MergeWall,
     wall.OffsetWalls,
     wall.RecalculateWall,
+    wall.RotateWall90,
     wall.SplitWall,
+    wall.SplitWallAtCursor,
+    wall.ToggleWallOpenings,
+    wall.UnjoinWallPathConnection,
     wall.UnjoinWalls,
+    wall.EnableWallFilletPreview,
+    wall.FinishWallFilletPreview,
+    wall.CancelWallFilletPreview,
+    wall.EnableWallFilletPreviewFromCorner,
+    wall.CreateWallFillet,
     opening.AddBoolean,
     opening.CloneOpening,
     opening.EditOpenings,
@@ -148,10 +178,14 @@ classes = (
     prop.BIMDoorProperties,
     prop.BIMRailingProperties,
     prop.BIMRoofProperties,
+    prop.BIMWallProperties,
     prop.BIMPolylineProperties,
     prop.BIMExternalParametricGeometryProperties,
+    prop.BIMWallFilletPreviewProperties,
+    prop.BIMPreviewProperties,
     ui.BIM_PT_array,
     ui.BIM_PT_stair,
+    ui.BIM_PT_wall,
     ui.BIM_PT_sverchok,
     ui.BIM_PT_window,
     ui.BIM_PT_door,
@@ -279,15 +313,14 @@ def register():
     bpy.types.Scene.BIMModelProperties = bpy.props.PointerProperty(type=prop.BIMModelProperties)
     bpy.types.Scene.BIMPolylineProperties = bpy.props.PointerProperty(type=prop.BIMPolylineProperties)
     bpy.types.Object.BIMArrayProperties = bpy.props.PointerProperty(type=prop.BIMArrayProperties)
-    bpy.types.Object.BIMStairProperties = bpy.props.PointerProperty(type=prop.BIMStairProperties)
     bpy.types.Object.BIMSverchokProperties = bpy.props.PointerProperty(type=prop.BIMSverchokProperties)
-    bpy.types.Object.BIMWindowProperties = bpy.props.PointerProperty(type=prop.BIMWindowProperties)
-    bpy.types.Object.BIMDoorProperties = bpy.props.PointerProperty(type=prop.BIMDoorProperties)
-    bpy.types.Object.BIMRailingProperties = bpy.props.PointerProperty(type=prop.BIMRailingProperties)
-    bpy.types.Object.BIMRoofProperties = bpy.props.PointerProperty(type=prop.BIMRoofProperties)
+    # Per-parametric-type ``BIM<Name>Properties`` PointerProperties — driven by
+    # ``tool.Parametric.EDIT_TYPES``; adding a registry entry is the single touchpoint.
+    tool.Parametric.register_object_properties(prop)
     bpy.types.Object.BIMExternalParametricGeometryProperties = bpy.props.PointerProperty(
         type=prop.BIMExternalParametricGeometryProperties
     )
+    bpy.types.Scene.BIMPreviewProperties = bpy.props.PointerProperty(type=prop.BIMPreviewProperties)
 
     bpy.types.WindowManager.bonsai_snap_color = bpy.props.FloatVectorProperty(
         subtype="COLOR_GAMMA", size=3, default=(0.35, 0.35, 0.35), min=0.0, max=1.0
@@ -301,6 +334,12 @@ def register():
 
 
 def unregister():
+    # DecorationsHandler is installed lazily by bim.show_openings; tear it down
+    # (along with its persistent depsgraph / undo / redo / load cache handlers)
+    # before the rest of unregister so those handlers can't fire against
+    # half-unloaded module state.
+    opening.DecorationsHandler.uninstall()
+
     if not bpy.app.background:
         for tool_data in reversed(tools):
             bpy.utils.unregister_tool(tool_data.tool)
@@ -309,13 +348,10 @@ def unregister():
     del bpy.types.Scene.BIMModelProperties
     del bpy.types.Scene.BIMPolylineProperties
     del bpy.types.Object.BIMArrayProperties
-    del bpy.types.Object.BIMStairProperties
     del bpy.types.Object.BIMSverchokProperties
-    del bpy.types.Object.BIMWindowProperties
-    del bpy.types.Object.BIMDoorProperties
-    del bpy.types.Object.BIMRailingProperties
-    del bpy.types.Object.BIMRoofProperties
+    tool.Parametric.unregister_object_properties()
     del bpy.types.Object.BIMExternalParametricGeometryProperties
+    del bpy.types.Scene.BIMPreviewProperties
 
     bpy.app.handlers.load_post.remove(handler.load_post)
     bpy.types.VIEW3D_MT_add.remove(ui.add_menu)
