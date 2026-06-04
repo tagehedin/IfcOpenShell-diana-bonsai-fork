@@ -30,9 +30,8 @@ What this fork aims to do
 ==
 diana-bonsai-fork is an experiment in using Claude Code as well as trying to stress-test BonsaiBIM and see if it is possible to find fixes to crucial problems. It is not an attempt at creating clean code but to find out if there are potential solutions to problems.
 
-diana-bonsai-fork features
--
-Features of diana-bonsai-fork below:
+
+
 
 Test system
 -
@@ -45,7 +44,8 @@ diana-bonsai-fork is developed on a HP Zbook laptop from 2014, it was used in re
 - Dedicated graphics: AMD Radeon HD 8500M / 8700M
 - Hewlett-Packard HP ZBook 14
 
-
+diana-bonsai-fork features
+===
 Snap System 2
 -
 The snap system is using the built in Blender Raycast function instead of the snap system built in python. The advantage is that snapping works on big files.
