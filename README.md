@@ -1,3 +1,65 @@
+diana-bonsai-fork 
+============
+
+This fork should be viewed as an experimental feature request version of the official latest alpha of the BonsaiBIM plugin for Blender. It is an experiment in using Claude Code to add tools and test possible improvements by a user of the software instead of a programmer. With experience in using BIM software in real projects and the possibility to stress-test BonsaiBIM on big files the hope is to contribute in a meaningful way to an exciting project.
+
+BonsaiBIM and Blender
+-
+BonsaiBIM have the advantage of building on top of Blender that is lightweight, snappy and powerful. Blender is outright fun to use and this is where software like Revit fails miserably. As an Architect you want to work with a tool that inspires and is fun to use and Blender has a good base for visual presentation and realtime rendering.
+
+Critical Problems
+-
+
+Big IFC files
+-
+BonsaiBIM does not work well with big files. The performance of the python based snap system depends directly on the size of the project and is unusable on real-world projects.
+
+Printing
+-
+BonsaiBIM does not seem to apply proper culling and printing bigger projects and especially tessellated MEP files can provoke exponential print times.
+
+Saving and loading
+-
+BonsaiBIM loads and saves files in chunks and apply mapping to ifc objects exported from other software and save times can be unreasonably long. Saving in chunks in network environments can trigger anti-virus procedures that make saving times even longer.
+
+General lack of features
+-
+BonsaiBIM has a very good base and if the big hurdles can be addressed then there is only a question of adding features.
+
+What this fork aims to do
+==
+diana-bonsai-fork is an experiment in using Claude Code as well as trying to stress-test BonsaiBIM and see if it is possible to find fixes to crucial problems. It is not an attempt at creating clean code but to find out if there are potential solutions to problems.
+
+diana-bonsai-fork features
+-
+Features of diana-bonsai-fork below:
+
+Test system
+-
+diana-bonsai-fork is developed on a HP Zbook laptop from 2014, it was used in real world Revit projects until recently but was discarded since it was considered slow. The fact is that Revit projects have not evolved in complexity in the last 12 years and even if computers today are faster today this laptop was actually used in heavy BIM projects and should be able to work still. It is a good test platform since features should be snappy even on older computers.
+- System specs:
+- Bazzite 44 - Fedora Atomic ublue, 6.19.14-ogc5.1.fc44.x86_64 - Wayland
+- CPU: 4 × Intel® Core™ i7-4510U CPU @ 2.00GHz
+- Memory: 16 GB.
+- Onboard graphics: Mesa Intel® HD Graphics 4400
+- Dedicated graphics: AMD Radeon HD 8500M / 8700M
+- Hewlett-Packard HP ZBook 14
+
+
+Snap System 2
+-
+The snap system is using the built in Blender Raycast function instead of the snap system built in python. The advantage is that snapping works on big files.
+
+Printing
+-
+diana-bonsai-fork is trying to implement culling and other improvements to make printing usable.
+
+
+
+
+
+::::::::::::
+
 
 IfcOpenShell 
 ============
