@@ -45,7 +45,9 @@ if sys.platform == "win32":
 elif sys.platform == "darwin":
     BLENDER_PATH = Path.home() / f"Library/Application Support/Blender/{BLENDER_VERSION}"
 elif sys.platform == "linux":
-    BLENDER_PATH = Path.home() / f".config/blender/{BLENDER_VERSION}"
+    flatpak_path = Path.home() / f".var/app/org.blender.Blender/config/blender/{BLENDER_VERSION}"
+    default_path = Path.home() / f".config/blender/{BLENDER_VERSION}"
+    BLENDER_PATH = flatpak_path if flatpak_path.exists() else default_path
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
