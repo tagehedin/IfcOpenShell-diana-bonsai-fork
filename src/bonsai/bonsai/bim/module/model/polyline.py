@@ -526,7 +526,7 @@ class PolylineOperator:
     def _run_scene_ray_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
         origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
         depsgraph = context.evaluated_depsgraph_get()
-        hit, location, _normal, face_index, obj, matrix = context.scene.ray_cast(depsgraph, origin, direction)
+        hit, location, face_normal, face_index, obj, matrix = context.scene.ray_cast(depsgraph, origin, direction)
 
         if not hit:
             self._run_plane_snap(context, event)
@@ -535,6 +535,8 @@ class PolylineOperator:
         eval_mesh = obj.evaluated_get(depsgraph).data
         face = eval_mesh.polygons[face_index]
         world_verts = [matrix @ eval_mesh.vertices[vi].co for vi in face.vertices]
+        face_vert_indices = list(face.vertices)
+        face_normal_world = (matrix.to_3x3() @ face.normal).normalized()
 
         region = context.region
         rv3d = context.region_data
@@ -564,6 +566,81 @@ class PolylineOperator:
                 if m2d and (d := (m2d - cursor_2d).length) < best_m_dist:
                     best_m_dist, best_3d, best_type, best_dist = d, mid, "Vertex", d
                     best_edge_verts = (v1.copy(), v2.copy())
+
+        # Phases 2.5 and 2.6 both need last_pt — extract once.
+        if best_3d is None:
+            polyline_props = tool.Model.get_polyline_props()
+            try:
+                last_pt_prop = polyline_props.insertion_polyline[0].polyline_points[-1]
+                last_pt = Vector((last_pt_prop.x, last_pt_prop.y, last_pt_prop.z))
+            except (IndexError, AttributeError):
+                last_pt = None
+
+            # Phase 2.5 — face-normal XY: fires when the XY design line is parallel to the
+            # XY face normal. Self-gating: snap_pt drifts from the cursor as the angle drifts.
+            # Skips horizontal faces (floor/ceiling) — XY normal is near-zero there.
+            if last_pt is not None:
+                normal_xy = Vector((face_normal.x, face_normal.y))
+                normal_xy_len = normal_xy.length
+                if normal_xy_len > 1e-6:
+                    normal_xy /= normal_xy_len
+                    t = (location.x - last_pt.x) * normal_xy.x + (location.y - last_pt.y) * normal_xy.y
+                    snap_pt = Vector((last_pt.x + t * normal_xy.x, last_pt.y + t * normal_xy.y, last_pt.z))
+                    snap_pt_screen = Vector((snap_pt.x, snap_pt.y, location.z))
+                    p2d = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, snap_pt_screen)
+                    if p2d and (d := (p2d - cursor_2d).length) < 35:
+                        best_3d, best_type, best_dist = snap_pt, "Perpendicular", d
+                        best_edge_verts = None
+
+            # Phase 2.6 — edge XY perpendicularity: fires when the XY design line is
+            # perpendicular to an edge's XY projection. Catches the top-down case (hovering
+            # over the top face of a wall) and sloped surfaces where Phase 2.5 is skipped.
+            # Needs an explicit angular threshold because the foot position is fixed regardless
+            # of cursor position — unlike Phase 2.5 which is self-gating.
+            if best_3d is None and last_pt is not None:
+                design_xy = Vector((location.x - last_pt.x, location.y - last_pt.y))
+                design_xy_len = design_xy.length
+                if design_xy_len > 1e-6:
+                    design_xy_norm = design_xy / design_xy_len
+                    best_perp_dist = 35
+                    for i in range(n):
+                        v1, v2 = world_verts[i], world_verts[(i + 1) % n]
+                        edge_xy = Vector((v2.x - v1.x, v2.y - v1.y))
+                        edge_xy_len = edge_xy.length
+                        if edge_xy_len < 1e-6:
+                            continue
+                        edge_xy_norm = edge_xy / edge_xy_len
+                        if abs(design_xy_norm.dot(edge_xy_norm)) > 0.2:  # within ~12° of perpendicular
+                            continue
+                        # Skip tessellation seams: edges shared with a coplanar face are not
+                        # real geometry edges. Only check adjacency after the angular gate
+                        # so this scan runs rarely.
+                        vi, vj = face_vert_indices[i], face_vert_indices[(i + 1) % n]
+                        vi_set = {vi, vj}
+                        is_seam = False
+                        for poly_i, poly in enumerate(eval_mesh.polygons):
+                            if poly_i == face_index:
+                                continue
+                            if vi_set.issubset(set(poly.vertices)):
+                                adj_normal = (matrix.to_3x3() @ poly.normal).normalized()
+                                if face_normal_world.dot(adj_normal) > 0.99:
+                                    is_seam = True
+                                break
+                        if is_seam:
+                            continue
+                        v1_2d = Vector((v1.x, v1.y))
+                        last_pt_2d = Vector((last_pt.x, last_pt.y))
+                        t_perp = (last_pt_2d - v1_2d).dot(edge_xy) / (edge_xy_len * edge_xy_len)
+                        if not (0.0 <= t_perp <= 1.0):
+                            continue
+                        foot_xy = v1_2d + t_perp * edge_xy
+                        snap_pt = Vector((foot_xy.x, foot_xy.y, last_pt.z))
+                        snap_pt_screen = Vector((snap_pt.x, snap_pt.y, location.z))
+                        p2d = bpy_extras.view3d_utils.location_3d_to_region_2d(region, rv3d, snap_pt_screen)
+                        if p2d and (d := (p2d - cursor_2d).length) < best_perp_dist:
+                            best_perp_dist = d
+                            best_3d, best_type, best_dist = snap_pt, "Perpendicular", d
+                            best_edge_verts = (v1.copy(), v2.copy())
 
         # Phase 3 — edge sliding: only if no vertex or midpoint found.
         if best_3d is None:

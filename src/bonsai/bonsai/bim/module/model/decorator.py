@@ -789,6 +789,14 @@ class PolylineDecorator:
         elif snap_prop.snap_type == "Face":
             draw_circle_2d(coords, decorator_color_object_active, padding)
             return
+        elif snap_prop.snap_type == "Perpendicular":
+            # Right-angle bracket: two lines forming an L at the snap point
+            size = padding
+            p1 = (coords[0] - size, coords[1] - size)
+            p2 = (coords[0] - size, coords[1] + size)
+            p3 = (coords[0] + size, coords[1] + size)
+            verts = [p1, p2, p3]
+            edges = [[0, 1], [1, 2]]
         else:
             return
 

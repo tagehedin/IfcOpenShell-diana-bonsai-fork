@@ -592,6 +592,8 @@ class Snap(bonsai.core.tool.Snap):
                     snap["distance"] *= zoom_factor / 8
                 if snap["type"] == "Edge Intersection":
                     snap["distance"] *= zoom_factor / 5
+                if snap["type"] == "Perpendicular":
+                    snap["distance"] *= zoom_factor / 6
                 if snap["type"] == "Edge":
                     snap["distance"] *= zoom_factor
                 if snap["type"] in ["Plane", "Axis", "Face"]:
