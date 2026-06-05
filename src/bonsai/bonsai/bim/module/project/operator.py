@@ -2931,11 +2931,11 @@ class RefreshClippingPlanes(bpy.types.Operator):
 class CreateClippingPlane(bpy.types.Operator):
     bl_idname = "bim.create_clipping_plane"
     bl_label = "Create Clipping Plane"
+    bl_description = "Move mouse over a surface and click to place a clipping plane aligned to it. Press Escape to cancel"
     bl_options = {"REGISTER", "UNDO"}
 
-    def execute(self, context):
+    def invoke(self, context, event):
         props = tool.Project.get_project_props()
-        # Remove stale entries whose object was deleted (modal may not be running to do this)
         for i in range(len(props.clipping_planes) - 1, -1, -1):
             cp = props.clipping_planes[i]
             stale = not cp.obj
@@ -2950,55 +2950,77 @@ class CreateClippingPlane(bpy.types.Operator):
             self.report({"INFO"}, "Maximum of six clipping planes allowed.")
             return {"FINISHED"}
 
-        tool.Blender.update_all_viewports(context)
-
-        assert context.region and context.region_data
-        region = context.region
-        rv3d = context.region_data
-        if rv3d:  # Called from a 3D viewport
-            coord = (self.mouse_x, self.mouse_y)
-            origin = region_2d_to_origin_3d(region, rv3d, coord)
-            direction = region_2d_to_vector_3d(region, rv3d, coord)
-            hit, location, normal, face_index, obj, matrix = tool.Blender.ray_cast_scene(context, origin, direction)
-            if not hit:
-                self.report({"INFO"}, "No object found.")
-                return {"FINISHED"}
-        else:  # Not Called from a 3D viewport
-            location = (0, 0, 1)
-            normal = (0, 0, 1)
-
         vertices = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)]
-
-        faces = [(0, 1, 2, 3)]
-
         mesh = bpy.data.meshes.new(name="ClippingPlane")
-        mesh.from_pydata(vertices, [], faces)
+        mesh.from_pydata(vertices, [], [(0, 1, 2, 3)])
         mesh.update()
+        self.preview_obj = bpy.data.objects.new("ClippingPlane", mesh)
+        self.preview_obj.show_in_front = True
+        self.preview_obj.display_type = "WIRE"
+        context.collection.objects.link(self.preview_obj)
 
-        plane_obj = bpy.data.objects.new("ClippingPlane", mesh)
-        plane_obj.show_in_front = True
-        context.collection.objects.link(plane_obj)
+        self.last_location = context.scene.cursor.location.copy()
+        self.last_normal = Vector((0, 0, 1))
+        self._place_preview(self.last_location, self.last_normal)
+
+        ClippingPlaneDecorator.preview_obj = self.preview_obj
+        ClippingPlaneDecorator.install(context)
+
+        context.window_manager.modal_handler_add(self)
+        context.workspace.status_text_set("LMB: Place clipping plane   |   Esc / RMB: Cancel")
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "MOUSEMOVE":
+            region = context.region
+            rv3d = context.region_data
+            if region and rv3d:
+                coord = (event.mouse_region_x, event.mouse_region_y)
+                origin = region_2d_to_origin_3d(region, rv3d, coord)
+                direction = region_2d_to_vector_3d(region, rv3d, coord)
+                self.preview_obj.hide_set(True)
+                hit, location, normal, _face_index, _obj, _matrix = tool.Blender.ray_cast_scene(
+                    context, origin, direction
+                )
+                self.preview_obj.hide_set(False)
+                if hit:
+                    self.last_location = location
+                    self.last_normal = normal
+                    self._place_preview(location, normal)
+            return {"RUNNING_MODAL"}
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            return self._confirm(context)
+
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            return self._cancel(context)
+
+        return {"PASS_THROUGH"}
+
+    def _place_preview(self, location, normal):
         z_axis = Vector((0, 0, 1))
         rotation_matrix = z_axis.rotation_difference(normal).to_matrix().to_4x4()
-        plane_obj.matrix_world = rotation_matrix
-        plane_obj.matrix_world.translation = location
+        self.preview_obj.matrix_world = rotation_matrix
+        self.preview_obj.matrix_world.translation = location
 
-        context.scene.cursor.location = location
-
+    def _confirm(self, context):
+        context.workspace.status_text_set(None)
+        ClippingPlaneDecorator.preview_obj = None
         new = tool.Project.get_project_props().clipping_planes.add()
-        new.obj = plane_obj
-
-        tool.Blender.set_active_object(plane_obj)
-
+        new.obj = self.preview_obj
+        tool.Blender.set_active_object(self.preview_obj)
         ClippingPlaneDecorator.install(context)
         if not RefreshClippingPlanes.is_running:
             bpy.ops.bim.refresh_clipping_planes("INVOKE_DEFAULT")
         return {"FINISHED"}
 
-    def invoke(self, context, event):
-        self.mouse_x = event.mouse_region_x
-        self.mouse_y = event.mouse_region_y
-        return self.execute(context)
+    def _cancel(self, context):
+        context.workspace.status_text_set(None)
+        ClippingPlaneDecorator.preview_obj = None
+        bpy.data.objects.remove(self.preview_obj, do_unlink=True)
+        if not tool.Project.get_project_props().clipping_planes:
+            ClippingPlaneDecorator.uninstall()
+        return {"CANCELLED"}
 
 
 class FlipClippingPlane(bpy.types.Operator):
@@ -3614,7 +3636,7 @@ class LaserTool(bpy.types.Operator):
     bl_description = "Shoot rays from a face along its normal and tangent axes to measure room dimensions"
     bl_options = {"REGISTER"}
 
-    # Axis colors: red (face tangent), green (face bitangent), blue (face normal)
+    # Axis colors: red (X, horizontal in face), green (Y, world-Z-aligned in face), blue (face normal)
     _COLORS = [
         (0.9, 0.25, 0.25),
         (0.9, 0.25, 0.25),
@@ -3673,24 +3695,35 @@ class LaserTool(bpy.types.Operator):
             return
 
         face_normal = (matrix.to_3x3() @ polygon.normal).normalized()
-        tangent = (verts[1] - verts[0]).normalized()
-        bitangent = face_normal.cross(tangent).normalized()
 
-        shoot_dirs = [
-            tangent,
-            -tangent,
-            bitangent,
-            -bitangent,
-            face_normal,
-            -face_normal,
+        world_z = Vector((0, 0, 1))
+        y_axis = world_z - world_z.dot(face_normal) * face_normal
+        if y_axis.length < 0.01:
+            world_x = Vector((1, 0, 0))
+            y_axis = world_x - world_x.dot(face_normal) * face_normal
+        y_axis = y_axis.normalized()
+        x_axis = y_axis.cross(face_normal).normalized()
+
+        # Face bounding box along x/y axes, centred on face centroid
+        centroid = sum(verts, Vector()) / len(verts)
+        x_projs = [(v - centroid).dot(x_axis) for v in verts]
+        y_projs = [(v - centroid).dot(y_axis) for v in verts]
+        x_start = centroid + min(x_projs) * x_axis
+        x_end   = centroid + max(x_projs) * x_axis
+        y_start = centroid + min(y_projs) * y_axis
+        y_end   = centroid + max(y_projs) * y_axis
+
+        axes = [
+            (x_start, x_end, self._COLORS[0]),
+            (y_start, y_end, self._COLORS[2]),
         ]
 
-        axes = []
-        for i, direction_vec in enumerate(shoot_dirs):
+        # Z: ray cast in both normal directions from hit point
+        for direction_vec, color in [(face_normal, self._COLORS[4]), (-face_normal, self._COLORS[5])]:
             ray_start = location + direction_vec * 0.001
             h, loc2, _, _, _, _ = context.scene.ray_cast(depsgraph, ray_start, direction_vec)
             if h:
-                axes.append((Vector(loc2), self._COLORS[i]))
+                axes.append((location, Vector(loc2), color))
 
         LaserDecorator.update(location, axes)
 

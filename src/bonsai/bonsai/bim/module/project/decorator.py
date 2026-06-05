@@ -126,6 +126,7 @@ class ProjectDecorator:
 
 class ClippingPlaneDecorator:
     installed = None
+    preview_obj = None  # set during CreateClippingPlane modal to draw the ghost preview
 
     @classmethod
     def install(cls, context):
@@ -226,6 +227,27 @@ class ClippingPlaneDecorator:
                 self.draw_batch("LINES", selected_vertices, selected_elements_color, selected_edges)
                 self.draw_batch("TRIS", selected_vertices, transparent_color(selected_elements_color), selected_tris)
 
+        obj = ClippingPlaneDecorator.preview_obj
+        if obj and obj.data:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            obj.data.calc_loop_triangles()
+            verts = [tuple(obj.matrix_world @ v.co) for v in bm.verts]
+            edges = [tuple(v.index for v in e.verts) for e in bm.edges]
+            tris = [tuple(t.vertices) for t in obj.data.loop_triangles]
+            bm.free()
+            arrow = [
+                tuple(obj.matrix_world @ Vector((0, 0, 0))),
+                tuple(obj.matrix_world @ Vector((0, 0, -0.5))),
+                tuple(obj.matrix_world @ Vector((-0.05, 0, -0.45))),
+                tuple(obj.matrix_world @ Vector((0.05, 0, -0.45))),
+                tuple(obj.matrix_world @ Vector((0, -0.05, -0.45))),
+                tuple(obj.matrix_world @ Vector((0, 0.05, -0.45))),
+            ]
+            self.draw_batch("LINES", arrow, selected_elements_color, [(0, 1), (1, 2), (1, 3), (1, 4), (1, 5)])
+            self.draw_batch("LINES", verts, selected_elements_color, edges)
+            self.draw_batch("TRIS", verts, transparent_color(selected_elements_color, 0.15), tris)
+
 
 class LaserDecorator:
     is_installed = False
@@ -276,21 +298,20 @@ class LaserDecorator:
         line_shader.uniform_float("lineWidth", 2.0)
 
         point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-        origin = LaserDecorator.origin
 
-        for hit_point, color in LaserDecorator.axes:
-            batch = batch_for_shader(line_shader, "LINES", {"pos": [origin, hit_point]})
+        for pt_a, pt_b, color in LaserDecorator.axes:
+            batch = batch_for_shader(line_shader, "LINES", {"pos": [pt_a, pt_b]})
             line_shader.uniform_float("color", (*color, 0.9))
             batch.draw(line_shader)
 
         gpu.state.point_size_set(8)
-        batch = batch_for_shader(point_shader, "POINTS", {"pos": [origin]})
+        batch = batch_for_shader(point_shader, "POINTS", {"pos": [LaserDecorator.origin]})
         point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
         batch.draw(point_shader)
 
         gpu.state.point_size_set(5)
-        for hit_point, color in LaserDecorator.axes:
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [hit_point]})
+        for pt_a, pt_b, color in LaserDecorator.axes:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt_a, pt_b]})
             point_shader.uniform_float("color", (*color, 1.0))
             batch.draw(point_shader)
 
@@ -313,8 +334,8 @@ class LaserDecorator:
 
         unit_system = context.scene.unit_settings.system
 
-        for hit_point, color in LaserDecorator.axes:
-            distance = (hit_point - origin).length
+        for pt_a, pt_b, color in LaserDecorator.axes:
+            distance = (pt_b - pt_a).length
             if unit_system == "IMPERIAL":
                 text = f"{distance * 3.28084:.3f}'"
             elif distance >= 1.0:
@@ -322,7 +343,7 @@ class LaserDecorator:
             else:
                 text = f"{distance * 1000:.0f} mm"
 
-            midpoint = (origin + hit_point) / 2
+            midpoint = (pt_a + pt_b) / 2
             screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, midpoint)
             if screen_co:
                 blf.color(font_id, *color, 1.0)
