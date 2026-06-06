@@ -140,6 +140,11 @@ class BIM_PT_spatial_decomposition(Panel):
             col = row.column(align=True)
             op = col.operator("bim.set_default_container", icon="OUTLINER_COLLECTION", text="Set Default")
             op.container = ifc_definition_id
+            col.operator(
+                "bim.assign_default_container_and_keep_placement",
+                icon="FOLDER_REDIRECT",
+                text="Assign to Selected",
+            )
 
             if tool.Blender.get_addon_preferences().container_hide_show_isolate:
                 op = row.operator("bim.set_container_visibility", icon="FULLSCREEN_EXIT", text="")

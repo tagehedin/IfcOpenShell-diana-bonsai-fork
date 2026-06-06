@@ -182,6 +182,28 @@ class AssignContainer(bpy.types.Operator, tool.Ifc.Operator):
         )
 
 
+class AssignDefaultContainerAndKeepPlacement(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.assign_default_container_and_keep_placement"
+    bl_label = "Assign to Default Container"
+    bl_description = (
+        "Assign selected objects to the default container without moving them.\n\n"
+        "Unlike regular container assignment, global coordinates are preserved "
+        "by recalculating the local IFC placement relative to the new container."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        container = tool.Root.get_default_container()
+        if not container:
+            self.report({"WARNING"}, "No default container set — use 'Set Default' first.")
+            return
+        objs = tool.Blender.get_selected_objects()
+        core.assign_container(tool.Ifc, tool.Collector, tool.Spatial, container=container, objs=objs)
+        for obj in objs:
+            if tool.Ifc.get_entity(obj):
+                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+
+
 class EnableEditingContainer(bpy.types.Operator):
     bl_idname = "bim.enable_editing_container"
     bl_label = "Enable Editing Container"
