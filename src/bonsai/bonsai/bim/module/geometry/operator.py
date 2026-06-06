@@ -2227,6 +2227,22 @@ class OverrideCopyBuffer(bpy.types.Operator):
                 self.report({"WARNING"}, f"Could not copy {element.is_a()} #{element.id()}: {e}")
 
         self._reconstruct_relationships(clipboard, ifc, old_to_new)
+
+        # Store each root element's container name in the clipboard so paste can
+        # restore it when the same storey exists in the target file.
+        container_map: dict[str, str] = {}
+        for source_element in roots:
+            clipboard_el = old_to_new.get(source_element.id())
+            if not clipboard_el:
+                continue
+            for rel in getattr(source_element, "ContainedInStructure", []) or []:
+                name = getattr(rel.RelatingStructure, "Name", None)
+                if name:
+                    container_map[str(clipboard_el.id())] = name
+                    break
+        import json
+        clipboard.by_type("IfcProject")[0].Description = json.dumps(container_map)
+
         clipboard.write(str(_CLIPBOARD_PATH))
         self.report({"INFO"}, f"{len(roots)} element(s) copied to IFC clipboard.")
         return {"FINISHED"}
@@ -2361,14 +2377,36 @@ class OverridePasteBuffer(bpy.types.Operator):
 
         self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
 
+        # Read the container name map stored by the copy operator.
+        import json
+        try:
+            container_map: dict[str, str] = json.loads(
+                getattr(clipboard_ifc.by_type("IfcProject")[0], "Description", None) or "{}"
+            )
+        except Exception:
+            container_map = {}
+
+        # Build a name→spatial lookup for fast resolution.
+        spatial_by_name: dict[str, ifcopenshell.entity_instance] = {
+            e.Name: e for e in ifc.by_type("IfcSpatialStructureElement") if e.Name
+        }
+
         # Assign containers before loading into Blender so place_objects_in_collections
         # puts elements in the right storey collection (not "Unsorted").
+        # Use the original container by name when it exists in the target; otherwise
+        # fall back to the active container.
         for element in all_clipboard_products:
             if element in clipboard_openings or element in clipboard_parts:
                 continue
             target_el = clipboard_to_target.get(element.id())
-            if target_el:
-                ifcopenshell.api.run("spatial.assign_container", ifc, products=[target_el], relating_structure=container)
+            if not target_el:
+                continue
+            preferred_name = container_map.get(str(element.id()))
+            resolved = spatial_by_name.get(preferred_name) if preferred_name else None
+            ifcopenshell.api.run(
+                "spatial.assign_container", ifc,
+                products=[target_el], relating_structure=resolved or container,
+            )
 
         for element in all_clipboard_products:
             target_el = clipboard_to_target.get(element.id())
