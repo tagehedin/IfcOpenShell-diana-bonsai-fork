@@ -2227,6 +2227,9 @@ class OverrideCopyBuffer(bpy.types.Operator):
                 self.report({"WARNING"}, f"Could not copy {element.is_a()} #{element.id()}: {e}")
 
         self._reconstruct_relationships(clipboard, ifc, old_to_new)
+        # Reassign all GUIDs so paste into the same file always creates new entities.
+        for entity in clipboard.by_type("IfcRoot"):
+            entity.GlobalId = ifcopenshell.guid.new()
         clipboard.write(str(_CLIPBOARD_PATH))
         self.report({"INFO"}, f"{len(roots)} element(s) copied to IFC clipboard.")
         return {"FINISHED"}
