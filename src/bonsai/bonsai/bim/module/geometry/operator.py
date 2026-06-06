@@ -16,7 +16,10 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
+import logging
+import tempfile
 from collections.abc import Sequence
+from pathlib import Path
 from time import time
 from typing import (
     TYPE_CHECKING,
@@ -37,9 +40,14 @@ import ifcopenshell.api.geometry
 import ifcopenshell.api.group
 import ifcopenshell.api.layer
 import ifcopenshell.api.material
+import ifcopenshell.api.aggregate
+import ifcopenshell.api.feature
+import ifcopenshell.api.project
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
+import ifcopenshell.api.spatial
 import ifcopenshell.api.style
+import ifcopenshell.api.unit
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.representation
@@ -51,6 +59,7 @@ from ifcopenshell.util.shape_builder import ShapeBuilder
 from mathutils import Matrix, Quaternion, Vector
 
 import bonsai.bim.handler
+import bonsai.bim.import_ifc as import_ifc
 import bonsai.core.aggregate
 import bonsai.core.drawing
 import bonsai.core.geometry
@@ -2180,37 +2189,262 @@ class OverrideJoin(bpy.types.Operator, tool.Ifc.Operator):
         bpy.ops.object.join()
 
 
+_CLIPBOARD_PATH = Path(tempfile.gettempdir()) / "bonsai_clipboard.ifc"
+
+
+class OverrideCopyBuffer(bpy.types.Operator):
+    bl_idname = "bim.override_copy_buffer"
+    bl_label = "IFC Copy"
+    bl_description = "Copy selected IFC elements to the IFC clipboard (works across files and Blender instances)"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            bpy.ops.view3d.copybuffer()
+            return {"FINISHED"}
+
+        roots = [e for obj in context.selected_objects if (e := tool.Ifc.get_entity(obj)) and e.is_a("IfcProduct")]
+        if not roots:
+            bpy.ops.view3d.copybuffer()
+            return {"FINISHED"}
+
+        all_elements = self._expand_selection(roots)
+
+        clipboard = ifcopenshell.api.project.create_file(version=ifc.schema)
+        ifcopenshell.api.run("root.create_entity", clipboard, ifc_class="IfcProject", name="BonsaiClipboard")
+        ifcopenshell.api.run("unit.assign_unit", clipboard)
+
+        reuse_identities: dict = {}
+        old_to_new: dict[int, ifcopenshell.entity_instance] = {}
+        for element in all_elements:
+            try:
+                new_element = ifcopenshell.api.run(
+                    "project.append_asset", clipboard, library=ifc, element=element, reuse_identities=reuse_identities
+                )
+                old_to_new[element.id()] = new_element
+            except Exception as e:
+                self.report({"WARNING"}, f"Could not copy {element.is_a()} #{element.id()}: {e}")
+
+        self._reconstruct_relationships(clipboard, ifc, old_to_new)
+        clipboard.write(str(_CLIPBOARD_PATH))
+        self.report({"INFO"}, f"{len(roots)} element(s) copied to IFC clipboard.")
+        return {"FINISHED"}
+
+    def _expand_selection(self, elements: list) -> list:
+        """Return list including openings, their fillings, and aggregate parts."""
+        expanded: set = set(elements)
+        queue = list(elements)
+        while queue:
+            el = queue.pop()
+            for rel in getattr(el, "HasOpenings", []) or []:
+                opening = rel.RelatedOpeningElement
+                if opening not in expanded:
+                    expanded.add(opening)
+                    queue.append(opening)
+            if el.is_a("IfcFeatureElement"):
+                for rel in getattr(el, "HasFillings", []) or []:
+                    filling = rel.RelatedBuildingElement
+                    if filling not in expanded:
+                        expanded.add(filling)
+                        queue.append(filling)
+            for rel in getattr(el, "IsDecomposedBy", []) or []:
+                for part in rel.RelatedObjects:
+                    if part.is_a("IfcProduct") and part not in expanded:
+                        expanded.add(part)
+                        queue.append(part)
+        return list(expanded)
+
+    def _reconstruct_relationships(
+        self,
+        clipboard: ifcopenshell.file,
+        ifc: ifcopenshell.file,
+        old_to_new: dict[int, ifcopenshell.entity_instance],
+    ) -> None:
+        """Write void/filling/aggregate relationships into the clipboard IFC."""
+        for rel in ifc.by_type("IfcRelVoidsElement"):
+            new_wall = old_to_new.get(rel.RelatingBuildingElement.id())
+            new_opening = old_to_new.get(rel.RelatedOpeningElement.id())
+            if new_wall and new_opening:
+                ifcopenshell.api.run("feature.add_feature", clipboard, feature=new_opening, element=new_wall)
+
+        for rel in ifc.by_type("IfcRelFillsElement"):
+            new_opening = old_to_new.get(rel.RelatingOpeningElement.id())
+            new_filling = old_to_new.get(rel.RelatedBuildingElement.id())
+            if new_opening and new_filling:
+                ifcopenshell.api.run("feature.add_filling", clipboard, opening=new_opening, element=new_filling)
+
+        for rel in ifc.by_type("IfcRelAggregates"):
+            if not rel.RelatingObject.is_a("IfcProduct"):
+                continue
+            new_parent = old_to_new.get(rel.RelatingObject.id())
+            if not new_parent:
+                continue
+            new_parts = [old_to_new[p.id()] for p in rel.RelatedObjects if p.id() in old_to_new]
+            if new_parts:
+                ifcopenshell.api.run("aggregate.assign_object", clipboard, products=new_parts, relating_object=new_parent)
+
+
 class OverridePasteBuffer(bpy.types.Operator):
     bl_idname = "bim.override_paste_buffer"
     bl_label = "IFC Paste BIM Objects"
-    bl_description = (
-        "Paste objects from the internal clipboard.\n\n"
-        "Note that pasted objects will be unliked from IFC, so some IFC data will be lost (psets, materials, etc).\n"
-        "To paste object and keep IFC data use 'IFC Duplicate Objects'.\n\n"
-        "If working in Bonsai, to prevent issues this operator must be always used instead of the default Blender 'Paste Objects'."
-    )
+    bl_description = "Paste IFC elements from the IFC clipboard at the 3D cursor into the active spatial container"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return self._blender_paste(context)
+        if not _CLIPBOARD_PATH.exists():
+            return self._blender_paste(context)
+
+        try:
+            clipboard_ifc = ifcopenshell.open(str(_CLIPBOARD_PATH))
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not read IFC clipboard: {e}")
+            return {"CANCELLED"}
+
+        all_clipboard_products = list(clipboard_ifc.by_type("IfcProduct"))
+        if not any(not e.is_a("IfcSpatialStructureElement") for e in all_clipboard_products):
+            self.report({"INFO"}, "IFC clipboard is empty.")
+            return {"FINISHED"}
+
+        # Identify which clipboard elements are openings or aggregate parts (not placed at cursor)
+        clipboard_openings = {rel.RelatedOpeningElement for rel in clipboard_ifc.by_type("IfcRelVoidsElement")}
+        clipboard_parts = {
+            part
+            for rel in clipboard_ifc.by_type("IfcRelAggregates")
+            if rel.RelatingObject.is_a("IfcProduct")
+            for part in rel.RelatedObjects
+        }
+
+        container = tool.Spatial.get_active_container()
+        if not container:
+            storeys = ifc.by_type("IfcBuildingStorey")
+            container = storeys[0] if storeys else None
+        if not container:
+            self.report({"WARNING"}, "No active spatial container — select a storey in the spatial panel first.")
+            return {"CANCELLED"}
+
+        cursor = context.scene.cursor.location.copy()
+        logger = logging.getLogger("ImportIFC")
+        ifc_import_settings = import_ifc.IfcImportSettings.factory(context, tool.Ifc.get_path(), logger)
+
+        reuse_identities: dict = {}
+        type_conflicts: list[str] = []
+        clipboard_to_target: dict[int, ifcopenshell.entity_instance] = {}
+
+        for element in all_clipboard_products:
+            existing_type = self._find_type_conflict(ifc, clipboard_ifc, element)
+            if existing_type:
+                type_conflicts.append(existing_type)
+            try:
+                new_element = ifcopenshell.api.run(
+                    "project.append_asset",
+                    ifc,
+                    library=clipboard_ifc,
+                    element=element,
+                    reuse_identities=reuse_identities,
+                    assume_asset_uniqueness_by_name=True,
+                )
+                clipboard_to_target[element.id()] = new_element
+            except Exception as e:
+                self.report({"WARNING"}, f"Could not paste {element.is_a()}: {e}")
+
+        if type_conflicts:
+            self.report({"INFO"}, f"Reused existing types: {', '.join(set(type_conflicts))}")
+
+        self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
+
+        for element in all_clipboard_products:
+            target_el = clipboard_to_target.get(element.id())
+            if target_el:
+                self._load_into_blender(context, ifc_import_settings, target_el)
+
+        pasted_objs = []
+        for element in all_clipboard_products:
+            if element in clipboard_openings or element in clipboard_parts:
+                continue
+            target_el = clipboard_to_target.get(element.id())
+            if not target_el:
+                continue
+            ifcopenshell.api.run("spatial.assign_container", ifc, products=[target_el], relating_structure=container)
+            obj = tool.Ifc.get_object(target_el)
+            if obj:
+                obj.location = cursor
+                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+                pasted_objs.append(obj)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in pasted_objs:
+            obj.select_set(True)
+        if pasted_objs:
+            context.view_layer.objects.active = pasted_objs[0]
+
+        self.report({"INFO"}, f"{len(pasted_objs)} element(s) pasted.")
+        return {"FINISHED"}
+
+    def _blender_paste(self, context):
         previously_selected_objects = set(context.selected_objects)
         bpy.ops.view3d.pastebuffer()
-
-        # If object selection did not change, then there were no objects to paste.
-        # Then exist early to prevent unlinking previously selected objects.
         pasted_objects = context.selected_objects
         if previously_selected_objects == set(pasted_objects):
             self.report({"INFO"}, "No objects to paste.")
             return {"FINISHED"}
-
         for obj in pasted_objects:
-            # Pasted objects may come from another Blender session, or even
-            # from the same session where the original object has since
-            # been deleted. As the source element may not exist, paste will
-            # always unlink the element. If you want to duplicate an
-            # element, use the duplicate commands.
             tool.Root.unlink_object(obj)
         self.report({"INFO"}, f"{len(pasted_objects)} object(s) pasted and unlinked from IFC.")
         return {"FINISHED"}
+
+    def _reconstruct_relationships(
+        self,
+        ifc: ifcopenshell.file,
+        clipboard_ifc: ifcopenshell.file,
+        clipboard_to_target: dict[int, ifcopenshell.entity_instance],
+    ) -> None:
+        """Rebuild void/filling/aggregate relationships in the target IFC from the clipboard."""
+        for rel in clipboard_ifc.by_type("IfcRelVoidsElement"):
+            target_wall = clipboard_to_target.get(rel.RelatingBuildingElement.id())
+            target_opening = clipboard_to_target.get(rel.RelatedOpeningElement.id())
+            if target_wall and target_opening:
+                ifcopenshell.api.run("feature.add_feature", ifc, feature=target_opening, element=target_wall)
+
+        for rel in clipboard_ifc.by_type("IfcRelFillsElement"):
+            target_opening = clipboard_to_target.get(rel.RelatingOpeningElement.id())
+            target_filling = clipboard_to_target.get(rel.RelatedBuildingElement.id())
+            if target_opening and target_filling:
+                ifcopenshell.api.run("feature.add_filling", ifc, opening=target_opening, element=target_filling)
+
+        for rel in clipboard_ifc.by_type("IfcRelAggregates"):
+            if not rel.RelatingObject.is_a("IfcProduct"):
+                continue
+            target_parent = clipboard_to_target.get(rel.RelatingObject.id())
+            if not target_parent:
+                continue
+            target_parts = [clipboard_to_target[p.id()] for p in rel.RelatedObjects if p.id() in clipboard_to_target]
+            if target_parts:
+                ifcopenshell.api.run("aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent)
+
+    def _load_into_blender(self, context, ifc_import_settings, element):
+        ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
+        ifc_importer.file = tool.Ifc.get()
+        ifc_importer.process_context_filter()
+        ifc_importer.material_creator.load_existing_materials()
+        for material in ifcopenshell.util.element.get_materials(element):
+            if not tool.Ifc.get_object_by_identifier(material.id()):
+                for style in ifcopenshell.util.element.get_styles(material):
+                    ifc_importer.create_style(style)
+        ifc_importer.create_generic_elements({element})
+        ifc_importer.place_objects_in_collections()
+
+    def _find_type_conflict(self, target_ifc, clipboard_ifc, element) -> str | None:
+        element_type = ifcopenshell.util.element.get_type(element)
+        if not element_type or not hasattr(element_type, "Name") or not element_type.Name:
+            return None
+        for existing in target_ifc.by_type(element_type.is_a()):
+            if existing.Name == element_type.Name:
+                return element_type.Name
+        return None
 
 
 class OverrideEscape(bpy.types.Operator):

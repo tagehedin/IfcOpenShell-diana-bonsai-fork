@@ -60,6 +60,7 @@ classes = (
     operator.OverrideModeSetObject,
     operator.OverrideMoveSelect,
     operator.OverrideMoveMacro,
+    operator.OverrideCopyBuffer,
     operator.OverrideOriginSet,
     operator.OverrideOutlinerDelete,
     operator.OverridePasteBuffer,
@@ -157,6 +158,8 @@ def register():
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_move_macro", "G", "PRESS")
         addon_keymaps.append((km, kmi))
+        kmi = km.keymap_items.new("bim.override_copy_buffer", "C", "PRESS", ctrl=True)
+        addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True)
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_mode_set_edit", "TAB", "PRESS")
@@ -196,6 +199,8 @@ def register():
         addon_keymaps.append((km, kmi))
 
         km = wm.keyconfigs.addon.keymaps.new(name="Outliner", space_type="OUTLINER")
+        kmi = km.keymap_items.new("bim.override_copy_buffer", "C", "PRESS", ctrl=True)
+        addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True)
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_outliner_delete", "X", "PRESS")
