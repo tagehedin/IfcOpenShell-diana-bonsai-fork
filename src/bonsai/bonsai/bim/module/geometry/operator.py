@@ -2319,7 +2319,7 @@ class OverridePasteBuffer(bpy.types.Operator):
         }
 
         container = tool.Spatial.get_active_container()
-        if not container:
+        if not container or not container.is_a("IfcSpatialStructureElement"):
             storeys = ifc.by_type("IfcBuildingStorey")
             container = storeys[0] if storeys else None
         if not container:
@@ -2345,7 +2345,7 @@ class OverridePasteBuffer(bpy.types.Operator):
                     library=clipboard_ifc,
                     element=element,
                     reuse_identities=reuse_identities,
-                    assume_asset_uniqueness_by_name=True,
+                    assume_asset_uniqueness_by_name=False,
                 )
                 clipboard_to_target[element.id()] = new_element
             except Exception as e:
