@@ -2382,7 +2382,8 @@ class OverridePasteBuffer(bpy.types.Operator):
                     bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
                 pasted_objs.append(obj)
 
-        bpy.ops.object.select_all(action="DESELECT")
+        for o in context.view_layer.objects:
+            o.select_set(False)
         for obj in pasted_objs:
             obj.select_set(True)
         if pasted_objs:
