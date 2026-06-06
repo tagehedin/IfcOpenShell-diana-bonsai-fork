@@ -162,6 +162,9 @@ def register():
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True)
         addon_keymaps.append((km, kmi))
+        kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True, shift=True)
+        kmi.properties.at_cursor = True
+        addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_mode_set_edit", "TAB", "PRESS")
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.direct_profile_edit", "SPACE", "PRESS")
@@ -202,6 +205,9 @@ def register():
         kmi = km.keymap_items.new("bim.override_copy_buffer", "C", "PRESS", ctrl=True)
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True)
+        addon_keymaps.append((km, kmi))
+        kmi = km.keymap_items.new("bim.override_paste_buffer", "V", "PRESS", ctrl=True, shift=True)
+        kmi.properties.at_cursor = True
         addon_keymaps.append((km, kmi))
         kmi = km.keymap_items.new("bim.override_outliner_delete", "X", "PRESS")
         addon_keymaps.append((km, kmi))

@@ -2227,9 +2227,6 @@ class OverrideCopyBuffer(bpy.types.Operator):
                 self.report({"WARNING"}, f"Could not copy {element.is_a()} #{element.id()}: {e}")
 
         self._reconstruct_relationships(clipboard, ifc, old_to_new)
-        # Reassign all GUIDs so paste into the same file always creates new entities.
-        for entity in clipboard.by_type("IfcRoot"):
-            entity.GlobalId = ifcopenshell.guid.new()
         clipboard.write(str(_CLIPBOARD_PATH))
         self.report({"INFO"}, f"{len(roots)} element(s) copied to IFC clipboard.")
         return {"FINISHED"}
@@ -2290,9 +2287,11 @@ class OverrideCopyBuffer(bpy.types.Operator):
 
 class OverridePasteBuffer(bpy.types.Operator):
     bl_idname = "bim.override_paste_buffer"
-    bl_label = "IFC Paste BIM Objects"
-    bl_description = "Paste IFC elements from the IFC clipboard at the 3D cursor into the active spatial container"
+    bl_label = "IFC Paste in Place"
+    bl_description = "Paste IFC elements at their original coordinates. Use Ctrl+Shift+V to paste at the 3D cursor instead"
     bl_options = {"REGISTER", "UNDO"}
+
+    at_cursor: bpy.props.BoolProperty(name="At Cursor", default=False)
 
     def execute(self, context):
         ifc = tool.Ifc.get()
@@ -2307,12 +2306,16 @@ class OverridePasteBuffer(bpy.types.Operator):
             self.report({"ERROR"}, f"Could not read IFC clipboard: {e}")
             return {"CANCELLED"}
 
+        # Reassign all GUIDs in the in-memory clipboard so each paste creates
+        # fresh entities — avoids collisions with originals or previous pastes.
+        for entity in clipboard_ifc.by_type("IfcRoot"):
+            entity.GlobalId = ifcopenshell.guid.new()
+
         all_clipboard_products = list(clipboard_ifc.by_type("IfcProduct"))
         if not any(not e.is_a("IfcSpatialStructureElement") for e in all_clipboard_products):
             self.report({"INFO"}, "IFC clipboard is empty.")
             return {"FINISHED"}
 
-        # Identify which clipboard elements are openings or aggregate parts (not placed at cursor)
         clipboard_openings = {rel.RelatedOpeningElement for rel in clipboard_ifc.by_type("IfcRelVoidsElement")}
         clipboard_parts = {
             part
@@ -2329,7 +2332,6 @@ class OverridePasteBuffer(bpy.types.Operator):
             self.report({"WARNING"}, "No active spatial container — select a storey in the spatial panel first.")
             return {"CANCELLED"}
 
-        cursor = context.scene.cursor.location.copy()
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = import_ifc.IfcImportSettings.factory(context, tool.Ifc.get_path(), logger)
 
@@ -2364,6 +2366,7 @@ class OverridePasteBuffer(bpy.types.Operator):
             if target_el:
                 self._load_into_blender(context, ifc_import_settings, target_el)
 
+        cursor = context.scene.cursor.location.copy()
         pasted_objs = []
         for element in all_clipboard_products:
             if element in clipboard_openings or element in clipboard_parts:
@@ -2374,8 +2377,9 @@ class OverridePasteBuffer(bpy.types.Operator):
             ifcopenshell.api.run("spatial.assign_container", ifc, products=[target_el], relating_structure=container)
             obj = tool.Ifc.get_object(target_el)
             if obj:
-                obj.location = cursor
-                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+                if self.at_cursor:
+                    obj.location = cursor
+                    bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
                 pasted_objs.append(obj)
 
         bpy.ops.object.select_all(action="DESELECT")
