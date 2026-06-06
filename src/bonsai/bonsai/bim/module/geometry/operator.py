@@ -2361,6 +2361,15 @@ class OverridePasteBuffer(bpy.types.Operator):
 
         self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
 
+        # Assign containers before loading into Blender so place_objects_in_collections
+        # puts elements in the right storey collection (not "Unsorted").
+        for element in all_clipboard_products:
+            if element in clipboard_openings or element in clipboard_parts:
+                continue
+            target_el = clipboard_to_target.get(element.id())
+            if target_el:
+                ifcopenshell.api.run("spatial.assign_container", ifc, products=[target_el], relating_structure=container)
+
         for element in all_clipboard_products:
             target_el = clipboard_to_target.get(element.id())
             if target_el:
@@ -2374,7 +2383,6 @@ class OverridePasteBuffer(bpy.types.Operator):
             target_el = clipboard_to_target.get(element.id())
             if not target_el:
                 continue
-            ifcopenshell.api.run("spatial.assign_container", ifc, products=[target_el], relating_structure=container)
             obj = tool.Ifc.get_object(target_el)
             if obj:
                 if self.at_cursor:
