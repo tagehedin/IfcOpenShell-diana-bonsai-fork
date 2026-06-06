@@ -2363,7 +2363,11 @@ class OverridePasteBuffer(bpy.types.Operator):
         type_conflicts: list[str] = []
         clipboard_to_target: dict[int, ifcopenshell.entity_instance] = {}
 
-        for element in all_clipboard_products:
+        total = len(all_clipboard_products)
+        print(f"Paste: appending {total} elements to IFC ...")
+        for i, element in enumerate(all_clipboard_products, 1):
+            if i % 50 == 0 or i == total:
+                print(f"  {i} / {total} elements appended ...")
             existing_type = self._find_type_conflict(ifc, clipboard_ifc, element)
             if existing_type:
                 type_conflicts.append(existing_type)
@@ -2416,10 +2420,12 @@ class OverridePasteBuffer(bpy.types.Operator):
                 products=[target_el], relating_structure=resolved or container,
             )
 
-        for element in all_clipboard_products:
-            target_el = clipboard_to_target.get(element.id())
-            if target_el:
-                self._load_into_blender(context, ifc_import_settings, target_el)
+        target_elements = {
+            clipboard_to_target[el.id()]
+            for el in all_clipboard_products
+            if clipboard_to_target.get(el.id())
+        }
+        self._load_batch_into_blender(ifc_import_settings, target_elements)
 
         cursor = context.scene.cursor.location.copy()
         pasted_objs = []
@@ -2487,17 +2493,21 @@ class OverridePasteBuffer(bpy.types.Operator):
             if target_parts:
                 ifcopenshell.api.run("aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent)
 
-    def _load_into_blender(self, context, ifc_import_settings, element):
+    def _load_batch_into_blender(self, ifc_import_settings, elements: set) -> None:
         ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
         ifc_importer.file = tool.Ifc.get()
         ifc_importer.process_context_filter()
         ifc_importer.material_creator.load_existing_materials()
-        for material in ifcopenshell.util.element.get_materials(element):
-            if not tool.Ifc.get_object_by_identifier(material.id()):
-                for style in ifcopenshell.util.element.get_styles(material):
-                    ifc_importer.create_style(style)
-        ifc_importer.create_generic_elements({element})
+        for element in elements:
+            for material in ifcopenshell.util.element.get_materials(element):
+                if not tool.Ifc.get_object_by_identifier(material.id()):
+                    for style in ifcopenshell.util.element.get_styles(material):
+                        ifc_importer.create_style(style)
+        print(f"Paste: loading {len(elements)} elements into Blender ...")
+        ifc_importer.create_generic_elements(elements)
+        print("Paste: placing objects in collections ...")
         ifc_importer.place_objects_in_collections()
+        print("Paste: done loading.")
 
     def _find_type_conflict(self, target_ifc, clipboard_ifc, element) -> str | None:
         element_type = ifcopenshell.util.element.get_type(element)
