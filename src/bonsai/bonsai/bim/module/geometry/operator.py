@@ -2322,6 +2322,14 @@ class OverridePasteBuffer(bpy.types.Operator):
             self.report({"ERROR"}, f"Could not read IFC clipboard: {e}")
             return {"CANCELLED"}
 
+        if clipboard_ifc.schema != ifc.schema:
+            self.report(
+                {"ERROR"},
+                f"Schema mismatch: clipboard is {clipboard_ifc.schema}, "
+                f"current file is {ifc.schema}. Copy and paste must use the same IFC schema.",
+            )
+            return {"CANCELLED"}
+
         # Reassign all GUIDs in the in-memory clipboard so each paste creates
         # fresh entities — avoids collisions with originals or previous pastes.
         for entity in clipboard_ifc.by_type("IfcRoot"):
