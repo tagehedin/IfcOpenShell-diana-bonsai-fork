@@ -143,6 +143,7 @@ class BIM_PT_representations(Panel):
         row = self.layout.row(align=True)
         prop_with_search(row, props, "contexts", text="")
         row.operator("bim.add_representation", icon="ADD", text="")
+        row.operator("bim.merge_representation_contexts", icon="AUTOMERGE_ON", text="")
 
         if not RepresentationsData.data["representations"]:
             self.layout.label(text="No Representations Found")
