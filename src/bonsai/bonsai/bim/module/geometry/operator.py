@@ -2502,6 +2502,7 @@ class OverridePasteBuffer(bpy.types.Operator):
             for style in ifcopenshell.util.element.get_styles(element):
                 if not tool.Ifc.get_object(style):
                     ifc_importer.create_style(style)
+        ifc_importer.material_creator.load_existing_materials()
         print(f"Paste: loading {len(elements)} elements into Blender ...")
         ifc_importer.create_generic_elements(elements)
         print("Paste: placing objects in collections ...")

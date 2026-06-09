@@ -800,7 +800,11 @@ def get_styles(element: ifcopenshell.entity_instance) -> list[ifcopenshell.entit
         for material_definition_representation in material.HasRepresentation or []:
             for representation in material_definition_representation.Representations:
                 for item in representation.Items:
-                    styles.extend([s for s in item.Styles if s.is_a("IfcSurfaceStyle")])
+                    for s in item.Styles:
+                        if s.is_a("IfcSurfaceStyle"):
+                            styles.append(s)
+                        elif s.is_a("IfcPresentationStyleAssignment"):
+                            styles.extend(ss for ss in s.Styles if ss.is_a("IfcSurfaceStyle"))
 
     body = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
     if not body:
@@ -816,7 +820,11 @@ def get_styles(element: ifcopenshell.entity_instance) -> list[ifcopenshell.entit
                 queue.append(item.FirstOperand)
                 queue.append(item.SecondOperand)
             if item.StyledByItem:
-                styles.extend([s for s in item.StyledByItem[0].Styles if s.is_a("IfcSurfaceStyle")])
+                for s in item.StyledByItem[0].Styles:
+                    if s.is_a("IfcSurfaceStyle"):
+                        styles.append(s)
+                    elif s.is_a("IfcPresentationStyleAssignment"):
+                        styles.extend(ss for ss in s.Styles if ss.is_a("IfcSurfaceStyle"))
     return styles
 
 
