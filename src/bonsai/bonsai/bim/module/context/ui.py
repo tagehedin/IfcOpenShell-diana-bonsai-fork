@@ -51,6 +51,8 @@ class BIM_PT_context(bpy.types.Panel):
         op.target_view = ""
         op.parent = 0
 
+        self.layout.operator("bim.merge_representation_contexts", icon="AUTOMERGE_ON")
+
         for ifc_context in ContextData.data["contexts"]:
             box = self.layout.box()
 

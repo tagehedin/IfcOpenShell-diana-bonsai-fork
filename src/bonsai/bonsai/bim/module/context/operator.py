@@ -83,3 +83,58 @@ class EditContext(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         core.edit_context(tool.Ifc, tool.Context)
+
+
+class MergeRepresentationContexts(bpy.types.Operator):
+    bl_idname = "bim.merge_representation_contexts"
+    bl_label = "Merge Duplicate Contexts"
+    bl_description = (
+        "Remove duplicate IfcGeometricRepresentationContext entities and remap all "
+        "references to the canonical (lowest-ID) context of each type. "
+        "Fixes bloat caused by repeated cross-file paste operations."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return {"CANCELLED"}
+
+        removed = self._deduplicate(ifc)
+        from bonsai.bim.module.context.data import ContextData
+        ContextData.is_loaded = False
+        if removed:
+            self.report({"INFO"}, f"Merged {removed} duplicate context(s).")
+        else:
+            self.report({"INFO"}, "No duplicate contexts found.")
+        return {"FINISHED"}
+
+    @staticmethod
+    def _deduplicate(ifc) -> int:
+        def ctx_key(ctx):
+            if ctx.is_a("IfcGeometricRepresentationSubContext"):
+                return (True, ctx.ContextType, ctx.ContextIdentifier, ctx.TargetView)
+            return (False, ctx.ContextType, None, None)
+
+        all_contexts = list(ifc.by_type("IfcGeometricRepresentationContext"))
+        canonical: dict = {}
+        for c in all_contexts:
+            canonical.setdefault(ctx_key(c), c)
+
+        remap = {c: canonical[ctx_key(c)] for c in all_contexts if c is not canonical[ctx_key(c)]}
+        if not remap:
+            return 0
+
+        for rep in ifc.by_type("IfcRepresentation"):
+            if rep.ContextOfItems in remap:
+                rep.ContextOfItems = remap[rep.ContextOfItems]
+
+        for ctx in all_contexts:
+            if ctx not in remap and ctx.is_a("IfcGeometricRepresentationSubContext"):
+                if ctx.ParentContext in remap:
+                    ctx.ParentContext = remap[ctx.ParentContext]
+
+        for ctx in sorted(remap, key=lambda c: 0 if c.is_a("IfcGeometricRepresentationSubContext") else 1):
+            ifc.remove(ctx)
+
+        return len(remap)

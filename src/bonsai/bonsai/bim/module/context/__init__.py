@@ -25,6 +25,7 @@ classes = (
     operator.DisableEditingContext,
     operator.EditContext,
     operator.EnableEditingContext,
+    operator.MergeRepresentationContexts,
     operator.RemoveContext,
     prop.BIMContextProperties,
     ui.BIM_PT_context,
