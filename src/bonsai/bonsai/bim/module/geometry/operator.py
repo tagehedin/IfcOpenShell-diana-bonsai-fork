@@ -2359,6 +2359,7 @@ class OverridePasteBuffer(bpy.types.Operator):
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = import_ifc.IfcImportSettings.factory(context, tool.Ifc.get_path(), logger)
 
+        pre_paste_context_ids = {c.id() for c in ifc.by_type("IfcGeometricRepresentationContext")}
         reuse_identities: dict = {}
         type_conflicts: list[str] = []
         clipboard_to_target: dict[int, ifcopenshell.entity_instance] = {}
@@ -2388,6 +2389,7 @@ class OverridePasteBuffer(bpy.types.Operator):
             self.report({"INFO"}, f"Reused existing types: {', '.join(set(type_conflicts))}")
 
         self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
+        self._deduplicate_contexts(ifc, pre_paste_context_ids)
 
         # Read the container name map stored by the copy operator.
         import json
@@ -2492,6 +2494,52 @@ class OverridePasteBuffer(bpy.types.Operator):
             target_parts = [clipboard_to_target[p.id()] for p in rel.RelatedObjects if p.id() in clipboard_to_target]
             if target_parts:
                 ifcopenshell.api.run("aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent)
+
+    def _deduplicate_contexts(self, ifc: ifcopenshell.file, pre_paste_ids: set[int]) -> None:
+        """Remove duplicate IfcGeometricRepresentationContext entities created by append_asset.
+
+        append_asset copies all entities an element references, including contexts
+        that already exist in the target file. This remaps every ContextOfItems and
+        ParentContext reference away from the duplicates and then removes them.
+        """
+        all_contexts = ifc.by_type("IfcGeometricRepresentationContext")
+        pre_contexts = [c for c in all_contexts if c.id() in pre_paste_ids]
+        new_contexts = [c for c in all_contexts if c.id() not in pre_paste_ids]
+        if not new_contexts:
+            return
+
+        def ctx_key(ctx):
+            if ctx.is_a("IfcGeometricRepresentationSubContext"):
+                return (True, ctx.ContextType, ctx.ContextIdentifier, ctx.TargetView)
+            return (False, ctx.ContextType, None, None)
+
+        canonical = {}
+        for c in pre_contexts:  # by_type iterates in ascending ID order — first seen = lowest ID = oldest
+            canonical.setdefault(ctx_key(c), c)
+
+        remap = {}
+        for ctx in new_contexts:
+            canon = canonical.get(ctx_key(ctx))
+            if canon:
+                remap[ctx] = canon
+
+        if not remap:
+            return
+
+        for rep in ifc.by_type("IfcRepresentation"):
+            if rep.ContextOfItems in remap:
+                rep.ContextOfItems = remap[rep.ContextOfItems]
+
+        for ctx in new_contexts:
+            if ctx not in remap and ctx.is_a("IfcGeometricRepresentationSubContext"):
+                if ctx.ParentContext in remap:
+                    ctx.ParentContext = remap[ctx.ParentContext]
+
+        sub_first = sorted(remap, key=lambda c: 0 if c.is_a("IfcGeometricRepresentationSubContext") else 1)
+        for ctx in sub_first:
+            ifc.remove(ctx)
+
+        print(f"Paste: removed {len(remap)} duplicate representation context(s).")
 
     def _load_batch_into_blender(self, ifc_import_settings, elements: set) -> None:
         ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
