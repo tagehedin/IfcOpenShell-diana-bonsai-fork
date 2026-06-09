@@ -57,6 +57,7 @@ class BIM_PT_materials(Panel):
         row = self.layout.row(align=True)
         if self.props.is_editing:
             row.label(text=f"{MaterialsData.data['total_materials']} {self.props.material_type}s", icon="NODE_MATERIAL")
+            row.operator("bim.pick_material_by_object", text="", icon="EYEDROPPER")
             row.operator("bim.disable_editing_materials", text="", icon="CANCEL")
         else:
             row.label(text=f"{MaterialsData.data['total_materials']} Materials", icon="NODE_MATERIAL")
