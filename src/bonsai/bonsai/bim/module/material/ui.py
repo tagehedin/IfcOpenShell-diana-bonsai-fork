@@ -62,6 +62,7 @@ class BIM_PT_materials(Panel):
             row.label(text=f"{MaterialsData.data['total_materials']} Materials", icon="NODE_MATERIAL")
             prop_with_search(row, self.props, "material_type", text="")
             row.operator("bim.load_materials", text="", icon="IMPORT")
+            row.operator("bim.pick_material_by_object", text="", icon="EYEDROPPER")
             return
 
         row = self.layout.row(align=True)

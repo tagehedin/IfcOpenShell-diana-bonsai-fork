@@ -1021,3 +1021,66 @@ class SelectMaterialInMaterialsUI(bpy.types.Operator):
             f"Material '{tool.Material.get_material_name(material) or 'Unnamed'}' is selected in Materials UI.",
         )
         return {"FINISHED"}
+
+
+class PickMaterialByObject(bpy.types.Operator):
+    bl_idname = "bim.pick_material_by_object"
+    bl_label = "Pick Material by Object"
+    bl_description = "Click on an object in the 3D viewport to select its IfcMaterial in this list"
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set("EYEDROPPER")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            context.window.cursor_modal_restore()
+            return self._pick(context, event)
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            context.window.cursor_modal_restore()
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}
+
+    def _pick(self, context, event):
+        from bpy_extras import view3d_utils
+        import ifcopenshell.util.element
+
+        region = rv3d = None
+        for area in context.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for r in area.regions:
+                if r.type == "WINDOW":
+                    if r.x <= event.mouse_x <= r.x + r.width and r.y <= event.mouse_y <= r.y + r.height:
+                        region = r
+                        rv3d = area.spaces[0].region_3d
+                        break
+
+        if not region or not rv3d:
+            self.report({"WARNING"}, "Click inside the 3D viewport")
+            return {"CANCELLED"}
+
+        coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, _loc, _norm, _face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+
+        if not hit:
+            self.report({"WARNING"}, "No object hit — click on an object")
+            return {"CANCELLED"}
+
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            self.report({"WARNING"}, f"'{obj.name}' is not linked to an IFC element")
+            return {"CANCELLED"}
+
+        material = ifcopenshell.util.element.get_material(element)
+        if not material:
+            self.report({"WARNING"}, f"'{obj.name}' has no IfcMaterial assigned")
+            return {"CANCELLED"}
+
+        bpy.ops.bim.material_ui_select(material_id=material.id())
+        return {"FINISHED"}
