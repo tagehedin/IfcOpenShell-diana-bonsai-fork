@@ -55,6 +55,23 @@ Printing
 diana-bonsai-fork is trying to implement culling and other improvements to make printing usable.
 
 
+Installation and updates
+-
+1. In Blender, go to **Edit > Preferences > Get Extensions**.
+2. Click the dropdown arrow next to "Repositories" (top right) and choose **Add Remote Repository**.
+3. Enter this URL:
+
+   ```
+   https://tagehedin.github.io/IfcOpenShell-diana-bonsai-fork/index.json
+   ```
+
+4. Enable "Check for Updates on Startup" if you want new releases picked up automatically.
+5. Find "Bonsai" in the extensions list and install it.
+
+This single URL works regardless of operating system or Blender's bundled Python
+version — Blender automatically picks the right download for your platform.
+
+Releases: https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases
 
 
 
