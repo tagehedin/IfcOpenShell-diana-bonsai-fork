@@ -1555,6 +1555,7 @@ class Geometry(bonsai.core.tool.Geometry):
         [consider_inverses.append(texture := t) for t in getattr(representation_item, "HasTextures", [])]
 
         representation = None
+        element_set = None
         boolean_results_to_remove: set[ifcopenshell.entity_instance] = set()
         for inverse in ifc_file.get_inverse(representation_item):
             if inverse.is_a("IfcShapeRepresentation"):
@@ -1562,6 +1563,8 @@ class Geometry(bonsai.core.tool.Geometry):
                     shape_aspects.append(inverse.OfShapeAspect[0])
                 else:
                     representation = inverse
+            elif inverse.is_a("IfcGeometricSet") and representation_item in inverse.Elements:
+                element_set = inverse
             elif inverse.is_a("IfcBooleanResult"):
                 if inverse.SecondOperand == representation_item:
                     other_operand = inverse.FirstOperand
@@ -1592,6 +1595,14 @@ class Geometry(bonsai.core.tool.Geometry):
 
         for shape_aspect in shape_aspects:
             cls.remove_representation_items_from_shape_aspect([representation_item], shape_aspect)
+
+        if element_set:
+            if len(element_set.Elements) <= 1:
+                # Removing the last element would leave an invalid empty set,
+                # so remove the set itself (which removes this item too).
+                cls.remove_representation_item(element_set, element)
+                return
+            element_set.Elements = tuple(e for e in element_set.Elements if e != representation_item)
 
         if representation:
             new_items = tuple(set(representation.Items) - {representation_item})
