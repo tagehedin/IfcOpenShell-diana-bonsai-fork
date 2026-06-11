@@ -2490,6 +2490,15 @@ class OverridePasteBuffer(bpy.types.Operator):
         if type_conflicts:
             self.report({"INFO"}, f"Reused existing types: {', '.join(set(type_conflicts))}")
 
+        # append_asset's reuse_identities can retroactively merge/remove an entity
+        # created for an earlier element once a later element reveals it's a
+        # duplicate. Drop any references that no longer resolve.
+        for clipboard_id, target_el in list(clipboard_to_target.items()):
+            try:
+                ifc.by_id(target_el.id())
+            except RuntimeError:
+                del clipboard_to_target[clipboard_id]
+
         self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
         self._deduplicate_contexts(ifc, pre_paste_context_ids)
 
@@ -2524,14 +2533,22 @@ class OverridePasteBuffer(bpy.types.Operator):
                 products=[target_el], relating_structure=resolved or container,
             )
 
-        target_elements = {
-            clipboard_to_target[el.id()]
-            for el in all_clipboard_products
-            if clipboard_to_target.get(el.id())
-        }
+        # _reconstruct_relationships and _deduplicate_contexts can themselves
+        # merge/remove entities (e.g. duplicate placements or contexts), so
+        # re-check resolvability right before building the iterator.
+        target_elements = set()
+        for el in all_clipboard_products:
+            target_el = clipboard_to_target.get(el.id())
+            if not target_el:
+                continue
+            try:
+                ifc.by_id(target_el.id())
+            except RuntimeError:
+                del clipboard_to_target[el.id()]
+                continue
+            target_elements.add(target_el)
         self._load_batch_into_blender(ifc_import_settings, target_elements)
 
-        cursor = context.scene.cursor.location.copy()
         pasted_objs = []
         for element in all_clipboard_products:
             if element in clipboard_openings or element in clipboard_parts:
@@ -2541,10 +2558,15 @@ class OverridePasteBuffer(bpy.types.Operator):
                 continue
             obj = tool.Ifc.get_object(target_el)
             if obj:
-                if self.at_cursor:
-                    obj.location = cursor
-                    bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
                 pasted_objs.append(obj)
+
+        if self.at_cursor and pasted_objs:
+            cursor = context.scene.cursor.location.copy()
+            center = sum((obj.location for obj in pasted_objs), mathutils.Vector()) / len(pasted_objs)
+            offset = cursor - center
+            for obj in pasted_objs:
+                obj.location += offset
+                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
 
         for o in context.view_layer.objects:
             o.select_set(False)
@@ -2598,11 +2620,18 @@ class OverridePasteBuffer(bpy.types.Operator):
                 ifcopenshell.api.run("aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent)
 
     def _deduplicate_contexts(self, ifc: ifcopenshell.file, pre_paste_ids: set[int]) -> None:
-        """Remove duplicate IfcGeometricRepresentationContext entities created by append_asset.
+        """Remap references away from duplicate IfcGeometricRepresentationContext entities
+        created by append_asset.
 
         append_asset copies all entities an element references, including contexts
-        that already exist in the target file. This remaps every ContextOfItems and
-        ParentContext reference away from the duplicates and then removes them.
+        that already exist in the target file, onto the canonical pre-existing
+        contexts. The duplicates are left in the file unused rather than removed:
+        append_asset's own reuse_identities pass can leave a duplicate context's
+        inverse index referencing an entity that was already merged away elsewhere,
+        and calling ifc.remove() on such a context raises RuntimeError while also
+        permanently corrupting that context's inverse index (causing later
+        ifcopenshell.geom.iterator construction to crash). Leaving the unused
+        duplicates in place is harmless.
         """
         all_contexts = ifc.by_type("IfcGeometricRepresentationContext")
         pre_contexts = [c for c in all_contexts if c.id() in pre_paste_ids]
@@ -2632,20 +2661,22 @@ class OverridePasteBuffer(bpy.types.Operator):
             if rep.ContextOfItems in remap:
                 rep.ContextOfItems = remap[rep.ContextOfItems]
 
+        # Repoint ParentContext away from any duplicate so subcontexts of a
+        # duplicate top-level context point at the canonical one instead.
         for ctx in new_contexts:
-            if ctx not in remap and ctx.is_a("IfcGeometricRepresentationSubContext"):
+            if ctx.is_a("IfcGeometricRepresentationSubContext"):
                 if ctx.ParentContext in remap:
                     ctx.ParentContext = remap[ctx.ParentContext]
 
-        sub_first = sorted(remap, key=lambda c: 0 if c.is_a("IfcGeometricRepresentationSubContext") else 1)
-        for ctx in sub_first:
-            ifc.remove(ctx)
-
-        print(f"Paste: removed {len(remap)} duplicate representation context(s).")
+        print(f"Paste: remapped {len(remap)} duplicate representation context(s).")
 
     def _load_batch_into_blender(self, ifc_import_settings, elements: set) -> None:
         ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
         ifc_importer.file = tool.Ifc.get()
+        # The multiprocessing geometry iterator can yield the same shape more than
+        # once. has_existing_project=True makes create_product() return the
+        # already-created object for an element instead of creating duplicates.
+        ifc_importer.has_existing_project = True
         ifc_importer.process_context_filter()
         ifc_importer.material_creator.load_existing_materials()
         for element in elements:
