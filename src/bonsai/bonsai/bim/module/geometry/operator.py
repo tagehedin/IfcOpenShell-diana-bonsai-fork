@@ -33,8 +33,10 @@ from typing import (
 
 import bmesh
 import bpy
+import mathutils
 import ifcopenshell
 import ifcopenshell.api.boundary
+import ifcopenshell.api.context
 import ifcopenshell.api.drawing
 import ifcopenshell.api.geometry
 import ifcopenshell.api.group
@@ -415,6 +417,108 @@ class AddRepresentation(bpy.types.Operator, tool.Ifc.Operator):
         if self.representation_conversion_method == "OBJECT":
             row = self.layout.row()
             row.prop(props, "representation_from_object", text="")
+
+
+class AddPlanRepresentations(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.add_plan_representations"
+    bl_label = "Generate 2D Plan Representations"
+    bl_description = (
+        "Generate a Plan/Body/PLAN_VIEW representation for each selected object based on its 3D geometry.\n"
+        "Useful for elements imported from other software that only have 3D representations."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    representation_conversion_method: bpy.props.EnumProperty(
+        items=[
+            ("BOX", "Bounding Box", "Creates a 2D bounding box representation as seen from above."),
+            ("OUTLINE", "Trace Outline", "Traces the outline of the object as seen from above."),
+        ],
+        default="BOX",
+        name="Representation Conversion Method",
+    )
+    skip_existing: bpy.props.BoolProperty(
+        name="Skip Objects With Existing Plan Representation",
+        description="Don't change objects that already have a Plan/Body/PLAN_VIEW representation",
+        default=True,
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        assert layout
+        layout.prop(self, "representation_conversion_method", text="")
+        layout.prop(self, "skip_existing")
+
+    def _execute(self, context):
+        ifc_file = tool.Ifc.get()
+        plan_context = ifcopenshell.util.representation.get_context(ifc_file, "Plan", "Body", "PLAN_VIEW")
+        if not plan_context:
+            parent = ifcopenshell.util.representation.get_context(ifc_file, "Plan")
+            if not parent:
+                parent = ifcopenshell.api.context.add_context(ifc_file, context_type="Plan")
+            plan_context = ifcopenshell.api.context.add_context(
+                ifc_file, context_type="Plan", context_identifier="Body", target_view="PLAN_VIEW", parent=parent
+            )
+
+        added = skipped = failed = 0
+        for obj in context.selected_objects:
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+
+            if self.skip_existing and ifcopenshell.util.representation.get_representation(
+                element, "Plan", "Body", "PLAN_VIEW"
+            ):
+                skipped += 1
+                continue
+
+            if not isinstance(obj.data, bpy.types.Mesh) or not obj.data.polygons:
+                failed += 1
+                continue
+
+            original_data = obj.data
+            original_representation = tool.Geometry.get_active_representation(obj)
+
+            if self.representation_conversion_method == "OUTLINE":
+                new_rep_data = tool.Geometry.generate_outline_mesh(obj, axis="+Z")
+            else:
+                new_rep_data = tool.Geometry.generate_2d_box_mesh(obj, axis="Z")
+
+            tool.Geometry.change_object_data(obj, new_rep_data, is_global=True)
+
+            try:
+                core.add_representation(
+                    tool.Ifc,
+                    tool.Geometry,
+                    tool.Style,
+                    tool.Surveyor,
+                    obj=obj,
+                    context=plan_context,
+                    ifc_representation_class=None,
+                    profile_set_usage=None,
+                )
+            except core.IncompatibleRepresentationError:
+                tool.Geometry.change_object_data(obj, original_data, is_global=True)
+                bpy.data.meshes.remove(new_rep_data)
+                failed += 1
+                continue
+
+            bpy.data.meshes.remove(new_rep_data)
+
+            if original_representation:
+                core.switch_representation(
+                    tool.Ifc,
+                    tool.Geometry,
+                    obj=obj,
+                    representation=original_representation,
+                )
+
+            added += 1
+
+        bpy.data.orphans_purge(do_recursive=True)
+        self.report({"INFO"}, f"2D Plan representations — added: {added}, skipped: {skipped}, failed: {failed}")
 
 
 class SelectConnection(bpy.types.Operator, tool.Ifc.Operator):
@@ -3989,7 +4093,11 @@ class ImportRepresentationItems(bpy.types.Operator, tool.Ifc.Operator):
         elif "ios_verts_item_ids" in data:  # Has only verts.
             item_ids = data["ios_verts_item_ids"]
         else:
-            assert False, "Unexpected mesh type."
+            # Mesh wasn't loaded through the geometry iterator (e.g. created by
+            # Add Representation's BOX/OUTLINE/CUBE/OBJECT methods), so it has no
+            # ios_*_item_ids attributes. Fall back to resolving items directly
+            # from the linked IFC representation below.
+            item_ids = []
 
         if not item_ids:
             # It is possible that the user has created a shape that

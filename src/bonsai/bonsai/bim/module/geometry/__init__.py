@@ -26,6 +26,7 @@ classes = (
     operator.AddCurvelikeItem,
     operator.AddHalfSpaceSolidItem,
     operator.AddMeshlikeItem,
+    operator.AddPlanRepresentations,
     operator.AddRepresentation,
     operator.AddSweptAreaSolidItem,
     operator.AssignRepresentationLayer,

@@ -145,6 +145,9 @@ class BIM_PT_representations(Panel):
         row.operator("bim.add_representation", icon="ADD", text="")
         row.operator("bim.merge_representation_contexts", icon="AUTOMERGE_ON", text="")
 
+        row = self.layout.row(align=True)
+        row.operator("bim.add_plan_representations", icon="MESH_PLANE", text="Generate 2D Plan (Selected Objects)")
+
         if not RepresentationsData.data["representations"]:
             self.layout.label(text="No Representations Found")
             return
