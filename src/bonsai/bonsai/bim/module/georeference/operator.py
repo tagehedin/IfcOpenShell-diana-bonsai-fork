@@ -60,6 +60,9 @@ class EditGeoreferencing(bpy.types.Operator, tool.Ifc.Operator):
     bl_description = "Edit the georeferencing"
 
     def _execute(self, context):
+        if not tool.Ifc.get().by_type("IfcProjectedCRS"):
+            self.report({"ERROR"}, "No georeferencing to edit.")
+            return {"CANCELLED"}
         core.edit_georeferencing(tool.Ifc, tool.Georeference)
 
 

@@ -38,7 +38,12 @@ class RemoveLibrary(bpy.types.Operator, tool.Ifc.Operator):
     library: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.remove_library(tool.Ifc, library=tool.Ifc.get().by_id(self.library))
+        try:
+            library = tool.Ifc.get().by_id(self.library)
+        except RuntimeError:
+            self.report({"ERROR"}, "Library not found.")
+            return {"CANCELLED"}
+        core.remove_library(tool.Ifc, library=library)
 
 
 class EnableEditingLibraryReferences(bpy.types.Operator, tool.Ifc.Operator):
@@ -48,7 +53,12 @@ class EnableEditingLibraryReferences(bpy.types.Operator, tool.Ifc.Operator):
     library: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.enable_editing_library_references(tool.Library, library=tool.Ifc.get().by_id(self.library))
+        try:
+            library = tool.Ifc.get().by_id(self.library)
+        except RuntimeError:
+            self.report({"ERROR"}, "Library not found.")
+            return {"CANCELLED"}
+        core.enable_editing_library_references(tool.Library, library=library)
 
 
 class DisableEditingLibraryReferences(bpy.types.Operator, tool.Ifc.Operator):
@@ -66,7 +76,11 @@ class EnableEditingLibrary(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        core.enable_editing_library(tool.Library)
+        try:
+            core.enable_editing_library(tool.Library)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active library.")
+            return {"CANCELLED"}
 
 
 class DisableEditingLibrary(bpy.types.Operator, tool.Ifc.Operator):
@@ -84,7 +98,11 @@ class EditLibrary(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        core.edit_library(tool.Ifc, tool.Library)
+        try:
+            core.edit_library(tool.Ifc, tool.Library)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active library.")
+            return {"CANCELLED"}
 
 
 class AddLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -93,7 +111,11 @@ class AddLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        core.add_library_reference(tool.Ifc, tool.Library)
+        try:
+            core.add_library_reference(tool.Ifc, tool.Library)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active library.")
+            return {"CANCELLED"}
 
 
 class RemoveLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -103,7 +125,12 @@ class RemoveLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     reference: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.remove_library_reference(tool.Ifc, tool.Library, reference=tool.Ifc.get().by_id(self.reference))
+        try:
+            reference = tool.Ifc.get().by_id(self.reference)
+        except RuntimeError:
+            self.report({"ERROR"}, "Reference not found.")
+            return {"CANCELLED"}
+        core.remove_library_reference(tool.Ifc, tool.Library, reference=reference)
 
 
 class EnableEditingLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -113,7 +140,12 @@ class EnableEditingLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     reference: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.enable_editing_library_reference(tool.Library, reference=tool.Ifc.get().by_id(self.reference))
+        try:
+            reference = tool.Ifc.get().by_id(self.reference)
+        except RuntimeError:
+            self.report({"ERROR"}, "Reference not found.")
+            return {"CANCELLED"}
+        core.enable_editing_library_reference(tool.Library, reference=reference)
 
 
 class DisableEditingLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -131,7 +163,11 @@ class EditLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        core.edit_library_reference(tool.Ifc, tool.Library)
+        try:
+            core.edit_library_reference(tool.Ifc, tool.Library)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active reference.")
+            return {"CANCELLED"}
 
 
 class AssignLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -141,9 +177,15 @@ class AssignLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     reference: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.assign_library_reference(
-            tool.Ifc, obj=context.active_object, reference=tool.Ifc.get().by_id(self.reference)
-        )
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        try:
+            reference = tool.Ifc.get().by_id(self.reference)
+        except RuntimeError:
+            self.report({"ERROR"}, "Reference not found.")
+            return {"CANCELLED"}
+        core.assign_library_reference(tool.Ifc, obj=obj, reference=reference)
 
 
 class UnassignLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
@@ -153,6 +195,12 @@ class UnassignLibraryReference(bpy.types.Operator, tool.Ifc.Operator):
     reference: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.unassign_library_reference(
-            tool.Ifc, obj=context.active_object, reference=tool.Ifc.get().by_id(self.reference)
-        )
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        try:
+            reference = tool.Ifc.get().by_id(self.reference)
+        except RuntimeError:
+            self.report({"ERROR"}, "Reference not found.")
+            return {"CANCELLED"}
+        core.unassign_library_reference(tool.Ifc, obj=obj, reference=reference)
