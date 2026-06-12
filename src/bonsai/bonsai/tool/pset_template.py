@@ -40,9 +40,11 @@ class PsetTemplate(bonsai.core.tool.PsetTemplate):
 
         @final
         def execute(self, context):
-            IfcStore.begin_transaction(self)
             template_file = IfcStore.pset_template_file
-            assert template_file
+            if template_file is None:
+                self.report({"ERROR"}, "No pset template file is loaded.")
+                return {"CANCELLED"}
+            IfcStore.begin_transaction(self)
             self.template_file = template_file
             template_file.begin_transaction()
             result = self._execute(context)

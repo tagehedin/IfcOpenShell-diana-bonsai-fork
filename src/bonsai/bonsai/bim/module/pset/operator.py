@@ -35,6 +35,19 @@ if TYPE_CHECKING:
     from bonsai.bim.module.pset.prop import AddEditPropertyEntry
 
 
+VALID_PSET_OBJ_TYPES = (
+    "Object",
+    "Material",
+    "MaterialSetItem",
+    "Task",
+    "Resource",
+    "Profile",
+    "WorkSchedule",
+    "Group",
+    "Zone",
+)
+
+
 class TogglePsetExpansion(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.toggle_pset_expansion"
     bl_label = "Toggle Pset Expansion"
@@ -57,6 +70,10 @@ class EnablePsetEditing(bpy.types.Operator):
     obj_type: bpy.props.StringProperty()
 
     def execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
+
         if self.pset_id:
             pset = tool.Ifc.get().by_id(self.pset_id)
             self.pset_name = pset.Name
@@ -75,6 +92,9 @@ class DisablePsetEditing(bpy.types.Operator, tool.Ifc.Operator):
     obj_type: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         props = tool.Pset.get_pset_props(self.obj, self.obj_type)
         if props.active_pset_id:
             pset = tool.Ifc.get().by_id(props.active_pset_id)
@@ -98,6 +118,9 @@ class EditPset(bpy.types.Operator, tool.Ifc.Operator):
     properties: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         props = tool.Pset.get_pset_props(self.obj, self.obj_type)
         ifc_definition_id = tool.Blender.get_obj_ifc_definition_id(self.obj, self.obj_type, context)
@@ -163,11 +186,17 @@ class RemovePset(bpy.types.Operator, tool.Ifc.Operator):
     obj_type: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if not self.pset_id:
+            self.report({"ERROR"}, "No pset specified.")
+            return {"CANCELLED"}
         if self.obj_type == "Object":
             if context.selected_objects:
                 objects = [o.name for o in tool.Blender.get_selected_objects()]
-            else:
+            elif context.active_object:
                 objects = [context.active_object.name]
+            else:
+                self.report({"ERROR"}, "No object selected.")
+                return {"CANCELLED"}
         else:
             objects = [self.obj]
         pset_name = tool.Ifc.get().by_id(self.pset_id).Name
@@ -190,6 +219,9 @@ class AddPset(bpy.types.Operator):
     obj_type: bpy.props.StringProperty()
 
     def execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         core.add_pset(tool.Ifc, tool.Pset, tool.Blender, obj_name=self.obj, obj_type=self.obj_type)
         return {"FINISHED"}
 
@@ -216,6 +248,9 @@ class UnsharePset(bpy.types.Operator, tool.Ifc.Operator):
         return f"{properties.description_}{cls.bl_description}"
 
     def _execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         core.unshare_pset(tool.Ifc, tool.Pset, self.obj_type, self.obj, self.pset_id)
 
 
@@ -228,6 +263,9 @@ class AddQto(bpy.types.Operator, tool.Ifc.Operator):
     obj_type: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         qto_name = tool.Pset.get_pset_name(self.obj, self.obj_type, pset_type="QTO")
         bpy.ops.bim.enable_pset_editing(
@@ -246,7 +284,9 @@ class CopyPropertyToSelection(bpy.types.Operator, tool.Ifc.Operator):
         name: str
 
     def _execute(self, context):
-        assert (obj := context.active_object)
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Pset.get_pset_props(obj.name, "Object")
         pset_id = props.active_pset_id
         if pset_id:
@@ -254,6 +294,9 @@ class CopyPropertyToSelection(bpy.types.Operator, tool.Ifc.Operator):
         else:
             is_pset = props.active_pset_type == "PSET"
         pset_name = props.active_pset_name
+        if self.name not in props.properties:
+            self.report({"ERROR"}, "No property specified.")
+            return {"CANCELLED"}
         prop = props.properties[self.name]
         if prop.value_type == "IfcPropertySingleValue":
             prop_value = prop.metadata.get_value()
@@ -515,6 +558,8 @@ class AddProposedProp(bpy.types.Operator):
     @classmethod
     def description(cls, context, properties):
         description = "Add proposed property to the custom property set.\n\n"
+        if properties.obj_type not in VALID_PSET_OBJ_TYPES:
+            return cls.bl_description
         props = tool.Pset.get_pset_props(properties.obj, properties.obj_type)
         if props.active_pset_type == "PSET":
             description += (
@@ -540,6 +585,9 @@ class AddProposedProp(bpy.types.Operator):
         return description
 
     def execute(self, context):
+        if self.obj_type not in VALID_PSET_OBJ_TYPES:
+            self.report({"ERROR"}, "Invalid object type specified.")
+            return {"CANCELLED"}
         res = core.add_proposed_prop(tool.Pset, self.obj, self.obj_type, self.prop_name, self.prop_value)
         if res:
             self.report({"ERROR"}, res)
@@ -566,10 +614,12 @@ class SavePsetAsTemplate(bpy.types.Operator, tool.PsetTemplate.PsetTemplateOpera
         self.layout.prop(props, "pset_template_files", text="Template File")
 
     def _execute(self, context):
+        if not self.pset_id:
+            self.report({"ERROR"}, "No pset specified.")
+            return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
         pset = ifc_file.by_id(self.pset_id)
-        template_file = IfcStore.pset_template_file
-        assert template_file
+        template_file = self.template_file
 
         tool.PsetTemplate.add_pset_as_template(pset.Name, template_file)
 
