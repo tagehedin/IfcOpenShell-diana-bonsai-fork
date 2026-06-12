@@ -28,6 +28,7 @@ classes = (
     operator.DuplicateMaterial,
     operator.AddMaterialSet,
     operator.AddProfile,
+    operator.AssignExistingMaterialSet,
     operator.AssignMaterial,
     operator.AssignMaterialToSelected,
     operator.AssignParameterizedProfile,

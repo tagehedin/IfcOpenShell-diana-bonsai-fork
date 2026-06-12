@@ -60,6 +60,42 @@ def get_object_material_type(self, context):
     return ObjectMaterialData.data["material_type"]
 
 
+# Blender's dynamic EnumProperty items callbacks must return strings that stay
+# alive for as long as the dropdown is drawn, otherwise labels can render as
+# garbage/blank. Cache the last result here to keep those strings referenced.
+_existing_material_sets_cache: list[tuple[str, str, str]] = []
+
+
+def get_existing_material_sets(self, context):
+    global _existing_material_sets_cache
+
+    # If a set is already assigned, offer alternatives of the same class.
+    # Otherwise, fall back to the class chosen in the "Material Type" dropdown.
+    set_type = None
+    current_set_id = None
+    if ObjectMaterialData.is_loaded and (material_class := ObjectMaterialData.data.get("material_class")):
+        set_type = material_class.removesuffix("Usage")
+        current_set_id = (ObjectMaterialData.data.get("set") or {}).get("id")
+    else:
+        set_type = self.material_type
+
+    if set_type not in ("IfcMaterialLayerSet", "IfcMaterialProfileSet", "IfcMaterialConstituentSet"):
+        _existing_material_sets_cache = []
+        return _existing_material_sets_cache
+    ifc_file = tool.Ifc.get()
+    if not ifc_file:
+        _existing_material_sets_cache = []
+        return _existing_material_sets_cache
+    results = []
+    for material_set in ifc_file.by_type(set_type):
+        if material_set.id() == current_set_id:
+            continue
+        name = getattr(material_set, "LayerSetName", None) or getattr(material_set, "Name", None) or "Unnamed"
+        results.append((str(material_set.id()), name, ""))
+    _existing_material_sets_cache = sorted(results, key=lambda x: x[1])
+    return _existing_material_sets_cache
+
+
 def get_material_types(self, context):
     if not MaterialsData.is_loaded:
         MaterialsData.load()
@@ -193,6 +229,11 @@ class BIMMaterialProperties(PropertyGroup):
 class BIMObjectMaterialProperties(PropertyGroup):
     material_type: EnumProperty(items=get_object_material_type, name="Material Type")
     material: EnumProperty(items=get_materials, name="Material", description="Currently selected IfcMaterial")
+    existing_material_set: EnumProperty(
+        items=get_existing_material_sets,
+        name="Existing Set",
+        description="An existing material layer/profile/constituent set to assign and share",
+    )
     is_editing: BoolProperty(name="Is Editing", default=False)
     material_set_usage_attributes: CollectionProperty(name="Material Set Usage Attributes", type=Attribute)
     material_set_attributes: CollectionProperty(name="Material Set Attributes", type=Attribute)
@@ -228,6 +269,7 @@ class BIMObjectMaterialProperties(PropertyGroup):
     if TYPE_CHECKING:
         material_type: str
         material: str
+        existing_material_set: str
         is_editing: bool
         material_set_usage_attributes: bpy.types.bpy_prop_collection_idprop[Attribute]
         material_set_attributes: bpy.types.bpy_prop_collection_idprop[Attribute]

@@ -173,12 +173,10 @@ class Usecase:
             return self.assign_ifc_material()
 
         elif self.settings["type"] == "IfcMaterialConstituentSet":
-            material_set = self.file.create_entity(self.settings["type"])
-            return self.create_material_association(material_set)
+            return self.assign_or_create_material_set("IfcMaterialConstituentSet")
 
         elif self.settings["type"] == "IfcMaterialLayerSet":
-            material_set = self.file.create_entity(self.settings["type"])
-            return self.create_material_association(material_set)
+            return self.assign_or_create_material_set("IfcMaterialLayerSet")
 
         elif self.settings["type"] == "IfcMaterialLayerSetUsage":
             AXIS3_CLASSES = [
@@ -237,8 +235,7 @@ class Usecase:
             return rels[0] if len(rels) == 1 else rels
 
         elif self.settings["type"] == "IfcMaterialProfileSet":
-            material_set = self.file.create_entity(self.settings["type"])
-            return self.create_material_association(material_set)
+            return self.assign_or_create_material_set("IfcMaterialProfileSet")
 
         elif self.settings["type"] == "IfcMaterialProfileSetUsage":
             provided_material_set = None
@@ -331,6 +328,22 @@ class Usecase:
         rel.RelatedObjects = list(previous_related_objects | self.products)
         ifcopenshell.api.owner.update_owner_history(self.file, element=rel)
         return rel
+
+    def assign_or_create_material_set(self, material_set_class: str) -> ifcopenshell.entity_instance:
+        """Assign the provided material set if it matches `material_set_class`, sharing
+        it with any objects it may already be associated with. Otherwise, create a new,
+        empty material set of that class."""
+        material = self.settings["material"]
+        if material and material.is_a(material_set_class):
+            rel = self.get_rel_associates_material(material)
+            if not rel:
+                return self.create_material_association(material)
+            previous_related_objects = set(rel.RelatedObjects)
+            rel.RelatedObjects = list(previous_related_objects | self.products)
+            ifcopenshell.api.owner.update_owner_history(self.file, element=rel)
+            return rel
+        material_set = self.file.create_entity(material_set_class)
+        return self.create_material_association(material_set)
 
     def create_material_association(
         self,

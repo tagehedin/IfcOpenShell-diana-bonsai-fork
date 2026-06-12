@@ -190,6 +190,16 @@ class BIM_PT_object_material(Panel):
         prop_with_search(row, self.props, "material", text="")
         row.operator("bim.assign_material", icon="ADD", text="")
 
+        if self.props.material_type in ("IfcMaterialLayerSet", "IfcMaterialProfileSet", "IfcMaterialConstituentSet"):
+            self.draw_existing_material_set_ui()
+
+    def draw_existing_material_set_ui(self):
+        row = self.layout.row(align=True)
+        prop_with_search(row, self.props, "existing_material_set", text="")
+        sub = row.row(align=True)
+        sub.enabled = bool(self.props.existing_material_set)
+        sub.operator("bim.assign_existing_material_set", icon="LINKED", text="Assign Existing")
+
     def draw_material_ui(self):
         row = self.layout.row(align=True)
         row.label(text=ObjectMaterialData.data["material_class"])
@@ -210,6 +220,8 @@ class BIM_PT_object_material(Panel):
             self.draw_single_ui()
         else:
             self.draw_set_ui()
+            if not self.props.is_editing:
+                self.draw_existing_material_set_ui()
 
     def draw_single_ui(self):
         if self.props.is_editing:

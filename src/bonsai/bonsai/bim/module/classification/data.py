@@ -141,7 +141,7 @@ class MaterialClassificationsData(ReferencesData):
     @classmethod
     def get_element(cls) -> Union[ifcopenshell.entity_instance, None]:
         props = tool.Material.get_material_props()
-        if material := props.active_material:
+        if (material := props.active_material) and not material.is_category:
             return tool.Ifc.get().by_id(material.ifc_definition_id)
         return None
 

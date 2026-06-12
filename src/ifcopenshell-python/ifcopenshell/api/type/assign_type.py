@@ -270,6 +270,17 @@ class Usecase:
     ) -> None:
         type_material = ifcopenshell.util.element.get_material(relating_type)
         if not type_material:
+            # The new type has no material of its own. Clear any material usage
+            # the objects may carry over from their previous type, so they don't
+            # keep referencing a layer/profile set that no longer corresponds to
+            # their current type.
+            objects_with_stale_usage = [
+                o
+                for o in related_objects
+                if (m := ifcopenshell.util.element.get_material(o, should_inherit=False)) and "Usage" in m.is_a()
+            ]
+            if objects_with_stale_usage:
+                ifcopenshell.api.material.unassign_material(self.file, products=objects_with_stale_usage)
             return
         ifc_class = type_material.is_a()
         if ifc_class in ("IfcMaterialLayerSet", "IfcMaterialProfileSet"):

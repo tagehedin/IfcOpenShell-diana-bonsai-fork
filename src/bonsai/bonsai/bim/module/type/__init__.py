@@ -29,6 +29,8 @@ classes = (
     operator.EditTypeAttributes,
     operator.EnableEditingType,
     operator.EnableEditingTypeAttributes,
+    operator.PaintType,
+    operator.PickTypeByObject,
     operator.RemoveType,
     operator.RenameType,
     operator.SelectSimilarType,

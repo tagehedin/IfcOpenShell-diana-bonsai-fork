@@ -319,6 +319,35 @@ class AssignMaterial(bpy.types.Operator, tool.Ifc.Operator):
         core.assign_material(tool.Ifc, tool.Material, material_type=self.material_type, objects=objects)
 
 
+class AssignExistingMaterialSet(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.assign_existing_material_set"
+    bl_label = "Assign Existing Material Set"
+    bl_description = (
+        "Assign an existing material layer/profile/constituent set to the selected objects.\n"
+        "The set is shared live: editing it later will also affect every other element using it."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        active_obj = context.active_object
+        if not active_obj:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        omprops = tool.Material.get_object_material_props(active_obj)
+        if not omprops.existing_material_set:
+            self.report({"ERROR"}, "No existing set selected.")
+            return {"CANCELLED"}
+        material_set = tool.Ifc.get().by_id(int(omprops.existing_material_set))
+        objects = tool.Blender.get_selected_objects()
+        core.assign_material(
+            tool.Ifc,
+            tool.Material,
+            material_type=material_set.is_a(),
+            objects=objects,
+            material=material_set,
+        )
+
+
 class UnassignMaterial(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.unassign_material"
     bl_label = "Unassign Material"
@@ -1057,6 +1086,8 @@ class EnableEditingMaterialStyle(bpy.types.Operator):
 
         ifc_file = tool.Ifc.get()
         material = ifc_file.by_id(active_material.ifc_definition_id)
+        if not material.is_a("IfcMaterial"):
+            return {"FINISHED"}
         if not material.HasRepresentation:
             # MODEL_VIEW is probably the one that's used with the styles most frequently.
             context = ifcopenshell.util.representation.get_context(ifc_file, "Model", "Body", "MODEL_VIEW")
@@ -1067,8 +1098,11 @@ class EnableEditingMaterialStyle(bpy.types.Operator):
         rep = material.HasRepresentation[0].Representations[0]  # IfcStyledRepresentation
         props.contexts = str(rep.ContextOfItems.id())
         style = rep.Items[0].Styles[0]
+        if style.is_a("IfcPresentationStyleAssignment"):
+            # Deprecated wrapper still found in some IFC4 files.
+            style = style.Styles[0]
         if style.Name:  # props.styles only has named styles
-            props.styles = str(rep.Items[0].Styles[0].id())
+            props.styles = str(style.id())
         return {"FINISHED"}
 
 
@@ -1096,6 +1130,9 @@ class EditMaterialStyle(bpy.types.Operator, tool.Ifc.Operator):
             return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
         material = ifc_file.by_id(props.active_material_id)
+        if not material.is_a("IfcMaterial"):
+            self.report({"ERROR"}, "Only an IfcMaterial can have a style assigned.")
+            return {"CANCELLED"}
         style = ifc_file.by_id(int(props.styles))
         context = ifc_file.by_id(int(props.contexts))
         ifcopenshell.api.style.assign_material_style(ifc_file, material=material, style=style, context=context)
@@ -1165,6 +1202,11 @@ class SelectMaterialInMaterialsUI(bpy.types.Operator):
                 material = material.ForLayerSet
             material_id = material.id()
 
+        # Keep the "Material Type" dropdown in sync with the materials list
+        # we're about to populate, otherwise the UI may keep showing controls
+        # (e.g. "Assign Style") meant for a different material class than
+        # what `active_material_index` now points to.
+        props.material_type = material_class
         core.load_materials(tool.Material, material_class)
 
         def get_material_item() -> Union[tuple[int, bpy.types.PropertyGroup], None]:

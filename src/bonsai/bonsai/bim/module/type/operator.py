@@ -16,13 +16,14 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 import bpy
 import ifcopenshell.api.attribute
 import ifcopenshell.api.type
 import ifcopenshell.util.element
 import ifcopenshell.util.representation
+import ifcopenshell.util.type
 
 import bonsai.bim.helper
 import bonsai.core.geometry
@@ -143,6 +144,138 @@ class UnassignType(bpy.types.Operator, tool.Ifc.Operator):
                         representation=new_active_representation,
                     )
         return {"FINISHED"}
+
+
+def _raycast_object(context: bpy.types.Context, event: bpy.types.Event) -> Union[bpy.types.Object, None]:
+    from bpy_extras import view3d_utils
+
+    region = rv3d = None
+    for area in context.screen.areas:
+        if area.type != "VIEW_3D":
+            continue
+        for r in area.regions:
+            if r.type == "WINDOW":
+                if r.x <= event.mouse_x <= r.x + r.width and r.y <= event.mouse_y <= r.y + r.height:
+                    region = r
+                    rv3d = area.spaces[0].region_3d
+                    break
+
+    if not region or not rv3d:
+        return None
+
+    coord = (event.mouse_x - region.x, event.mouse_y - region.y)
+    origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+    direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+
+    depsgraph = context.evaluated_depsgraph_get()
+    hit, _loc, _norm, _face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+    return obj if hit else None
+
+
+class PickTypeByObject(bpy.types.Operator):
+    bl_idname = "bim.pick_type_by_object"
+    bl_label = "Pick Type by Object"
+    bl_description = "Click on an object in the 3D viewport to assign its IfcElementType to the selected objects"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        context.window.cursor_modal_set("EYEDROPPER")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            context.window.cursor_modal_restore()
+            return self._pick(context, event)
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            context.window.cursor_modal_restore()
+            return {"CANCELLED"}
+        return {"RUNNING_MODAL"}
+
+    def _pick(self, context, event):
+        obj = _raycast_object(context, event)
+        if not obj:
+            self.report({"WARNING"}, "Click inside the 3D viewport on an object")
+            return {"CANCELLED"}
+
+        element = tool.Ifc.get_entity(obj)
+        if not element:
+            self.report({"WARNING"}, f"'{obj.name}' is not linked to an IFC element")
+            return {"CANCELLED"}
+
+        element_type = ifcopenshell.util.element.get_type(element)
+        if not element_type:
+            self.report({"WARNING"}, f"'{obj.name}' has no IfcElementType assigned")
+            return {"CANCELLED"}
+
+        applicable_classes = ifcopenshell.util.type.get_applicable_entities(
+            element_type.is_a(), tool.Ifc.get().schema
+        )
+
+        assigned = 0
+        for target_obj in tool.Blender.get_selected_objects():
+            target_element = tool.Ifc.get_entity(target_obj)
+            if not target_element or target_element.is_a() not in applicable_classes:
+                continue
+            bpy.ops.bim.assign_type(relating_type=element_type.id(), related_object=target_obj.name)
+            assigned += 1
+
+        if not assigned:
+            self.report({"WARNING"}, f"No selected object can be assigned an {element_type.is_a()}")
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class PaintType(bpy.types.Operator):
+    bl_idname = "bim.paint_type"
+    bl_label = "Paint Type"
+    bl_description = "Click on objects in the 3D viewport to assign this object's IfcElementType to them"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(
+            (obj := context.active_object)
+            and (element := tool.Ifc.get_entity(obj))
+            and ifcopenshell.util.element.get_type(element)
+        )
+
+    def invoke(self, context, event):
+        assert (obj := context.active_object)
+        element = tool.Ifc.get_entity(obj)
+        assert element
+        element_type = ifcopenshell.util.element.get_type(element)
+        if not element_type:
+            self.report({"WARNING"}, "Active object has no IfcElementType to paint")
+            return {"CANCELLED"}
+        self.relating_type_id = element_type.id()
+        self.applicable_classes = ifcopenshell.util.type.get_applicable_entities(
+            element_type.is_a(), tool.Ifc.get().schema
+        )
+        context.window.cursor_modal_set("PAINT_BRUSH")
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
+            self._paint(context, event)
+            return {"RUNNING_MODAL"}
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            context.window.cursor_modal_restore()
+            return {"FINISHED"}
+        return {"RUNNING_MODAL"}
+
+    def _paint(self, context, event):
+        obj = _raycast_object(context, event)
+        if not obj:
+            return
+
+        element = tool.Ifc.get_entity(obj)
+        if not element or element.is_a() not in self.applicable_classes:
+            self.report({"WARNING"}, f"Skipped '{obj.name}': not a valid target for this type")
+            return
+
+        bpy.ops.bim.assign_type(relating_type=self.relating_type_id, related_object=obj.name)
 
 
 class EnableEditingType(bpy.types.Operator):
