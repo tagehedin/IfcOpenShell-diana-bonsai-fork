@@ -198,33 +198,11 @@ class RemoveOpening(bpy.types.Operator, tool.Ifc.Operator):
     opening_id: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.opening_id:
+            self.report({"ERROR"}, "No opening specified")
+            return {"CANCELLED"}
         opening = tool.Ifc.get().by_id(self.opening_id)
-        opening_obj = tool.Ifc.get_object(opening)
-        element = opening.VoidsElements[0].RelatingBuildingElement
-        obj = tool.Ifc.get_object(element)
-
-        if opening_obj:
-            opening_obj.name = "/".join(opening_obj.name.split("/")[1:])
-            tool.Ifc.unlink(element=opening)
-
-        ifcopenshell.api.feature.remove_feature(tool.Ifc.get(), feature=opening)
-
-        decomposed_building_elements = {element}
-        decomposed_building_elements.update(tool.Aggregate.get_parts_recursively(element))
-
-        for building_element in decomposed_building_elements:
-            building_obj = tool.Ifc.get_object(building_element)
-            if building_obj and building_obj.data:
-                representation = tool.Geometry.get_active_representation(building_obj)
-                assert representation
-                bonsai.core.geometry.switch_representation(
-                    tool.Ifc,
-                    tool.Geometry,
-                    obj=building_obj,
-                    representation=representation,
-                )
-        tool.Geometry.unlock_scale_object_with_openings(obj)
-        tool.Geometry.clear_cache(element)
+        tool.Geometry.remove_opening_feature(opening)
         return {"FINISHED"}
 
 
@@ -258,10 +236,11 @@ class RemoveFilling(bpy.types.Operator, tool.Ifc.Operator):
     filling: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.filling:
+            self.report({"ERROR"}, "No filling specified")
+            return {"CANCELLED"}
         filling = tool.Ifc.get().by_id(self.filling)
-        for rel in filling.FillsVoids:
-            bpy.ops.bim.remove_opening(opening_id=rel.RelatingOpeningElement.id())
-        ifcopenshell.api.feature.remove_filling(tool.Ifc.get(), element=filling)
+        tool.Geometry.remove_filling_feature(filling)
         return {"FINISHED"}
 
 

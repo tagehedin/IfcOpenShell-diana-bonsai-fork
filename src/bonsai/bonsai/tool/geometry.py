@@ -40,6 +40,7 @@ import bmesh
 import bpy
 import ifcopenshell
 import ifcopenshell.api.boundary
+import ifcopenshell.api.feature
 import ifcopenshell.api.geometry
 import ifcopenshell.api.grid
 import ifcopenshell.api.group
@@ -271,6 +272,47 @@ class Geometry(bonsai.core.tool.Geometry):
         bpy.data.objects.remove(obj)
 
     @classmethod
+    def remove_opening_feature(cls, opening: ifcopenshell.entity_instance) -> None:
+        """Remove an IfcOpeningElement and reload the geometry of the element(s) it voided.
+
+        Equivalent to `bim.remove_opening`, callable directly to avoid `bpy.ops`
+        dispatch overhead in bulk operations (e.g. deleting many elements).
+        """
+        opening_obj = tool.Ifc.get_object(opening)
+        element = opening.VoidsElements[0].RelatingBuildingElement
+        obj = tool.Ifc.get_object(element)
+
+        if opening_obj:
+            opening_obj.name = "/".join(opening_obj.name.split("/")[1:])
+            tool.Ifc.unlink(element=opening)
+
+        ifcopenshell.api.feature.remove_feature(tool.Ifc.get(), feature=opening)
+
+        decomposed_building_elements = {element}
+        decomposed_building_elements.update(tool.Aggregate.get_parts_recursively(element))
+
+        for building_element in decomposed_building_elements:
+            building_obj = tool.Ifc.get_object(building_element)
+            if building_obj and building_obj.data:
+                representation = cls.get_active_representation(building_obj)
+                assert representation
+                bonsai.core.geometry.switch_representation(
+                    tool.Ifc,
+                    cls,
+                    obj=building_obj,
+                    representation=representation,
+                )
+        cls.unlock_scale_object_with_openings(obj)
+        cls.clear_cache(element)
+
+    @classmethod
+    def remove_filling_feature(cls, filling: ifcopenshell.entity_instance) -> None:
+        """Remove an opening's filling element. See `remove_opening_feature`."""
+        for rel in filling.FillsVoids:
+            cls.remove_opening_feature(rel.RelatingOpeningElement)
+        ifcopenshell.api.feature.remove_filling(tool.Ifc.get(), element=filling)
+
+    @classmethod
     def delete_ifc_object(cls, obj: bpy.types.Object) -> None:
         ifc_file = tool.Ifc.get()
         element = tool.Ifc.get_entity(obj)
@@ -320,20 +362,20 @@ class Geometry(bonsai.core.tool.Geometry):
                         parent_collection.objects.link(child_object)
             bpy.data.collections.remove(collection)
         if getattr(element, "FillsVoids", None):
-            bpy.ops.bim.remove_filling(filling=element.id())
+            cls.remove_filling_feature(element)
 
         if element.is_a("IfcOpeningElement"):
             if element.HasFillings:
                 for rel in element.HasFillings:
-                    bpy.ops.bim.remove_filling(filling=rel.RelatedBuildingElement.id())
+                    cls.remove_filling_feature(rel.RelatedBuildingElement)
             else:
                 if element.VoidsElements:
-                    bpy.ops.bim.remove_opening(opening_id=element.id())
+                    cls.remove_opening_feature(element)
         else:
             is_spatial = tool.Root.is_spatial_element(element)
             if getattr(element, "HasOpenings", None):
                 for rel in element.HasOpenings:
-                    bpy.ops.bim.remove_opening(opening_id=rel.RelatedOpeningElement.id())
+                    cls.remove_opening_feature(rel.RelatedOpeningElement)
             for port in ifcopenshell.util.system.get_ports(element):
                 bonsai.core.system.remove_port(tool.Ifc, tool.System, port=port)
 
