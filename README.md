@@ -73,6 +73,25 @@ version — Blender automatically picks the right download for your platform.
 
 Releases: https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases
 
+### Troubleshooting: "ModuleNotFoundError: No module named 'ifcopenshell'" after updating on Windows
+
+On Windows, updating an extension in-place can fail to fully replace the
+`ifcopenshell` wheel, because Blender can't overwrite `.pyd`/`.dll` files that
+are still loaded by the running process. This can leave the extension's
+Python environment without `ifcopenshell` installed, causing errors like
+`ModuleNotFoundError: No module named 'ifcopenshell'` and
+`Couldn't find ifcopenshell wrapper binary` on next startup.
+
+If this happens:
+
+1. In Blender, go to **Edit > Preferences > Get Extensions** and remove/uninstall Bonsai.
+2. Close Blender completely.
+3. Delete these folders if they exist (under `%APPDATA%\Blender Foundation\Blender\<version>\extensions\`):
+   - `.local`
+   - `.local_temp`
+   - `tagehedin_github_io\bonsai`
+4. Restart Blender and install Bonsai again as a fresh install (not an update).
+
 
 
 ::::::::::::
