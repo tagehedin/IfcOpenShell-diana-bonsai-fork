@@ -886,7 +886,14 @@ class ChangeLayerLength(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         joiner = DumbWallJoiner()
-        selected_objs = tool.Model.get_selected_mesh_ifc_objects()
+        selected_objs = [
+            obj
+            for obj in tool.Model.get_selected_mesh_ifc_objects()
+            if tool.Model.get_usage_type(tool.Ifc.get_entity(obj)) == "LAYER2"
+        ]
+        if not selected_objs:
+            self.report({"ERROR"}, "Please select at least one LAYER2 element")
+            return {"CANCELLED"}
         for obj in selected_objs:
             joiner.set_length(obj, self.length)
 
@@ -946,8 +953,12 @@ class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
-        new_storey = ifc_file.by_id(self.storey_id)
+        try:
+            new_storey = ifc_file.by_id(self.storey_id)
+        except RuntimeError:
+            new_storey = None
         if not new_storey or not new_storey.is_a("IfcBuildingStorey"):
+            self.report({"ERROR"}, "Invalid storey specified.")
             return
         import bonsai.core.spatial as spatial_core
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)

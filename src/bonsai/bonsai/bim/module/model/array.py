@@ -129,8 +129,12 @@ class AddArray(bpy.types.Operator, tool.Ifc.Operator):
     z: bpy.props.FloatProperty(name="Z Offset", default=0.0)
 
     def _execute(self, context):
-        assert (obj := context.active_object)
-        assert (element := tool.Ifc.get_entity(obj))
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
 
         allowed_types = (
@@ -446,11 +450,18 @@ class RemoveArray(bpy.types.Operator, tool.Ifc.Operator):
     keep_objs: bpy.props.BoolProperty(name="Keep Objects", default=False)
 
     def _execute(self, context):
-        obj = context.active_object
-        element = tool.Ifc.get_entity(obj)
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_array_props(obj)
 
         pset = ifcopenshell.util.element.get_pset(element, "BBIM_Array")
+        if pset is None:
+            self.report({"ERROR"}, "Active object is not part of a Bonsai parametric array.")
+            return {"CANCELLED"}
         data = json.loads(pset["Data"])
 
         if (self.keep_objs) & (self.item < (len(data) - 1)):
@@ -606,10 +617,14 @@ class ArrayParentGizmoClick(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
-        if self.mode == "PARENT":
-            return bpy.ops.bim.select_array_parent("EXEC_DEFAULT")
-        if self.mode == "ALL":
-            return bpy.ops.bim.select_all_array_objects("EXEC_DEFAULT")
+        try:
+            if self.mode == "PARENT":
+                return bpy.ops.bim.select_array_parent("EXEC_DEFAULT")
+            if self.mode == "ALL":
+                return bpy.ops.bim.select_all_array_objects("EXEC_DEFAULT")
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
         # CHILDREN: resolve the parent of the active child, then select every
         # child of that parent's array without the parent itself.
         obj = context.active_object
@@ -688,8 +703,9 @@ class Input3DCursorXArray(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Model.get_array_props(obj)
         cursor = context.scene.cursor
         if props.use_local_space:
@@ -706,8 +722,9 @@ class Input3DCursorYArray(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Model.get_array_props(obj)
         cursor = context.scene.cursor
         if props.use_local_space:
@@ -724,8 +741,9 @@ class Input3DCursorZArray(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Model.get_array_props(obj)
         cursor = context.scene.cursor
         if props.use_local_space:

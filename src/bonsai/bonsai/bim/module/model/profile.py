@@ -952,6 +952,9 @@ class Rotate90(bpy.types.Operator, tool.Ifc.Operator):
         return context.selected_objects
 
     def _execute(self, context):
+        if self.axis not in ("X", "Y", "Z"):
+            self.report({"ERROR"}, "Invalid rotation axis.")
+            return {"CANCELLED"}
         profile_objs = []
         layer2_objs = []
         for obj in context.selected_objects:
@@ -986,8 +989,13 @@ class PatchNonParametricMepSegment(bpy.types.Operator, tool.Ifc.Operator):
         bonsai.core.material.patch_non_parametric_mep_segment(
             tool.Ifc, tool.Material, tool.Profile, obj=context.active_object
         )
-        bpy.ops.bim.enable_editing_extrusion_axis()
-        bpy.ops.bim.edit_extrusion_axis()
+        try:
+            bpy.ops.bim.enable_editing_extrusion_axis()
+            bpy.ops.bim.edit_extrusion_axis()
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        return {"FINISHED"}
 
 
 class EnableEditingExtrusionAxis(bpy.types.Operator, tool.Ifc.Operator):
@@ -1010,7 +1018,11 @@ class EnableEditingExtrusionAxis(bpy.types.Operator, tool.Ifc.Operator):
             tool.Model.import_axis(axis.Items[0], obj=obj)
         else:
             body = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
-            extrusion = tool.Model.get_extrusion(body)
+            extrusion = tool.Model.get_extrusion(body) if body else None
+
+            if extrusion is None:
+                self.report({"ERROR"}, "Active object has no extrusion representation.")
+                return {"CANCELLED"}
 
             if extrusion.Position:
                 position = Matrix(ifcopenshell.util.placement.get_axis2placement(extrusion.Position).tolist())
