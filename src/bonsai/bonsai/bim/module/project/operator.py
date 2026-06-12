@@ -252,11 +252,22 @@ class SelectLibraryFile(bpy.types.Operator, IFCFileSelector, ImportHelper):
         IFCFileSelector.draw(self, context)
 
 
+def poll_library_file_loaded(cls, context):
+    if not IfcStore.library_file:
+        cls.poll_message_set("No library file is loaded.")
+        return False
+    return True
+
+
 class RefreshLibrary(bpy.types.Operator):
     bl_idname = "bim.refresh_library"
     bl_label = "Refresh Library"
     bl_description = "Refresh the library browser"
     bl_options = {"UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
 
     def execute(self, context):
         self.props = tool.Project.get_project_props()
@@ -300,6 +311,10 @@ class ChangeLibraryElement(bpy.types.Operator):
         element_name: str
         breadcrumb_type: BreadcrumbType
         library_id: int
+
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
 
     def execute(self, context):
         self.props = tool.Project.get_project_props()
@@ -431,6 +446,10 @@ class RewindLibrary(bpy.types.Operator):
     bl_label = "Rewind Library"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
+
     def execute(self, context):
         self.props = tool.Project.get_project_props()
         total_breadcrumbs = len(self.props.library_breadcrumb)
@@ -460,6 +479,10 @@ class AssignLibraryDeclaration(bpy.types.Operator):
 
     if TYPE_CHECKING:
         definition: int
+
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
 
     def execute(self, context):
         IfcStore.begin_transaction(self)
@@ -501,6 +524,10 @@ class UnassignLibraryDeclaration(bpy.types.Operator):
 
     if TYPE_CHECKING:
         definition: int
+
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
 
     def execute(self, context):
         IfcStore.begin_transaction(self)
@@ -611,10 +638,10 @@ class AppendLibraryElement(bpy.types.Operator, tool.Ifc.Operator):
 
     @classmethod
     def poll(cls, context):
-        poll = bool(tool.Ifc.get())
-        if not poll:
+        if not tool.Ifc.get():
             cls.poll_message_set("Please create or load a project first.")
-        return poll
+            return False
+        return poll_library_file_loaded(cls, context)
 
     def invoke(self, context, event):
         if event.type == "LEFTMOUSE" and event.alt:
@@ -741,6 +768,10 @@ class EditProjectLibrary(bpy.types.Operator):
     bl_description = "Apply changes for currently edited library."
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
+
     def execute(self, context):
         IfcStore.begin_transaction(self)
         library_file = IfcStore.library_file
@@ -790,6 +821,10 @@ class AddProjectLibrary(bpy.types.Operator):
     bl_description = "Add new IfcProjectLibrary to the currently selected library."
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
+
     def execute(self, context):
         IfcStore.begin_transaction(self)
         library_file = IfcStore.library_file
@@ -825,6 +860,10 @@ class RemoveProjectLibrary(bpy.types.Operator):
     bl_label = "Remove Project Library"
     bl_description = "Remove the currently selected IfcProjectLibrary."
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_library_file_loaded(cls, context)
 
     def execute(self, context):
         IfcStore.begin_transaction(self)
@@ -1513,6 +1552,9 @@ class UnlinkIfc(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         link = props.links[self.link_index]
         bpy.ops.bim.unload_link(link_index=self.link_index)
         if tool.Ifc.get():
@@ -1536,7 +1578,11 @@ class UnloadLink(bpy.types.Operator, tool.Ifc.Operator):
         link_index: int
 
     def _execute(self, context):
-        link = tool.Project.get_project_props().links[self.link_index]
+        props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
+        link = props.links[self.link_index]
         if obj := tool.Project.get_link_empty_handle(link):
             collection = obj.instance_collection
             library = collection.library
@@ -1741,6 +1787,9 @@ class ReloadLink(bpy.types.Operator):
         link_index: int
 
     def execute(self, context):
+        if self.link_index >= len(tool.Project.get_project_props().links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         bpy.ops.bim.unload_link(link_index=self.link_index)
         return bpy.ops.bim.load_link(link_index=self.link_index, use_cache=False) or {"FINISHED"}
 
@@ -1758,6 +1807,9 @@ class ToggleLinkSelectability(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         link = props.links[self.link_index]
         self.library_filepath = tool.Blender.ensure_blender_path_is_abs(
             Path(link.filepath).with_suffix(".ifc.cache.blend")
@@ -1795,6 +1847,9 @@ class ToggleLinkVisibility(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         link = props.links[self.link_index]
         self.library_filepath = tool.Blender.ensure_blender_path_is_abs(
             Path(link.filepath).with_suffix(".ifc.cache.blend")
@@ -1850,6 +1905,9 @@ class ToggleLinkStoreyVisibility(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         link = props.links[self.link_index]
         library_filepath = tool.Blender.ensure_blender_path_is_abs(
             Path(link.filepath).with_suffix(".ifc.cache.blend")
@@ -1874,18 +1932,31 @@ class ToggleLinkStoreyVisibility(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def poll_active_link_with_handle(cls, context):
+    link = tool.Project.get_project_props().active_link
+    if not link:
+        cls.poll_message_set("No link is selected.")
+        return False
+    if not tool.Project.get_link_empty_handle(link):
+        cls.poll_message_set("Link has no empty handle (probably it was deleted).")
+        return False
+    return True
+
+
 class EnableEditingLink(bpy.types.Operator):
     bl_idname = "bim.enable_editing_link"
     bl_label = "Enable Editing Link"
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Enable editing link location"
 
+    @classmethod
+    def poll(cls, context):
+        return poll_active_link_with_handle(cls, context)
+
     def execute(self, context):
         link = tool.Project.get_project_props().active_link
-        assert link
         link.is_editing = True
         obj = tool.Project.get_link_empty_handle(link)
-        assert obj
         tool.Geometry.unlock_object(obj)
         return {"FINISHED"}
 
@@ -1896,12 +1967,14 @@ class DisableEditingLink(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Disable editing link and restore to previously saved location"
 
+    @classmethod
+    def poll(cls, context):
+        return poll_active_link_with_handle(cls, context)
+
     def execute(self, context):
         link = tool.Project.get_project_props().active_link
-        assert link
         link.is_editing = False
         obj = tool.Project.get_link_empty_handle(link)
-        assert obj
         obj.matrix_world = tool.Project.calculate_link_matrix(link)
         tool.Geometry.lock_object(obj)
         return {"FINISHED"}
@@ -1913,12 +1986,14 @@ class EditLink(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Disable editing link and restore to previously saved location"
 
+    @classmethod
+    def poll(cls, context):
+        return poll_active_link_with_handle(cls, context)
+
     def _execute(self, context):
         link = tool.Project.get_project_props().active_link
-        assert link
         link.is_editing = False
         obj = tool.Project.get_link_empty_handle(link)
-        assert obj
         new_obj_matrix = obj.matrix_world
 
         filepath = Path(tool.Ifc.resolve_uri(link.filepath))
@@ -1971,6 +2046,9 @@ class SelectLinkHandle(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
         link = props.links[self.link_index]
         handle = tool.Project.get_link_empty_handle(link)
         if not handle:
