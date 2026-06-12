@@ -76,16 +76,22 @@ class AddStructuralMemberConnection(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         oprops = tool.Blender.get_object_bim_props(obj)
         props = tool.Structural.get_object_structural_props(obj)
         file = tool.Ifc.get()
-        related_structural_connection = file.by_id(oprops.ifc_definition_id)
-        assert props.relating_structural_member
+        try:
+            related_structural_connection = file.by_id(oprops.ifc_definition_id)
+        except RuntimeError:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
+        if not props.relating_structural_member:
+            self.report({"ERROR"}, "No relating structural member specified.")
+            return {"CANCELLED"}
         relating_structural_member = tool.Ifc.get_entity(props.relating_structural_member)
-        assert relating_structural_member
-        if not relating_structural_member.is_a("IfcStructuralMember"):
+        if relating_structural_member is None or not relating_structural_member.is_a("IfcStructuralMember"):
             return {"FINISHED"}
         ifcopenshell.api.structural.add_structural_member_connection(
             file,
@@ -103,8 +109,9 @@ class EnableEditingStructuralConnectionCondition(bpy.types.Operator):
     connects_structural_member: bpy.props.IntProperty()
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
         props.active_connects_structural_member = self.connects_structural_member
         return {"FINISHED"}
@@ -116,8 +123,9 @@ class DisableEditingStructuralConnectionCondition(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
         props.active_connects_structural_member = 0
         return {"FINISHED"}
@@ -131,8 +139,11 @@ class RemoveStructuralConnectionCondition(bpy.types.Operator, tool.Ifc.Operator)
 
     def _execute(self, context):
         file = tool.Ifc.get()
-        relation = file.by_id(self.connects_structural_member)
-        connection = relation.RelatedStructuralConnection
+        try:
+            relation = file.by_id(self.connects_structural_member)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural connection condition not found.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.remove_structural_connection_condition(file, relation=relation)
         return {"FINISHED"}
 
@@ -145,7 +156,11 @@ class AddStructuralBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         file = tool.Ifc.get()
-        connection = file.by_id(self.connection)
+        try:
+            connection = file.by_id(self.connection)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural connection not found.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.add_structural_boundary_condition(file, connection=connection)
         return {"FINISHED"}
 
@@ -158,7 +173,11 @@ class RemoveStructuralBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         file = tool.Ifc.get()
-        connection = file.by_id(self.connection)
+        try:
+            connection = file.by_id(self.connection)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural connection not found.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.remove_structural_boundary_condition(file, connection=connection)
         return {"FINISHED"}
 
@@ -173,10 +192,15 @@ class EnableEditingStructuralBoundaryCondition(bpy.types.Operator):
         boundary_condition: int
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
-        condition = tool.Ifc.get().by_id(self.boundary_condition)
+        try:
+            condition = tool.Ifc.get().by_id(self.boundary_condition)
+        except RuntimeError:
+            self.report({"ERROR"}, "Boundary condition not found.")
+            return {"CANCELLED"}
         tool.Structural.import_boundary_condition_attributes(condition, props)
         props.active_boundary_condition = self.boundary_condition
         return {"FINISHED"}
@@ -192,13 +216,21 @@ class EditStructuralBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
         connection: int
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
 
         file = tool.Ifc.get()
-        connection = file.by_id(self.connection)
+        try:
+            connection = file.by_id(self.connection)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural connection not found.")
+            return {"CANCELLED"}
         condition = connection.AppliedCondition
+        if condition is None:
+            self.report({"ERROR"}, "Structural connection has no applied condition.")
+            return {"CANCELLED"}
 
         tool.Structural.export_and_apply_boundary_condition_attributes(condition, props)
         bpy.ops.bim.disable_editing_structural_boundary_condition()
@@ -211,8 +243,9 @@ class DisableEditingStructuralBoundaryCondition(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
         props.active_boundary_condition = 0
         return {"FINISHED"}
@@ -265,7 +298,11 @@ class RemoveStructuralAnalysisModel(bpy.types.Operator, tool.Ifc.Operator):
     structural_analysis_model: bpy.props.IntProperty()
 
     def _execute(self, context):
-        core.remove_structural_analysis_model(tool.Ifc, tool.Structural, model=self.structural_analysis_model)
+        try:
+            core.remove_structural_analysis_model(tool.Ifc, tool.Structural, model=self.structural_analysis_model)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural analysis model not found.")
+            return {"CANCELLED"}
 
 
 class EnableEditingStructuralAnalysisModel(bpy.types.Operator):
@@ -299,7 +336,11 @@ class AssignStructuralAnalysisModel(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
-        structural_analysis_model = ifc_file.by_id(self.structural_analysis_model)
+        try:
+            structural_analysis_model = ifc_file.by_id(self.structural_analysis_model)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural analysis model not found.")
+            return {"CANCELLED"}
         products = [element for o in tool.Blender.get_selected_objects() if (element := tool.Ifc.get_entity(o))]
         core.assign_structural_analysis_model(
             tool.Ifc, products=products, structural_analysis_model=structural_analysis_model
@@ -315,7 +356,11 @@ class UnassignStructuralAnalysisModel(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
-        structural_analysis_model = ifc_file.by_id(self.structural_analysis_model)
+        try:
+            structural_analysis_model = ifc_file.by_id(self.structural_analysis_model)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural analysis model not found.")
+            return {"CANCELLED"}
         products = [element for o in tool.Blender.get_selected_objects() if (element := tool.Ifc.get_entity(o))]
         core.unassign_structural_analysis_model(
             tool.Ifc, products=products, structural_analysis_model=structural_analysis_model
@@ -328,14 +373,26 @@ class EnableEditingStructuralItemAxis(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         oprops = tool.Blender.get_object_bim_props(obj)
         props = tool.Structural.get_object_structural_props(obj)
 
         self.file = tool.Ifc.get()
-        item = self.file.by_id(oprops.ifc_definition_id)
-        z_axis = Vector(item.Axis.DirectionRatios).normalized() @ obj.matrix_world if item.Axis else None
+        try:
+            item = self.file.by_id(oprops.ifc_definition_id)
+        except RuntimeError:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
+        if not item.is_a("IfcStructuralItem"):
+            self.report({"ERROR"}, "Active object is not a structural item.")
+            return {"CANCELLED"}
+        if obj.data is None or len(obj.data.vertices) < 2:
+            self.report({"ERROR"}, "Active object must have at least 2 vertices.")
+            return {"CANCELLED"}
+        axis = getattr(item, "Axis", None)
+        z_axis = Vector(axis.DirectionRatios).normalized() @ obj.matrix_world if axis else None
         x_axis = (obj.data.vertices[1].co - obj.data.vertices[0].co).normalized()
         location = obj.data.vertices[0].co
         empty = bpy.data.objects.new("Item Axis", None)
@@ -369,8 +426,9 @@ class DisableEditingStructuralItemAxis(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
         props.is_editing_axis = False
         if props.axis_empty:
@@ -383,10 +441,14 @@ class EditStructuralItemAxis(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Edit Structural Item Axis"
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         oprops = tool.Blender.get_object_bim_props(obj)
         props = tool.Structural.get_object_structural_props(obj)
+        if props.axis_empty is None:
+            self.report({"ERROR"}, "Not currently editing an item axis.")
+            return {"CANCELLED"}
         relative_matrix = props.axis_empty.matrix_world @ obj.matrix_world.inverted()
         z_axis = relative_matrix.col[2][0:3]
         self.file = tool.Ifc.get()
@@ -405,28 +467,35 @@ class EnableEditingStructuralConnectionCS(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
 
         self.file = tool.Ifc.get()
         item = tool.Ifc.get_entity(obj)
-        assert item
+        if item is None or not item.is_a("IfcStructuralItem"):
+            self.report({"ERROR"}, "Active object is not a structural item.")
+            return {"CANCELLED"}
+        if obj.data is None or not obj.data.vertices:
+            self.report({"ERROR"}, "Active object must have at least 1 vertex.")
+            return {"CANCELLED"}
 
         location = obj.data.vertices[0].co
         empty = bpy.data.objects.new("Item Connection CS", None)
         empty.empty_display_type = "ARROWS"
         empty.location = location
 
-        if item.ConditionCoordinateSystem is not None:
+        condition_cs = getattr(item, "ConditionCoordinateSystem", None)
+        if condition_cs is not None:
             z_axis = (
-                Vector(item.ConditionCoordinateSystem.Axis.DirectionRatios).normalized() @ obj.matrix_world
-                if item.ConditionCoordinateSystem.Axis
+                Vector(condition_cs.Axis.DirectionRatios).normalized() @ obj.matrix_world
+                if condition_cs.Axis
                 else None
             )
             x_axis = (
-                Vector(item.ConditionCoordinateSystem.RefDirection.DirectionRatios).normalized() @ obj.matrix_world
-                if item.ConditionCoordinateSystem.RefDirection
+                Vector(condition_cs.RefDirection.DirectionRatios).normalized() @ obj.matrix_world
+                if condition_cs.RefDirection
                 else None
             )
 
@@ -458,8 +527,9 @@ class DisableEditingStructuralConnectionCS(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
         props.is_editing_connection_cs = False
         if props.ccs_empty:
@@ -473,11 +543,17 @@ class EditStructuralConnectionCS(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         item = tool.Ifc.get_entity(obj)
-        assert item
+        if item is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Structural.get_object_structural_props(obj)
+        if props.ccs_empty is None:
+            self.report({"ERROR"}, "Not currently editing a connection CS.")
+            return {"CANCELLED"}
         relative_matrix = props.ccs_empty.matrix_world @ obj.matrix_world.inverted()
         x_axis = relative_matrix.col[0][0:3]
         z_axis = relative_matrix.col[2][0:3]
@@ -542,9 +618,14 @@ class EditStructuralLoadCase(bpy.types.Operator, tool.Ifc.Operator):
         props = tool.Structural.get_structural_props()
         attributes = bonsai.bim.helper.export_attributes(props.load_case_attributes)
         self.file = tool.Ifc.get()
+        try:
+            load_case = self.file.by_id(props.active_load_case_id)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active load case.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.edit_structural_load_case(
             self.file,
-            load_case=self.file.by_id(props.active_load_case_id),
+            load_case=load_case,
             attributes=attributes,
         )
         bpy.ops.bim.disable_editing_structural_load_case()
@@ -559,7 +640,12 @@ class RemoveStructuralLoadCase(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         self.file = tool.Ifc.get()
-        ifcopenshell.api.structural.remove_structural_load_case(self.file, load_case=self.file.by_id(self.load_case))
+        try:
+            load_case = self.file.by_id(self.load_case)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load case not found.")
+            return {"CANCELLED"}
+        ifcopenshell.api.structural.remove_structural_load_case(self.file, load_case=load_case)
         return {"FINISHED"}
 
 
@@ -570,12 +656,17 @@ class EnableEditingStructuralLoadCase(bpy.types.Operator):
     load_case: bpy.props.IntProperty()
 
     def execute(self, context):
+        try:
+            load_case = tool.Ifc.get().by_id(self.load_case)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load case not found.")
+            return {"CANCELLED"}
         self.props = tool.Structural.get_structural_props()
         self.props.active_load_case_id = self.load_case
         self.props.load_case_editing_type = "ATTRIBUTES"
         self.props.load_case_attributes.clear()
         bonsai.bim.helper.import_attributes(
-            tool.Ifc.get().by_id(self.load_case),
+            load_case,
             self.props.load_case_attributes,
             callback=self.import_attributes_callback,
         )
@@ -618,8 +709,13 @@ class AddStructuralLoadGroup(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         self.file = tool.Ifc.get()
+        try:
+            load_case = self.file.by_id(self.load_case)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load case not found.")
+            return {"CANCELLED"}
         load_group = ifcopenshell.api.structural.add_structural_load_group(self.file)
-        ifcopenshell.api.group.assign_group(self.file, products=[load_group], group=self.file.by_id(self.load_case))
+        ifcopenshell.api.group.assign_group(self.file, products=[load_group], group=load_case)
         return {"FINISHED"}
 
 
@@ -631,7 +727,12 @@ class RemoveStructuralLoadGroup(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         self.file = tool.Ifc.get()
-        ifcopenshell.api.structural.remove_structural_load_group(self.file, load_group=self.file.by_id(self.load_group))
+        try:
+            load_group = self.file.by_id(self.load_group)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load group not found.")
+            return {"CANCELLED"}
+        ifcopenshell.api.structural.remove_structural_load_group(self.file, load_group=load_group)
         return {"FINISHED"}
 
 
@@ -643,6 +744,11 @@ class EnableEditingStructuralLoadGroupActivities(bpy.types.Operator):
 
     def execute(self, context):
         self.file = tool.Ifc.get()
+        try:
+            self.file.by_id(self.load_group)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load group not found.")
+            return {"CANCELLED"}
         self.props = tool.Structural.get_structural_props()
         self.props.active_load_group_id = self.load_group
         self.props.load_group_editing_type = "ACTIVITY"
@@ -690,19 +796,31 @@ class AddStructuralActivity(bpy.types.Operator, tool.Ifc.Operator):
                 "IfcStructuralSurfaceMember": "IfcStructuralPlanarAction",
             }
 
-            if applied_load_class not in allowed_load_classes[element.is_a()]:
+            allowed_classes = allowed_load_classes.get(element.is_a())
+            if allowed_classes is None or applied_load_class not in allowed_classes:
                 continue
 
             ifc_class = applicable_activity_class[element.is_a()]
 
+            try:
+                applied_load = self.file.by_id(int(self.props.applicable_structural_loads))
+                load_group = self.file.by_id(self.load_group)
+            except (RuntimeError, ValueError):
+                self.report({"ERROR"}, "No applicable structural load selected.")
+                return {"CANCELLED"}
+
             activity = ifcopenshell.api.structural.add_structural_activity(
                 self.file,
                 ifc_class=ifc_class,
-                applied_load=self.file.by_id(int(self.props.applicable_structural_loads)),
+                applied_load=applied_load,
                 structural_member=element,
             )
-            ifcopenshell.api.group.assign_group(self.file, products=[activity], group=self.file.by_id(self.load_group))
-        bpy.ops.bim.enable_editing_structural_load_group_activities(load_group=self.load_group)
+            ifcopenshell.api.group.assign_group(self.file, products=[activity], group=load_group)
+        try:
+            bpy.ops.bim.enable_editing_structural_load_group_activities(load_group=self.load_group)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -758,9 +876,13 @@ class AddStructuralLoad(bpy.types.Operator, tool.Ifc.Operator):
     ifc_class: bpy.props.StringProperty()
 
     def _execute(self, context):
-        result = ifcopenshell.api.structural.add_structural_load(
-            tool.Ifc.get(), name="New Load", ifc_class=self.ifc_class
-        )
+        try:
+            result = ifcopenshell.api.structural.add_structural_load(
+                tool.Ifc.get(), name="New Load", ifc_class=self.ifc_class
+            )
+        except Exception:
+            self.report({"ERROR"}, "Invalid structural load type.")
+            return {"CANCELLED"}
         bpy.ops.bim.load_structural_loads()
         bpy.ops.bim.enable_editing_structural_load(structural_load=result.id())
         return {"FINISHED"}
@@ -773,11 +895,14 @@ class EnableEditingStructuralLoad(bpy.types.Operator):
     structural_load: bpy.props.IntProperty()
 
     def execute(self, context):
+        try:
+            structural_load = tool.Ifc.get().by_id(self.structural_load)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load not found.")
+            return {"CANCELLED"}
         props = tool.Structural.get_structural_props()
         props.structural_load_attributes.clear()
-        bonsai.bim.helper.import_attributes(
-            tool.Ifc.get().by_id(self.structural_load), props.structural_load_attributes
-        )
+        bonsai.bim.helper.import_attributes(structural_load, props.structural_load_attributes)
         props.active_structural_load_id = self.structural_load
         return {"FINISHED"}
 
@@ -801,9 +926,14 @@ class RemoveStructuralLoad(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         self.file = tool.Ifc.get()
+        try:
+            structural_load = self.file.by_id(self.structural_load)
+        except RuntimeError:
+            self.report({"ERROR"}, "Structural load not found.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.remove_structural_load(
             self.file,
-            structural_load=self.file.by_id(self.structural_load),
+            structural_load=structural_load,
         )
         bpy.ops.bim.load_structural_loads()
         return {"FINISHED"}
@@ -818,9 +948,14 @@ class EditStructuralLoad(bpy.types.Operator, tool.Ifc.Operator):
         props = tool.Structural.get_structural_props()
         attributes = bonsai.bim.helper.export_attributes(props.structural_load_attributes)
         self.file = tool.Ifc.get()
+        try:
+            structural_load = self.file.by_id(props.active_structural_load_id)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active structural load.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.edit_structural_load(
             self.file,
-            structural_load=self.file.by_id(props.active_structural_load_id),
+            structural_load=structural_load,
             attributes=attributes,
         )
         bpy.ops.bim.load_structural_loads()
@@ -903,11 +1038,15 @@ class AddBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
     ifc_class: bpy.props.StringProperty()
 
     def _execute(self, context):
-        result = ifcopenshell.api.structural.add_structural_boundary_condition(
-            tool.Ifc.get(),
-            name="New Load",
-            ifc_class=self.ifc_class,
-        )
+        try:
+            result = ifcopenshell.api.structural.add_structural_boundary_condition(
+                tool.Ifc.get(),
+                name="New Load",
+                ifc_class=self.ifc_class,
+            )
+        except Exception:
+            self.report({"ERROR"}, "Invalid boundary condition type.")
+            return {"CANCELLED"}
         bpy.ops.bim.load_boundary_conditions()
         bpy.ops.bim.enable_editing_boundary_condition(boundary_condition=result.id())
         return {"FINISHED"}
@@ -923,7 +1062,11 @@ class EnableEditingBoundaryCondition(bpy.types.Operator):
         boundary_condition: int
 
     def execute(self, context):
-        boundary_condition = tool.Ifc.get().by_id(self.boundary_condition)
+        try:
+            boundary_condition = tool.Ifc.get().by_id(self.boundary_condition)
+        except RuntimeError:
+            self.report({"ERROR"}, "Boundary condition not found.")
+            return {"CANCELLED"}
         props = tool.Structural.get_structural_props()
         tool.Structural.import_boundary_condition_attributes(boundary_condition, props)
         props.active_boundary_condition_id = self.boundary_condition
@@ -949,9 +1092,14 @@ class RemoveBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         self.file = tool.Ifc.get()
+        try:
+            boundary_condition = self.file.by_id(self.boundary_condition)
+        except RuntimeError:
+            self.report({"ERROR"}, "Boundary condition not found.")
+            return {"CANCELLED"}
         ifcopenshell.api.structural.remove_structural_boundary_condition(
             self.file,
-            boundary_condition=self.file.by_id(self.boundary_condition),
+            boundary_condition=boundary_condition,
         )
         bpy.ops.bim.load_boundary_conditions()
         return {"FINISHED"}
@@ -965,7 +1113,11 @@ class EditBoundaryCondition(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         props = tool.Structural.get_structural_props()
         ifc_file = tool.Ifc.get()
-        condition = ifc_file.by_id(props.active_boundary_condition_id)
+        try:
+            condition = ifc_file.by_id(props.active_boundary_condition_id)
+        except RuntimeError:
+            self.report({"ERROR"}, "No active boundary condition.")
+            return {"CANCELLED"}
         tool.Structural.export_and_apply_boundary_condition_attributes(condition, props)
         bpy.ops.bim.load_boundary_conditions()
         return {"FINISHED"}
