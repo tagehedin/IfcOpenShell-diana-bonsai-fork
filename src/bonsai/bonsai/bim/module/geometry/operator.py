@@ -294,6 +294,14 @@ class AddRepresentation(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_representation"
     bl_label = "Add Representation"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not context.active_object:
+            cls.poll_message_set("No active object.")
+            return False
+        return True
+
     representation_conversion_method: bpy.props.EnumProperty(
         items=[
             ("OUTLINE", "Trace Outline", "Traces outline by local XY axes, for Profile - by local XZ axes."),
@@ -528,6 +536,9 @@ class SelectConnection(bpy.types.Operator, tool.Ifc.Operator):
     connection: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.connection:
+            self.report({"ERROR"}, "No connection specified")
+            return {"CANCELLED"}
         core.select_connection(tool.Geometry, connection=tool.Ifc.get().by_id(self.connection))
 
 
@@ -538,6 +549,9 @@ class RemoveConnection(bpy.types.Operator, tool.Ifc.Operator):
     connection: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.connection:
+            self.report({"ERROR"}, "No connection specified")
+            return {"CANCELLED"}
         core.remove_connection(tool.Geometry, connection=tool.Ifc.get().by_id(self.connection))
 
 
@@ -557,6 +571,9 @@ class SwitchRepresentation(bpy.types.Operator, tool.Ifc.Operator):
         return False
 
     def _execute(self, context):
+        if not self.ifc_definition_id:
+            self.report({"ERROR"}, "No representation specified")
+            return {"CANCELLED"}
         provided_representation = tool.Ifc.get().by_id(self.ifc_definition_id)
         ifc_context = provided_representation.ContextOfItems
         for obj in tool.Blender.get_selected_objects():
@@ -595,9 +612,19 @@ class RemoveRepresentation(bpy.types.Operator, tool.Ifc.Operator):
     if TYPE_CHECKING:
         representation_id: int
 
+    @classmethod
+    def poll(cls, context):
+        if not context.active_object:
+            cls.poll_message_set("No active object.")
+            return False
+        return True
+
     def _execute(self, context):
         start_time = time()
         assert context.active_object
+        if not self.representation_id:
+            self.report({"ERROR"}, "No representation specified")
+            return {"CANCELLED"}
         core.remove_representation(
             tool.Ifc,
             tool.Geometry,
@@ -839,6 +866,8 @@ class UpdateParametricRepresentation(bpy.types.Operator):
         obj = context.active_object
         assert obj and tool.Geometry.has_mesh_properties(obj.data)
         props = tool.Geometry.get_mesh_props(obj.data)
+        if self.index >= len(props.ifc_parameters):
+            return {"CANCELLED"}
         parameter = props.ifc_parameters[self.index]
         self.file.by_id(parameter.step_id)[parameter.index] = parameter.value
         show_representation_parameters = bool(props.ifc_parameters)
@@ -858,6 +887,13 @@ class GetRepresentationIfcParameters(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Get Representation IFC Parameters"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        if not (obj := context.active_object) or not tool.Geometry.has_mesh_properties(obj.data):
+            cls.poll_message_set("No active object with mesh properties.")
+            return False
+        return True
+
     def _execute(self, context):
         obj = context.active_object
         assert obj and tool.Geometry.has_mesh_properties(data := obj.data)
@@ -871,6 +907,13 @@ class CopyRepresentation(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Copy Representation"
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
+
+    @classmethod
+    def poll(cls, context):
+        if not (obj := context.active_object) or not tool.Ifc.get_entity(obj):
+            cls.poll_message_set("No active IFC object.")
+            return False
+        return True
 
     def _execute(self, context):
         if not context.active_object:
@@ -3853,6 +3896,10 @@ class EditRepresentationItemStyle(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Edit Representation Item Style"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_editing_representation_item_style(cls, context)
+
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
         assert obj
@@ -3881,6 +3928,13 @@ class DisableEditingRepresentationItemStyle(bpy.types.Operator, tool.Ifc.Operato
     bl_idname = "bim.disable_editing_representation_item_style"
     bl_label = "Disable Editing Representation Item Style"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Geometry.get_active_or_representation_obj():
+            cls.poll_message_set("No object opened in item mode.")
+            return False
+        return True
 
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
@@ -3961,10 +4015,25 @@ class UnassignRepresentationItemStyle(bpy.types.Operator, tool.Ifc.Operator):
         bpy.ops.bim.enable_editing_representation_items()
 
 
+def poll_active_representation_item(cls, context):
+    if not (obj := tool.Geometry.get_active_or_representation_obj()):
+        cls.poll_message_set("No object opened in item mode.")
+        return False
+    props = tool.Geometry.get_object_geometry_props(obj)
+    if not props.active_item:
+        cls.poll_message_set("No active representation item.")
+        return False
+    return True
+
+
 class EnableEditingRepresentationItemShapeAspect(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.enable_editing_representation_item_shape_aspect"
     bl_label = "Enable Editing Representation Item Shape Aspect"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_active_representation_item(cls, context)
 
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
@@ -3982,6 +4051,10 @@ class EditRepresentationItemShapeAspect(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.edit_representation_item_shape_aspect"
     bl_label = "Edit Representation Item Shape Aspect"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_active_representation_item(cls, context)
 
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
@@ -4044,6 +4117,13 @@ class DisableEditingRepresentationItemShapeAspect(bpy.types.Operator, tool.Ifc.O
     bl_label = "Disable Editing Representation Item Shape Aspect"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        if not tool.Geometry.get_active_or_representation_obj():
+            cls.poll_message_set("No object opened in item mode.")
+            return False
+        return True
+
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
         assert obj
@@ -4055,6 +4135,10 @@ class RemoveRepresentationItemFromShapeAspect(bpy.types.Operator, tool.Ifc.Opera
     bl_idname = "bim.remove_representation_item_from_shape_aspect"
     bl_label = "Remove Representation Item From Shape Aspect"
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_active_representation_item(cls, context)
 
     def _execute(self, context):
         obj = tool.Geometry.get_active_or_representation_obj()
@@ -4104,6 +4188,13 @@ class ImportRepresentationItems(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Import Representation Items"
     bl_description = "Import representation items for the active object."
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not (obj := context.active_object) or not tool.Ifc.get_entity(obj):
+            cls.poll_message_set("No active IFC object.")
+            return False
+        return True
 
     def _execute(self, context):
         obj = context.active_object
@@ -4214,6 +4305,14 @@ class UpdateItemAttributes(bpy.types.Operator, tool.Ifc.Operator):
     bl_description = "Update item attributes in IFC and reload mesh for representation item"
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        gprops = tool.Geometry.get_geometry_props()
+        if not context.active_object or gprops.mode != "ITEM" or not gprops.representation_obj:
+            cls.poll_message_set("Active object is not a representation item.")
+            return False
+        return True
+
     def _execute(self, context):
         obj = context.active_object
         tool.Geometry.sync_item_positions()
@@ -4262,11 +4361,22 @@ class NameProfile(bpy.types.Operator, tool.Ifc.Operator):
         mesh_props.item_profile = str(profile.id())
 
 
+def poll_has_representation_obj(cls, context):
+    if not tool.Geometry.get_geometry_props().representation_obj:
+        cls.poll_message_set("No object opened in item mode.")
+        return False
+    return True
+
+
 class AddMeshlikeItem(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_meshlike_item"
     bl_label = "Add Meshlike Item"
     bl_options = {"REGISTER", "UNDO"}
     shape: bpy.props.StringProperty(name="Shape")
+
+    @classmethod
+    def poll(cls, context):
+        return poll_has_representation_obj(cls, context)
 
     def _execute(self, context):
         props = tool.Geometry.get_geometry_props()
@@ -4335,6 +4445,10 @@ class AddSweptAreaSolidItem(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
     shape: bpy.props.StringProperty(name="Shape")
 
+    @classmethod
+    def poll(cls, context):
+        return poll_has_representation_obj(cls, context)
+
     def _execute(self, context):
         props = tool.Geometry.get_geometry_props()
         mesh = bpy.data.meshes.new("Tmp")
@@ -4391,6 +4505,10 @@ class AddCurvelikeItem(bpy.types.Operator, tool.Ifc.Operator):
 
     if TYPE_CHECKING:
         shape: CurveShape
+
+    @classmethod
+    def poll(cls, context):
+        return poll_has_representation_obj(cls, context)
 
     def _execute(self, context):
         props = tool.Geometry.get_geometry_props()
@@ -4639,6 +4757,10 @@ class EditRepresentationItemLayer(bpy.types.Operator, tool.Ifc.Operator):
     bl_description = "Edit presentation layer for the active representation item."
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_active_representation_item(cls, context)
+
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
         obj = context.active_object
@@ -4670,6 +4792,10 @@ class UnassignRepresentationItemLayer(bpy.types.Operator, tool.Ifc.Operator):
     bl_description = "Unassign presentation layer from the active representation item."
     bl_options = {"REGISTER", "UNDO"}
 
+    @classmethod
+    def poll(cls, context):
+        return poll_active_representation_item(cls, context)
+
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
         obj = context.active_object
@@ -4682,11 +4808,22 @@ class UnassignRepresentationItemLayer(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
+def poll_active_object_with_representation(cls, context):
+    if not (obj := context.active_object) or not tool.Geometry.get_active_representation(obj):
+        cls.poll_message_set("No active object with a representation.")
+        return False
+    return True
+
+
 class AssignRepresentationLayer(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.assign_representation_layer"
     bl_label = "Assign Representation Layer"
     bl_description = "Assign presentation layer to the active representation."
     bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return poll_active_object_with_representation(cls, context)
 
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
@@ -4717,6 +4854,10 @@ class UnassignRepresentationLayer(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     layer_id: bpy.props.IntProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return poll_active_object_with_representation(cls, context)
 
     def _execute(self, context):
         ifc_file = tool.Ifc.get()
