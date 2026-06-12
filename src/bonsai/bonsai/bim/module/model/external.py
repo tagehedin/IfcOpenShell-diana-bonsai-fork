@@ -28,13 +28,17 @@ class ApplyExternalParametricGeometry(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Model.get_epg_props(obj)
 
         # TODO: consider nodes being empty.
         if props.geometry_source == "GEONODES":
-            assert (active_representation := tool.Geometry.get_active_representation(obj))
+            active_representation = tool.Geometry.get_active_representation(obj)
+            if active_representation is None:
+                self.report({"ERROR"}, "Active object has no active representation.")
+                return {"CANCELLED"}
             ifc_context = active_representation.ContextOfItems
 
             tool.Model.add_representation(obj, ifc_context)
@@ -42,7 +46,9 @@ class ApplyExternalParametricGeometry(bpy.types.Operator, tool.Ifc.Operator):
             import ifcsverchok.helper as helper
 
             nodes = props.sverchok_nodes
-            assert nodes is not None
+            if nodes is None:
+                self.report({"ERROR"}, "No Sverchok nodes set.")
+                return {"CANCELLED"}
             tool.Model.run_ifcsverchok_graph_on_bonsai_file(nodes)
             output_node = tool.Model.get_ifcsverchok_shape_output(nodes)
             representation = helper.get_socket_value(output_node.inputs, "Representation")

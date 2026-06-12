@@ -74,6 +74,9 @@ class AddDefaultType(bpy.types.Operator, tool.Ifc.Operator):
     ifc_element_type: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if not self.ifc_element_type:
+            self.report({"ERROR"}, "No element type specified.")
+            return {"CANCELLED"}
         props = tool.Root.get_root_props()
         props.ifc_product = "IfcElementType"
         props.ifc_class = self.ifc_element_type
@@ -348,7 +351,11 @@ class AddOccurrence(bpy.types.Operator, tool.Ifc.Operator):
             self.container = container
             self.container_obj = tool.Ifc.get_object(container)
 
-        relating_type = tool.Ifc.get().by_id(int(relating_type_id))
+        try:
+            relating_type = tool.Ifc.get().by_id(int(relating_type_id))
+        except (RuntimeError, ValueError):
+            self.report({"ERROR"}, "Invalid type specified.")
+            return {"CANCELLED"}
         ifc_class = relating_type.is_a()
         instance_class = ifcopenshell.util.type.get_applicable_entities(ifc_class, tool.Ifc.get().schema)[0]
         material = ifcopenshell.util.element.get_material(relating_type)
@@ -569,8 +576,14 @@ class SetActiveType(bpy.types.Operator, tool.Ifc.Operator):
     relating_type: bpy.props.IntProperty()
 
     def _execute(self, context):
+        relating_type_id = str(self.relating_type)
+        valid_ids = {item[0] for item in AuthoringData.data.get("relating_type_id", [])}
+        if relating_type_id not in valid_ids:
+            self.report({"ERROR"}, "Invalid type specified.")
+            return {"CANCELLED"}
         props = tool.Model.get_model_props()
-        props.relating_type_id = str(self.relating_type)
+        props.relating_type_id = relating_type_id
+        return {"FINISHED"}
 
 
 # TODO: not exposed to UI.

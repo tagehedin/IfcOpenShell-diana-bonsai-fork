@@ -457,10 +457,12 @@ class AddWindow(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_window_props(obj)
 
         tool.Blender.get_addon_preferences().default_parameters.window.copy_to(props)
@@ -539,14 +541,19 @@ class RemoveWindow(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:  # noqa: ARG002
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_window_props(obj)
         props.is_editing = False
 
         pset = tool.Pset.get_element_pset(element, "BBIM_Window")
+        if pset is None:
+            self.report({"ERROR"}, "Active object is not a parametric window.")
+            return {"CANCELLED"}
         ifcopenshell.api.pset.remove_pset(tool.Ifc.get(), product=element, pset=pset)
 
         return {"FINISHED"}
