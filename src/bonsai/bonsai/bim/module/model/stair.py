@@ -24,7 +24,6 @@ import bmesh
 import bpy
 import ifcopenshell
 import ifcopenshell.api.pset
-import ifcopenshell.util.element
 import ifcopenshell.util.unit
 from mathutils import Matrix, Vector
 
@@ -202,10 +201,12 @@ class AddStair(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_stair_props(obj)
         ifc_file = tool.Ifc.get()
 
@@ -240,14 +241,16 @@ class CancelEditingStair(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
-        data = json.loads(ifcopenshell.util.element.get_pset(element, "BBIM_Stair", "Data"))
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        pset_data = tool.Model.get_modeling_bbim_pset_data(obj, "BBIM_Stair")
+        if pset_data is None:
+            self.report({"ERROR"}, "Active object is not a parametric stair.")
+            return {"CANCELLED"}
         props = tool.Model.get_stair_props(obj)
         # restore previous settings since editing was canceled
-        props.set_props_kwargs_from_ifc_data(data)
+        props.set_props_kwargs_from_ifc_data(pset_data["data_dict"])
         regenerate_stair_mesh(obj)
 
         props.is_editing = False
@@ -262,10 +265,12 @@ class FinishEditingStair(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_stair_props(obj)
 
         # Use the special method that includes custom_tread_lock for IFC storage
@@ -274,6 +279,9 @@ class FinishEditingStair(bpy.types.Operator, tool.Ifc.Operator):
         tool.Model.add_body_representation(obj)
 
         pset = tool.Pset.get_element_pset(element, "BBIM_Stair")
+        if pset is None:
+            self.report({"ERROR"}, "Active object is not a parametric stair.")
+            return {"CANCELLED"}
         data = tool.Ifc.get().createIfcText(json.dumps(data))
         ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset=pset, properties={"Data": data})
 
@@ -290,13 +298,16 @@ class EnableEditingStair(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        pset_data = tool.Model.get_modeling_bbim_pset_data(obj, "BBIM_Stair")
+        if pset_data is None:
+            self.report({"ERROR"}, "Active object is not a parametric stair.")
+            return {"CANCELLED"}
         props = tool.Model.get_stair_props(obj)
-        element = tool.Ifc.get_entity(obj)
-        data = json.loads(ifcopenshell.util.element.get_pset(element, "BBIM_Stair", "Data"))
         # required since we could load pset from .ifc and BIMStairProperties won't be set
-        props.set_props_kwargs_from_ifc_data(data)
+        props.set_props_kwargs_from_ifc_data(pset_data["data_dict"])
         props.is_editing = True
         return {"FINISHED"}
 
@@ -307,14 +318,19 @@ class RemoveStair(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context: bpy.types.Context) -> set[str]:
-        obj = context.active_object
-        assert obj
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_stair_props(obj)
-        element = tool.Ifc.get_entity(obj)
-        assert element
         props.is_editing = False
 
         pset = tool.Pset.get_element_pset(element, "BBIM_Stair")
+        if pset is None:
+            self.report({"ERROR"}, "Active object is not a parametric stair.")
+            return {"CANCELLED"}
         ifcopenshell.api.pset.remove_pset(tool.Ifc.get(), product=element, pset=pset)
 
         return {"FINISHED"}

@@ -27,6 +27,7 @@ import ifcopenshell.util.element
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 import bonsai.tool as tool
+from bonsai.bim.module.model.data import SverchokData
 
 
 def update_sverchok_modifier(context):
@@ -68,6 +69,13 @@ class CreateNewSverchokGraph(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Create New Sverchok Graph"
     bl_options = {"REGISTER"}
 
+    @classmethod
+    def poll(cls, context):
+        if not SverchokData.has_sverchok():
+            cls.poll_message_set("Sverchok addon is not installed.")
+            return False
+        return True
+
     def _execute(self, context):
         import sverchok.ui.sv_temporal_viewers
 
@@ -94,9 +102,13 @@ class DeleteSverchokGraph(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context):
-        obj = context.active_object
-        element = tool.Ifc.get_entity(obj)
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         props = tool.Model.get_sverchok_props(obj)
+        if props.node_group is None:
+            self.report({"ERROR"}, "No Sverchok graph to delete.")
+            return {"CANCELLED"}
         bpy.data.node_groups.remove(props.node_group)
         return {"FINISHED"}
 
@@ -123,8 +135,12 @@ class UpdateDataFromSverchok(bpy.types.Operator, tool.Ifc.Operator):
         self.layout.label(text="because no sverchok node group is selected.")
 
     def _execute(self, context):
-        obj = context.active_object
-        element = tool.Ifc.get_entity(obj)
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_sverchok_props(obj)
         node_group = props.node_group
 
@@ -192,6 +208,13 @@ class ImportSverchokGraph(bpy.types.Operator, tool.Ifc.Operator, ImportHelper):
     filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
     filename_ext = ".json"
 
+    @classmethod
+    def poll(cls, context):
+        if not SverchokData.has_sverchok():
+            cls.poll_message_set("Sverchok addon is not installed.")
+            return False
+        return True
+
     def _execute(self, context):
         import sverchok.utils.sv_json_import
 
@@ -230,6 +253,13 @@ class ExportSverchokGraph(bpy.types.Operator, tool.Ifc.Operator, ExportHelper):
 
     compact: bpy.props.BoolProperty(default=True, description="Compact representation of the JSON file")
     compress: bpy.props.BoolProperty()
+
+    @classmethod
+    def poll(cls, context):
+        if not SverchokData.has_sverchok():
+            cls.poll_message_set("Sverchok addon is not installed.")
+            return False
+        return True
 
     def _execute(self, context):
         import sverchok.utils.sv_json_export
