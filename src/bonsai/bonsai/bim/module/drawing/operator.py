@@ -2557,9 +2557,11 @@ class ActivateModel(bpy.types.Operator):
 
         ifc_file = tool.Ifc.get()
 
+        t = time.time()
         if not bpy.app.background:
             with context.temp_override(**tool.Blender.get_viewport_context()):
                 bpy.ops.bim.activate_status_filters(only_if_enabled=True)
+        time_status_filters = time.time() - t
 
         elements = {e for obj in context.visible_objects if (e := tool.Ifc.get_entity(obj))}
 
@@ -2596,7 +2598,11 @@ class ActivateModel(bpy.types.Operator):
                 elements = elements - elements_sharing_representation
             return refined_elements
 
+        t = time.time()
         refined_elements = refine_elements(elements)
+        time_refine_elements = time.time() - t
+
+        t = time.time()
         for _, (model, obj) in refined_elements.items():
             bonsai.core.geometry.switch_representation(
                 tool.Ifc,
@@ -2604,15 +2610,37 @@ class ActivateModel(bpy.types.Operator):
                 obj=obj,
                 representation=model,
             )
+        time_switch_representations = time.time() - t
 
+        t = time.time()
         tool.Blender.reset_object_visibility()
+        time_reset_visibility = time.time() - t
+
+        t = time.time()
         tool.Drawing.hide_all_drawing_collections()
+        time_hide_drawings = time.time() - t
+
+        t = time.time()
         tool.Blender.update_viewport()
+        time_update_viewport = time.time() - t
+
+        t = time.time()
         bonsai.bim.handler.refresh_ui_data()
+        time_refresh_ui = time.time() - t
 
         operator_time = time.time() - start_time
         if operator_time > 10:
             self.report({"INFO"}, f"{self.bl_label} was finished in {operator_time:.2f} seconds.")
+            print(
+                f"{self.bl_label} timing breakdown ({len(refined_elements)} representation groups switched):\n"
+                f"  status_filters:        {time_status_filters:.2f}s\n"
+                f"  refine_elements:       {time_refine_elements:.2f}s\n"
+                f"  switch_representations: {time_switch_representations:.2f}s\n"
+                f"  reset_visibility:      {time_reset_visibility:.2f}s\n"
+                f"  hide_drawings:         {time_hide_drawings:.2f}s\n"
+                f"  update_viewport:       {time_update_viewport:.2f}s\n"
+                f"  refresh_ui:            {time_refresh_ui:.2f}s"
+            )
 
         return {"FINISHED"}
 
@@ -2655,6 +2683,9 @@ class ActivateDrawingBase(tool.Ifc.Operator):
 
     def _execute(self, context) -> set["rna_enums.OperatorReturnItems"]:
         assert context.scene
+        if not self.drawing:
+            self.report({"ERROR"}, "No drawing specified")
+            return {"CANCELLED"}
         props = tool.Drawing.get_document_props()
         if props.is_editing_drawings == False:
             bpy.ops.bim.load_drawings()
@@ -2818,7 +2849,18 @@ class DrawingStyleJson(TypedDict):
     raster_style: dict[str, Any]
 
 
-class ReloadDrawingStyles(bpy.types.Operator):
+class RequiresActiveDrawingCamera:
+    """Mixin for drawing-style operators that assume an active drawing camera."""
+
+    @classmethod
+    def poll(cls, context):
+        if not (context.scene and context.scene.camera):
+            cls.poll_message_set("No active drawing.")
+            return False
+        return True
+
+
+class ReloadDrawingStyles(bpy.types.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.reload_drawing_styles"
     bl_label = "Reload Drawing Styles"
     bl_options = {"REGISTER", "UNDO"}
@@ -2874,7 +2916,7 @@ class ReloadDrawingStyles(bpy.types.Operator):
 # NOTE: Ifc Operator is not necessary for add and remove,
 # as underlying save operator creates ifc undo step for us,
 # but we keep it to make it more safe in case operators composition will change.
-class AddDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
+class AddDrawingStyle(bpy.types.Operator, tool.Ifc.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.add_drawing_style"
     bl_label = "Add Drawing Style"
     bl_options = {"REGISTER", "UNDO"}
@@ -2891,7 +2933,7 @@ class AddDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
-class RemoveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
+class RemoveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.remove_drawing_style"
     bl_label = "Remove Drawing Style"
     bl_options = {"REGISTER", "UNDO"}
@@ -2907,7 +2949,7 @@ class RemoveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
-class SaveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
+class SaveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.save_drawing_style"
     bl_label = "Save Drawing Style"
     bl_options = {"REGISTER", "UNDO"}
@@ -2970,7 +3012,7 @@ class SaveDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
 
 
 # TODO: operator is not exposed to UI, move it to tool.
-class SaveDrawingStylesData(bpy.types.Operator, tool.Ifc.Operator):
+class SaveDrawingStylesData(bpy.types.Operator, tool.Ifc.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.save_drawing_styles_data"
     bl_label = "Save Drawing Styles Data"
     bl_description = "Save current drawing styles settings to IFC and JSON."
@@ -3022,7 +3064,7 @@ class SaveDrawingStylesData(bpy.types.Operator, tool.Ifc.Operator):
         return {"FINISHED"}
 
 
-class ActivateDrawingStyle(bpy.types.Operator, tool.Ifc.Operator):
+class ActivateDrawingStyle(bpy.types.Operator, tool.Ifc.Operator, RequiresActiveDrawingCamera):
     bl_idname = "bim.activate_drawing_style"
     bl_label = "Activate Drawing Style"
     bl_options = {"REGISTER", "UNDO"}
@@ -3192,6 +3234,9 @@ class RemoveSheet(bpy.types.Operator, tool.Ifc.Operator):
     sheet: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.sheet:
+            self.report({"ERROR"}, "No sheet selected")
+            return {"CANCELLED"}
         core.remove_sheet(tool.Ifc, tool.Drawing, sheet=tool.Ifc.get().by_id(self.sheet))
 
 
@@ -3222,6 +3267,9 @@ class RemoveSchedule(bpy.types.Operator, tool.Ifc.Operator):
     schedule: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.schedule:
+            self.report({"ERROR"}, "No schedule selected")
+            return {"CANCELLED"}
         core.remove_document(tool.Ifc, tool.Drawing, "SCHEDULE", document=tool.Ifc.get().by_id(self.schedule))
 
 
@@ -3421,6 +3469,9 @@ class RemoveReference(bpy.types.Operator, tool.Ifc.Operator):
     reference: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.reference:
+            self.report({"ERROR"}, "No reference selected")
+            return {"CANCELLED"}
         core.remove_document(tool.Ifc, tool.Drawing, "REFERENCE", document=tool.Ifc.get().by_id(self.reference))
 
 
@@ -3798,6 +3849,13 @@ class EditSheet(bpy.types.Operator, tool.Ifc.Operator):
 
     document_type: Literal["SHEET", "TITLEBLOCK", "EMBEDDED"]
 
+    @classmethod
+    def poll(cls, context):
+        if not tool.Drawing.get_active_sheet_item():
+            cls.poll_message_set("No sheet or drawing selected.")
+            return False
+        return True
+
     def invoke(self, context, event):
         assert context.window_manager
         sheet_item = tool.Drawing.get_active_sheet_item()
@@ -4076,12 +4134,18 @@ class EditElementFilter(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         assert context.scene
         obj = context.scene.camera
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No active drawing camera.")
+            return {"CANCELLED"}
         props = tool.Drawing.get_camera_props(obj)
         element = tool.Ifc.get_entity(obj)
-        assert element
+        if element is None:
+            self.report({"ERROR"}, "No active drawing camera.")
+            return {"CANCELLED"}
         pset = tool.Pset.get_element_pset(element, "EPset_Drawing")
-        assert pset
+        if pset is None:
+            self.report({"ERROR"}, "Active camera has no EPset_Drawing.")
+            return {"CANCELLED"}
         if self.filter_mode == "INCLUDE":
             query = tool.Search.export_filter_query(props.include_filter_groups) or None
             ifcopenshell.api.pset.edit_pset(tool.Ifc.get(), pset=pset, properties={"Include": query})
@@ -4355,6 +4419,73 @@ class ConvertSVGToPDF(bpy.types.Operator):
             tool.Drawing.convert_svg_to_pdf(drawing_uri, drawing_uri.with_suffix(".pdf"))
 
         self.report({"INFO"}, f"{len(drawing_uris)} drawings were converted to .pdf.")
+        return {"FINISHED"}
+
+
+class ConvertSheetSVGToPDF(bpy.types.Operator):
+    bl_idname = "bim.convert_sheet_svg_to_pdf"
+    bl_label = "Convert Sheet SVG to PDF"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Convert selected sheet's .svg to .pdf.\n\nSHIFT+CLICK to convert all shown checked sheets"
+    convert_all: bpy.props.BoolProperty(name="Convert All", default=False, options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        if not tool.Drawing.get_active_sheet_item(is_sheet=True):
+            cls.poll_message_set("No sheet selected.")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        if event.type == "LEFTMOUSE" and event.shift:
+            self.convert_all = True
+        return self.execute(context)
+
+    def execute(self, context):
+        props = tool.Drawing.get_document_props()
+        if self.convert_all:
+            sheets = [
+                tool.Ifc.get().by_id(s.ifc_definition_id) for s in props.sheets if s.is_sheet and s.is_selected
+            ]
+        else:
+            sheet_item = tool.Drawing.get_active_sheet_item()
+            assert sheet_item
+            sheets = [tool.Ifc.get().by_id(sheet_item.ifc_definition_id)]
+
+        sheet_uris: list[Path] = []
+        sheets_not_found: list[str] = []
+        warnings: list[tool.Drawing.SheetWarningType] = []
+
+        for sheet in sheets:
+            if not sheet.is_a("IfcDocumentInformation"):
+                continue
+            warnings.extend(sheet_warnings := tool.Drawing.validate_sheet_files(sheet))
+            if sheet_warnings:
+                continue
+            sheet_builder = sheeter.SheetBuilder()
+            references = sheet_builder.build(sheet)
+            sheet_uri = Path(references["SHEET"])
+            if not sheet_uri.exists():
+                sheets_not_found.append(sheet.Name)
+            else:
+                sheet_uris.append(sheet_uri)
+
+        if warnings:
+            self.report({"ERROR"}, "There were errors building sheets. See system console for the details.")
+            print("-" * 10)
+            print("\n".join(str(w) for w in warnings))
+
+        if sheets_not_found:
+            msg = "Some sheets .svg files were not found, need to create them first: \n{}.".format(
+                "\n".join(sheets_not_found)
+            )
+            self.report({"ERROR"}, msg)
+            return {"CANCELLED"}
+
+        for sheet_uri in sheet_uris:
+            tool.Drawing.convert_svg_to_pdf(sheet_uri, sheet_uri.with_suffix(".pdf"))
+
+        self.report({"INFO"}, f"{len(sheet_uris)} sheets were converted to .pdf.")
         return {"FINISHED"}
 
 
@@ -4832,8 +4963,12 @@ class SaveLayerStylesToJSON(bpy.types.Operator):
                 "line_weight": ls.line_weight,
                 "linetype": ls.linetype,
             }
-        with open(self.filepath, "w") as f:
-            json.dump(data, f, indent=2)
+        try:
+            with open(self.filepath, "w") as f:
+                json.dump(data, f, indent=2)
+        except OSError as e:
+            self.report({"ERROR"}, f"Failed to save JSON: {e}")
+            return {"CANCELLED"}
         self.report({"INFO"}, f"Saved {len(data)} layer styles to {self.filepath}")
         return {"FINISHED"}
 
@@ -5290,8 +5425,11 @@ class InsertFormattedLiteralPopup(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        assert obj
+        if not obj:
+            return {"CANCELLED"}
         props = tool.Drawing.get_text_props(obj)
+        if self.literal_prop_id >= len(props.literals):
+            return {"CANCELLED"}
         literal_props = props.literals[self.literal_prop_id]
 
         formatted_syntax = self._generate_formatted_syntax()
@@ -5875,7 +6013,13 @@ class FormatElementValueRow(bpy.types.Operator):
             return {"CANCELLED"}
 
         props = tool.Drawing.get_text_props(obj)
+        if self.literal_prop_id >= len(props.literals):
+            return {"CANCELLED"}
+
         literal_props = props.literals[self.literal_prop_id]
+        if self.row_index >= len(literal_props.element_value_rows):
+            return {"CANCELLED"}
+
         row = literal_props.element_value_rows[self.row_index]
 
         formatted_syntax = self._generate_formatted_syntax(row.element_key)

@@ -361,6 +361,7 @@ class BIM_PT_drawings(Panel):
                 row3.operator("bim.select_all_drawings", icon="CHECKBOX_HLT", text="")
                 row3.operator("bim.create_drawing", text="", icon="OUTPUT")
                 row3.operator("bim.convert_svg_to_dxf", text="", icon="SEQ_PREVIEW").view = active_drawing.name
+                row3.operator("bim.convert_svg_to_pdf", text="", icon="FILE_TICK").view = active_drawing.name
                 row3.operator("bim.open_drawing", icon="HIDE_OFF", text="").view = active_drawing.name
             self.layout.template_list(
                 "BIM_UL_drawinglist", "", self.props, "drawings", self.props, "active_drawing_index"
@@ -620,6 +621,7 @@ class BIM_PT_sheets(Panel):
 
             row3.operator("bim.select_all_sheets", icon="CHECKBOX_HLT", text="")
             row3.operator("bim.create_sheets", icon="OUTPUT", text="")
+            row3.operator("bim.convert_sheet_svg_to_pdf", icon="FILE_TICK", text="")
             row3.operator("bim.open_sheet", icon="HIDE_OFF", text="")
 
         self.layout.template_list("BIM_UL_sheets", "", self.props, "sheets", self.props, "active_sheet_index")

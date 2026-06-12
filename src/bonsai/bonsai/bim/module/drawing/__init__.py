@@ -47,6 +47,8 @@ classes = (
     operator.CleanWireframes,
     operator.ContractSheet,
     operator.ConvertSVGToDXF,
+    operator.ConvertSVGToPDF,
+    operator.ConvertSheetSVGToPDF,
     operator.CopyTextToSelection,
     operator.CreateDrawing,
     operator.CreateSheets,
