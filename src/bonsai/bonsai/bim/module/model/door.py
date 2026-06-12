@@ -629,7 +629,8 @@ class RemoveDoor(bpy.types.Operator, tool.Ifc.Operator):
 
     def remove_door_on_object(self, obj: bpy.types.Object) -> None:
         element = tool.Ifc.get_entity(obj)
-        assert element
+        if element is None:
+            return
         if not tool.Parametric.is_door(element):
             return
         props = tool.Model.get_door_props(obj)

@@ -1156,7 +1156,11 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
                 self.has_ifc_class = bool(tool.Blender.get_enum_safe(self.props, "ifc_class"))
             except:
                 pass
-        getattr(self, f"hotkey_{self.hotkey}")()
+        hotkey_func = getattr(self, f"hotkey_{self.hotkey}", None)
+        if hotkey_func is None:
+            self.report({"ERROR"}, "Invalid hotkey specified.")
+            return {"CANCELLED"}
+        hotkey_func()
 
     def invoke(self, context, event):
         # https://blender.stackexchange.com/questions/276035/how-do-i-make-operators-remember-their-property-values-when-called-from-a-hotkey

@@ -44,7 +44,8 @@ class GenerateSpace(bpy.types.Operator, tool.Ifc.Operator):
         try:
             core.generate_space(tool.Ifc, tool.Model, tool.Root, tool.Spatial, tool.Type)
         except core.SpaceGenerationError as e:
-            return self.report({"ERROR"}, str(e))
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
 
 
 class GenerateSpacesFromWalls(bpy.types.Operator, tool.Ifc.Operator):
@@ -60,8 +61,6 @@ class GenerateSpacesFromWalls(bpy.types.Operator, tool.Ifc.Operator):
         # there must be selected walls
 
         active_obj = context.active_object
-        element = tool.Ifc.get_entity(active_obj)
-        container = tool.Spatial.get_container(element)
 
         def msg_no_active_object(self, context):
             self.layout.label(text="No active object. Please select a wall")
@@ -84,6 +83,7 @@ class GenerateSpacesFromWalls(bpy.types.Operator, tool.Ifc.Operator):
             context.window_manager.popup_menu(msg_no_active_wall, title="Error", icon="ERROR")
             return
 
+        container = tool.Spatial.get_container(element) if element else None
         if not container:
             context.window_manager.popup_menu(msg_no_container, title="Error", icon="ERROR")
             return
