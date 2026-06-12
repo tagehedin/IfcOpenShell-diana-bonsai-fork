@@ -335,10 +335,12 @@ class AddRailing(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_railing_props(obj)
         si_conversion = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
 
@@ -474,13 +476,18 @@ class FlipRailingPathOrder(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_railing_props(obj)
 
         pset_data = tool.Model.get_modeling_bbim_pset_data(bpy.context.active_object, "BBIM_Railing")
+        if pset_data is None:
+            self.report({"ERROR"}, "Active object is not a parametric railing.")
+            return {"CANCELLED"}
         path_data = pset_data["data_dict"]["path_data"]
 
         # flip the vertex order and edges
@@ -506,11 +513,16 @@ class EnableEditingRailingPath(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context):
-        obj = context.active_object
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
         [o.select_set(False) for o in context.selected_objects if o != obj]
-        assert obj
         props = tool.Model.get_railing_props(obj)
-        data = tool.Model.get_modeling_bbim_pset_data(obj, "BBIM_Railing")["data_dict"]
+        pset_data = tool.Model.get_modeling_bbim_pset_data(obj, "BBIM_Railing")
+        if pset_data is None:
+            self.report({"ERROR"}, "Active object is not a parametric railing.")
+            return {"CANCELLED"}
+        data = pset_data["data_dict"]
         # required since we could load pset from .ifc and BIMRoofProperties won't be set
         props.set_props_kwargs_from_ifc_data(data)
 
@@ -526,7 +538,10 @@ class EnableEditingRailingPath(bpy.types.Operator, tool.Ifc.Operator):
 
 def cancel_editing_railing_path(context: bpy.types.Context) -> set[str]:
     obj = context.active_object
-    assert obj
+    if obj is None:
+        return {"CANCELLED"}
+    if tool.Model.get_modeling_bbim_pset_data(obj, "BBIM_Railing") is None:
+        return {"CANCELLED"}
     props = tool.Model.get_railing_props(obj)
 
     ProfileDecorator.uninstall()
@@ -539,7 +554,8 @@ def cancel_editing_railing_path(context: bpy.types.Context) -> set[str]:
         update_railing_modifier_bmesh(context)
     else:
         element = tool.Ifc.get_entity(obj)
-        assert element
+        if element is None:
+            return {"CANCELLED"}
         body = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
         bonsai.core.geometry.switch_representation(
             tool.Ifc,
@@ -566,9 +582,12 @@ class FinishEditingRailingPath(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_railing_props(obj)
 
         railing_data = props.get_general_kwargs(convert_to_project_units=True)
@@ -594,13 +613,18 @@ class RemoveRailing(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER"}
 
     def _execute(self, context):
-        obj = context.active_object
-        assert obj
-        element = tool.Ifc.get_entity(obj)
-        assert element
+        if (obj := context.active_object) is None:
+            self.report({"ERROR"}, "No active object.")
+            return {"CANCELLED"}
+        if (element := tool.Ifc.get_entity(obj)) is None:
+            self.report({"ERROR"}, "Active object is not an IFC element.")
+            return {"CANCELLED"}
         props = tool.Model.get_railing_props(obj)
         props.is_editing = False
 
         pset = tool.Pset.get_element_pset(element, "BBIM_Railing")
+        if pset is None:
+            self.report({"ERROR"}, "Active object is not a parametric railing.")
+            return {"CANCELLED"}
         ifcopenshell.api.pset.remove_pset(tool.Ifc.get(), product=element, pset=pset)
         return {"FINISHED"}
