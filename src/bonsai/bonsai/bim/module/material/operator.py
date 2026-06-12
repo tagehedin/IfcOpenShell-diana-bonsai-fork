@@ -66,6 +66,9 @@ class SelectByMaterial(bpy.types.Operator):
     material: bpy.props.IntProperty()
 
     def execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         material = tool.Ifc.get().by_id(self.material)
         core.select_by_material(tool.Material, tool.Spatial, material=material)
 
@@ -88,6 +91,9 @@ class EnableEditingMaterial(bpy.types.Operator):
     material: bpy.props.IntProperty()
 
     def execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         core.enable_editing_material(tool.Material, material=tool.Ifc.get().by_id(self.material))
         return {"FINISHED"}
 
@@ -99,6 +105,9 @@ class EditMaterial(bpy.types.Operator, tool.Ifc.Operator):
     material: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         core.edit_material(tool.Ifc, tool.Material, material=tool.Ifc.get().by_id(self.material))
 
 
@@ -123,6 +132,15 @@ class AssignParameterizedProfile(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.ifc_class:
+            self.report({"ERROR"}, "No profile class specified.")
+            return {"CANCELLED"}
+        if not self.material_profile:
+            self.report({"ERROR"}, "No material profile specified.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         profile = ifcopenshell.api.profile.add_parameterized_profile(
             self.file,
@@ -167,6 +185,9 @@ class DuplicateMaterial(bpy.types.Operator, tool.Ifc.Operator):
     material: bpy.props.IntProperty(name="Material ID")
 
     def _execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         material = tool.Ifc.get().by_id(self.material)
         tool.Material.duplicate_material(material)
         bpy.ops.bim.load_materials()
@@ -180,6 +201,14 @@ class AddMaterialSet(bpy.types.Operator, tool.Ifc.Operator):
     set_type: bpy.props.StringProperty()
 
     def _execute(self, context):
+        if self.set_type not in (
+            "IfcMaterialLayerSet",
+            "IfcMaterialProfileSet",
+            "IfcMaterialConstituentSet",
+            "IfcMaterialList",
+        ):
+            self.report({"ERROR"}, "Invalid material set type specified.")
+            return {"CANCELLED"}
         core.add_material_set(tool.Ifc, tool.Material, set_type=self.set_type)
 
 
@@ -190,6 +219,9 @@ class RemoveMaterial(bpy.types.Operator, tool.Ifc.Operator):
     material: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         res = core.remove_material(tool.Ifc, tool.Material, material=tool.Ifc.get().by_id(self.material))
         if not res:
             self.report({"ERROR"}, "Material is used in material sets and cannot be removed.")
@@ -203,6 +235,9 @@ class RemoveMaterialSet(bpy.types.Operator, tool.Ifc.Operator):
     material: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         core.remove_material_set(tool.Ifc, tool.Material, material=tool.Ifc.get().by_id(self.material))
 
 
@@ -235,6 +270,9 @@ class AssignMaterialToSelected(bpy.types.Operator, tool.Ifc.Operator):
         return self.execute(context)
 
     def _execute(self, context):
+        if not self.material:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         material = tool.Ifc.get().by_id(self.material)
         objects = tool.Blender.get_selected_objects()
         core.assign_material(
@@ -269,6 +307,15 @@ class AssignMaterial(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         objects = [bpy.data.objects.get(self.obj)] if self.obj else tool.Blender.get_selected_objects()
+        if not self.material_type:
+            active_obj = context.active_object
+            if not active_obj:
+                self.report({"ERROR"}, "No material type specified and no active object to infer it from.")
+                return {"CANCELLED"}
+            omprops = tool.Material.get_object_material_props(active_obj)
+            if not omprops.material_type or not omprops.material:
+                self.report({"ERROR"}, "No material selected to assign.")
+                return {"CANCELLED"}
         core.assign_material(tool.Ifc, tool.Material, material_type=self.material_type, objects=objects)
 
 
@@ -300,7 +347,16 @@ class AddConstituent(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.constituent_set:
+            self.report({"ERROR"}, "No constituent set specified.")
+            return {"CANCELLED"}
         omprops = tool.Material.get_object_material_props(obj)
+        if not omprops.material:
+            self.report({"ERROR"}, "No material selected to add as a constituent.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         ifcopenshell.api.material.add_constituent(
             self.file,
@@ -317,6 +373,9 @@ class RemoveConstituent(bpy.types.Operator, tool.Ifc.Operator):
     constituent: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.constituent:
+            self.report({"ERROR"}, "No constituent specified.")
+            return {"CANCELLED"}
         constituent = tool.Ifc.get().by_id(self.constituent)
         for material_set in constituent.ToMaterialConstituentSet:
             if len(material_set.MaterialConstituents) == 1:
@@ -334,10 +393,21 @@ class AddProfile(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.profile_set:
+            self.report({"ERROR"}, "No profile set specified.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         props = tool.Material.get_material_props()
         omprops = tool.Material.get_object_material_props(obj)
+        if not omprops.material:
+            self.report({"ERROR"}, "No material selected to add a profile for.")
+            return {"CANCELLED"}
+        if not props.profiles:
+            self.report({"ERROR"}, "No profile selected to add.")
+            return {"CANCELLED"}
         ifcopenshell.api.material.add_profile(
             self.file,
             profile_set=self.file.by_id(self.profile_set),
@@ -354,6 +424,9 @@ class RemoveProfile(bpy.types.Operator, tool.Ifc.Operator):
     profile: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.profile:
+            self.report({"ERROR"}, "No profile specified.")
+            return {"CANCELLED"}
         profile = tool.Ifc.get().by_id(self.profile)
         for material_set in profile.ToMaterialProfileSet:
             if len(material_set.MaterialProfiles) == 1:
@@ -372,8 +445,16 @@ class AddLayer(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.layer_set:
+            self.report({"ERROR"}, "No layer set specified.")
+            return {"CANCELLED"}
         omprops = tool.Material.get_object_material_props(obj)
+        if not omprops.material:
+            self.report({"ERROR"}, "No material selected to add as a layer.")
+            return {"CANCELLED"}
         layer_set = tool.Ifc.get().by_id(self.layer_set)
         ifcopenshell.api.material.add_layer(
             tool.Ifc.get(),
@@ -395,6 +476,9 @@ class ReorderMaterialSetItem(bpy.types.Operator, tool.Ifc.Operator):
     material_set: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.material_set:
+            self.report({"ERROR"}, "No material set specified.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         ifcopenshell.api.material.reorder_set_item(
             self.file,
@@ -411,6 +495,9 @@ class RemoveLayer(bpy.types.Operator, tool.Ifc.Operator):
     layer: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.layer:
+            self.report({"ERROR"}, "No layer specified.")
+            return {"CANCELLED"}
         layer = tool.Ifc.get().by_id(self.layer)
         material_sets = set(layer.ToMaterialLayerSet)
         for material_set in layer.ToMaterialLayerSet:
@@ -430,6 +517,9 @@ class DuplicateLayer(bpy.types.Operator, tool.Ifc.Operator):
     layer: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.layer:
+            self.report({"ERROR"}, "No layer specified.")
+            return {"CANCELLED"}
         layer = tool.Ifc.get().by_id(self.layer)
         new_layer = ifcopenshell.util.element.copy(tool.Ifc.get(), layer)
         for material_set in layer.ToMaterialLayerSet:
@@ -447,8 +537,16 @@ class AddListItem(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.list_item_set:
+            self.report({"ERROR"}, "No material list specified.")
+            return {"CANCELLED"}
         omprops = tool.Material.get_object_material_props(obj)
+        if not omprops.material:
+            self.report({"ERROR"}, "No material selected to add as a list item.")
+            return {"CANCELLED"}
         self.file = tool.Ifc.get()
         ifcopenshell.api.material.add_list_item(
             self.file,
@@ -467,6 +565,9 @@ class RemoveListItem(bpy.types.Operator, tool.Ifc.Operator):
     list_item_index: bpy.props.IntProperty()
 
     def _execute(self, context):
+        if not self.list_item_set:
+            self.report({"ERROR"}, "No material list specified.")
+            return {"CANCELLED"}
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
         self.file = tool.Ifc.get()
         ifcopenshell.api.material.remove_list_item(
@@ -484,12 +585,19 @@ class EnableEditingAssignedMaterial(bpy.types.Operator):
 
     def execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if element is None:
+            self.report({"ERROR"}, "Object is not an IFC element.")
+            return {"CANCELLED"}
+        material = ifcopenshell.util.element.get_material(element)
+        if material is None:
+            self.report({"ERROR"}, "Object has no material assigned.")
+            return {"CANCELLED"}
         props = tool.Material.get_object_material_props(obj)
         props.is_editing = True
-        element = tool.Ifc.get_entity(obj)
-        material = ifcopenshell.util.element.get_material(element)
-        assert material
 
         if material.is_a("IfcMaterial"):
             props.material = str(material.id())
@@ -552,9 +660,11 @@ class DisableEditingAssignedMaterial(bpy.types.Operator):
     obj: bpy.props.StringProperty()
 
     def execute(self, context):
-        bpy.ops.bim.disable_editing_material_set_item()
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        bpy.ops.bim.disable_editing_material_set_item()
         props = tool.Material.get_object_material_props(obj)
         props.is_editing = False
         return {"FINISHED"}
@@ -571,12 +681,18 @@ class EditAssignedMaterial(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         self.file = tool.Ifc.get()
         active_obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert active_obj
-        props = tool.Material.get_object_material_props(active_obj)
+        if active_obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
         element = tool.Ifc.get_entity(active_obj)
-        assert element
+        if element is None:
+            self.report({"ERROR"}, "Object is not an IFC element.")
+            return {"CANCELLED"}
         material = ifcopenshell.util.element.get_material(element)
-        assert material
+        if material is None:
+            self.report({"ERROR"}, "Object has no material assigned.")
+            return {"CANCELLED"}
+        props = tool.Material.get_object_material_props(active_obj)
 
         objects = tool.Blender.get_selected_objects()
 
@@ -661,7 +777,12 @@ class EnableEditingMaterialSetItemProfile(bpy.types.Operator):
 
     def execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.material_set_item:
+            self.report({"ERROR"}, "No material set item specified.")
+            return {"CANCELLED"}
         self.props = tool.Material.get_object_material_props(obj)
         self.props.active_material_set_item_id = self.material_set_item
         self.props.material_set_item_profile_attributes.clear()
@@ -678,7 +799,9 @@ class DisableEditingMaterialSetItemProfile(bpy.types.Operator):
 
     def execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
         self.props = tool.Material.get_object_material_props(obj)
         self.props.active_material_set_item_id = 0
         self.props.material_set_item_profile_attributes.clear()
@@ -694,7 +817,12 @@ class EditMaterialSetItemProfile(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.material_set_item:
+            self.report({"ERROR"}, "No material set item specified.")
+            return {"CANCELLED"}
         self.props = tool.Material.get_object_material_props(obj)
         attributes = bonsai.bim.helper.export_attributes(self.props.material_set_item_profile_attributes)
         profile = tool.Ifc.get().by_id(self.material_set_item).Profile
@@ -714,13 +842,20 @@ class EnableEditingMaterialSetItem(bpy.types.Operator):
     def execute(self, context):
         self.file = tool.Ifc.get()
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.material_set_item:
+            self.report({"ERROR"}, "No material set item specified.")
+            return {"CANCELLED"}
+        element = tool.Ifc.get_entity(obj)
+        if element is None:
+            self.report({"ERROR"}, "Object is not an IFC element.")
+            return {"CANCELLED"}
         self.mprops = tool.Material.get_material_props()
         self.props = tool.Material.get_object_material_props(obj)
         self.props.active_material_set_item_id = self.material_set_item
 
-        element = tool.Ifc.get_entity(obj)
-        assert element
         material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
         material_set_item = self.file.by_id(self.material_set_item)
 
@@ -771,7 +906,9 @@ class DisableEditingMaterialSetItem(bpy.types.Operator):
 
     def execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
         props = tool.Material.get_object_material_props(obj)
         props.active_material_set_item_id = 0
         return {"FINISHED"}
@@ -787,13 +924,22 @@ class EditMaterialSetItem(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         obj = bpy.data.objects.get(self.obj) if self.obj else context.active_object
         self.file = tool.Ifc.get()
-        assert obj
+        if obj is None:
+            self.report({"ERROR"}, "No object specified.")
+            return {"CANCELLED"}
+        if not self.material_set_item:
+            self.report({"ERROR"}, "No material set item specified.")
+            return {"CANCELLED"}
         props = tool.Material.get_object_material_props(obj)
         mprops = tool.Material.get_material_props()
         element = tool.Ifc.get_entity(obj)
-        assert element
+        if element is None:
+            self.report({"ERROR"}, "Object is not an IFC element.")
+            return {"CANCELLED"}
         material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
-        assert material
+        if material is None:
+            self.report({"ERROR"}, "Object has no material assigned.")
+            return {"CANCELLED"}
 
         attributes = bonsai.bim.helper.export_attributes(props.material_set_item_attributes)
 
@@ -905,8 +1051,12 @@ class EnableEditingMaterialStyle(bpy.types.Operator):
         if not 0 <= props.active_material_index < len(props.materials):
             return {"FINISHED"}
 
+        active_material = props.materials[props.active_material_index]
+        if active_material.is_category:
+            return {"FINISHED"}
+
         ifc_file = tool.Ifc.get()
-        material = ifc_file.by_id(props.materials[props.active_material_index].ifc_definition_id)
+        material = ifc_file.by_id(active_material.ifc_definition_id)
         if not material.HasRepresentation:
             # MODEL_VIEW is probably the one that's used with the styles most frequently.
             context = ifcopenshell.util.representation.get_context(ifc_file, "Model", "Body", "MODEL_VIEW")
@@ -941,6 +1091,9 @@ class EditMaterialStyle(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         props = tool.Material.get_material_props()
+        if not props.active_material_id:
+            self.report({"ERROR"}, "No material selected to assign a style to.")
+            return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
         material = ifc_file.by_id(props.active_material_id)
         style = ifc_file.by_id(int(props.styles))
@@ -965,7 +1118,17 @@ class UnassignMaterialStyle(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         props = tool.Material.get_material_props()
-        material = tool.Ifc.get().by_id(props.materials[props.active_material_index].ifc_definition_id)
+        if not 0 <= props.active_material_index < len(props.materials):
+            self.report({"ERROR"}, "No material selected.")
+            return {"CANCELLED"}
+        active_material = props.materials[props.active_material_index]
+        if active_material.is_category:
+            self.report({"ERROR"}, "No material selected.")
+            return {"CANCELLED"}
+        if not self.style or not self.context:
+            self.report({"ERROR"}, "No style or context specified.")
+            return {"CANCELLED"}
+        material = tool.Ifc.get().by_id(active_material.ifc_definition_id)
         style = tool.Ifc.get().by_id(self.style)
         context = tool.Ifc.get().by_id(self.context)
         ifcopenshell.api.style.unassign_material_style(tool.Ifc.get(), material=material, style=style, context=context)
@@ -983,6 +1146,9 @@ class SelectMaterialInMaterialsUI(bpy.types.Operator):
         material_id: int
 
     def execute(self, context):
+        if not self.material_id:
+            self.report({"ERROR"}, "No material specified.")
+            return {"CANCELLED"}
         props = tool.Material.get_material_props()
         ifc_file = tool.Ifc.get()
         material_id = self.material_id

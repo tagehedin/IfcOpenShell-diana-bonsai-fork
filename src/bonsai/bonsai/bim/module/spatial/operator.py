@@ -103,6 +103,9 @@ class ReferenceFromProvidedStructure(bpy.types.Operator, tool.Ifc.Operator):
         return self.execute(context)
 
     def _execute(self, context):
+        if not self.structure:
+            self.report({"ERROR"}, "No structure specified.")
+            return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
         structure = ifc_file.by_id(self.structure)
 
@@ -138,6 +141,9 @@ class DereferenceFromProvidedStructure(bpy.types.Operator, tool.Ifc.Operator):
         return True
 
     def _execute(self, context):
+        if not self.structure:
+            self.report({"ERROR"}, "No structure specified.")
+            return {"CANCELLED"}
         ifc_file = tool.Ifc.get()
         structure = ifc_file.by_id(self.structure)
         objs = tool.Spatial.get_selected_objects_without_containers()
@@ -254,6 +260,9 @@ class CopyToContainer(bpy.types.Operator, tool.Ifc.Operator):
         container: int
 
     def _execute(self, context):
+        if not self.container:
+            self.report({"ERROR"}, "No container specified.")
+            return {"CANCELLED"}
         objs = tool.Spatial.get_selected_objects_without_containers()
         if not objs:
             self.report({"INFO"}, "No non-spatial objects are selected.")
@@ -349,6 +358,9 @@ class SelectProduct(bpy.types.Operator):
     product: bpy.props.IntProperty()
 
     def execute(self, context):
+        if not self.product:
+            self.report({"ERROR"}, "No product specified.")
+            return {"CANCELLED"}
         core.select_product(tool.Spatial, product=tool.Ifc.get().by_id(self.product))
         return {"FINISHED"}
 
@@ -514,6 +526,9 @@ class ContractContainer(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
+        if not self.container:
+            self.report({"ERROR"}, "No container specified.")
+            return {"CANCELLED"}
         core.contract_container(
             tool.Spatial, container=tool.Ifc.get().by_id(self.container), is_recursive=self.is_recursive
         )
@@ -534,6 +549,9 @@ class ExpandContainer(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
+        if not self.container:
+            self.report({"ERROR"}, "No container specified.")
+            return {"CANCELLED"}
         core.expand_container(
             tool.Spatial, container=tool.Ifc.get().by_id(self.container), is_recursive=self.is_recursive
         )
@@ -678,6 +696,9 @@ class SetContainerVisibility(bpy.types.Operator):
         return self.execute(context)
 
     def execute(self, context):
+        if not self.container:
+            self.report({"ERROR"}, "No container specified.")
+            return {"CANCELLED"}
         if self.mode == "ISOLATE":
             if tool.Ifc.get_schema() == "IFC2X3":
                 containers = tool.Ifc.get().by_type("IfcSpatialStructureElement")
