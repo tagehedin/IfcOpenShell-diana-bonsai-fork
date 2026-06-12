@@ -2584,12 +2584,16 @@ class ActivateModel(bpy.types.Operator):
                     continue
                 assert isinstance(obj := tool.Ifc.get_object(element), bpy.types.Object)
                 current_representation = tool.Geometry.get_active_representation(obj)
-                if current_representation == model:
+                # get_active_representation() returns the representation that was actually
+                # imported, which for mapped representations is the resolved target, not the
+                # element's own (possibly mapped) representation. Resolve before comparing,
+                # otherwise mapped elements are seen as "stale" and reimported on every activation.
+                resolved_model = ifcopenshell.util.representation.resolve_representation(model)
+                if current_representation in (model, resolved_model):
                     continue
 
                 # reimport_element_representations automatically reloads all elements sharing representation.
                 # So we should avoid reloading same elements twice.
-                resolved_model = ifcopenshell.util.representation.resolve_representation(model)
                 elements_sharing_representation = ifcopenshell.util.element.get_elements_by_representation(
                     ifc_file, resolved_model
                 )
