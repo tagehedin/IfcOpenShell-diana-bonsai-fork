@@ -579,40 +579,93 @@ class Geometry(bonsai.core.tool.Geometry):
         return mesh
 
     @classmethod
-    def generate_outline_mesh(cls, obj: bpy.types.Object, axis: Literal["+Z", "-Y"] = "+Z") -> bpy.types.Mesh:
-        def get_visible_faces(
-            obj: bpy.types.Object, bm: bmesh.types.BMesh, axis: Literal["+Z", "-Y"] = "+Z"
-        ) -> list[bmesh.types.BMFace]:
-            # A visible face is any face with the normal facing the axis and
-            # its centroid not obscured (tested via raycasting) by any other
-            # face.
-            distance = max(obj.dimensions.xyz)
+    def get_visible_faces(
+        cls, obj: bpy.types.Object, bm: bmesh.types.BMesh, axis: Literal["+Z", "-Y"] = "+Z"
+    ) -> list[bmesh.types.BMFace]:
+        # A visible face is any face with the normal facing the axis and
+        # its centroid not obscured (tested via raycasting) by any other
+        # face.
+        distance = max(obj.dimensions.xyz)
+        if axis == "+Z":
+            max_z = max([co[2] for co in obj.bound_box]) + 0.002
+            direction = Vector((0, 0, -1))
+        elif axis == "-Y":
+            min_y = max([co[2] for co in obj.bound_box]) - 0.002
+            direction = Vector((0, 1, 0))
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        visible_faces = []
+        face_offset = obj.matrix_world.to_quaternion() @ Vector((0, 0, distance))
+        global_direction = obj.matrix_world.to_quaternion() @ direction
+        for face in bm.faces:
+            if direction.dot(face.normal) > 0:
+                continue
             if axis == "+Z":
-                max_z = max([co[2] for co in obj.bound_box]) + 0.002
-                direction = Vector((0, 0, -1))
+                face_centroid_at_max = Vector((*face.calc_center_median().xy, max_z))
             elif axis == "-Y":
-                min_y = max([co[2] for co in obj.bound_box]) - 0.002
-                direction = Vector((0, 1, 0))
-            depsgraph = bpy.context.evaluated_depsgraph_get()
-            visible_faces = []
-            face_offset = obj.matrix_world.to_quaternion() @ Vector((0, 0, distance))
-            global_direction = obj.matrix_world.to_quaternion() @ direction
-            for face in bm.faces:
-                if direction.dot(face.normal) > 0:
-                    continue
-                if axis == "+Z":
-                    face_centroid_at_max = Vector((*face.calc_center_median().xy, max_z))
-                elif axis == "-Y":
-                    centroid = face.calc_center_median()
-                    face_centroid_at_max = Vector((centroid.x, min_y, centroid.z))
-                face_centroid_at_max = obj.matrix_world @ face_centroid_at_max
-                hit, loc, norm, idx, o, mw = bpy.context.scene.ray_cast(
-                    depsgraph, face_centroid_at_max, global_direction, distance=distance
-                )
-                if o != obj or idx == face.index:
-                    visible_faces.append(face)
-            return visible_faces
+                centroid = face.calc_center_median()
+                face_centroid_at_max = Vector((centroid.x, min_y, centroid.z))
+            face_centroid_at_max = obj.matrix_world @ face_centroid_at_max
+            hit, loc, norm, idx, o, mw = bpy.context.scene.ray_cast(
+                depsgraph, face_centroid_at_max, global_direction, distance=distance
+            )
+            if o != obj or idx == face.index:
+                visible_faces.append(face)
+        return visible_faces
 
+    @classmethod
+    def generate_silhouette_mesh(cls, obj: bpy.types.Object, axis: Literal["+Z", "-Y"] = "+Z") -> bpy.types.Mesh:
+        # Like generate_outline_mesh, but instead of tracing every visible
+        # contour/crease edge (which can produce duplicate overlapping lines
+        # where, e.g., a wall's top face edge and its side face's top edge
+        # project to the same line), this flattens all visible faces to 2D
+        # and unions them into a single silhouette polygon, then traces only
+        # its outer boundary as one polyline.
+        import shapely
+
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.triangulate(bm, faces=bm.faces)
+        visible_faces = cls.get_visible_faces(obj, bm, axis=axis)
+
+        polygons = []
+        for face in visible_faces:
+            if axis == "+Z":
+                coords = [(v.co.x, v.co.y) for v in face.verts]
+            else:  # -Y
+                coords = [(v.co.x, v.co.z) for v in face.verts]
+            if len(coords) < 3:
+                continue
+            polygon = shapely.Polygon(coords)
+            if not polygon.is_valid:
+                polygon = polygon.buffer(0)
+            if not polygon.is_empty:
+                polygons.append(polygon)
+
+        bm_new = bmesh.new()
+        if polygons:
+            union = shapely.union_all(polygons)
+            geoms = union.geoms if hasattr(union, "geoms") else [union]
+            for geom in geoms:
+                if geom.is_empty:
+                    continue
+                exterior_coords = list(geom.exterior.coords)
+                if len(exterior_coords) > 1 and exterior_coords[0] == exterior_coords[-1]:
+                    exterior_coords = exterior_coords[:-1]
+                verts = []
+                for x, y in exterior_coords:
+                    co = Vector((x, y, 0)) if axis == "+Z" else Vector((x, 0, y))
+                    verts.append(bm_new.verts.new(co))
+                for i in range(len(verts)):
+                    bm_new.edges.new((verts[i], verts[(i + 1) % len(verts)]))
+
+        new_mesh = bpy.data.meshes.new("tmp")
+        bm_new.to_mesh(new_mesh)
+        bm_new.free()
+        bm.free()
+        return new_mesh
+
+    @classmethod
+    def generate_outline_mesh(cls, obj: bpy.types.Object, axis: Literal["+Z", "-Y"] = "+Z") -> bpy.types.Mesh:
         def get_contour_edges(visible_faces: list[bmesh.types.BMFace]) -> list[bmesh.types.BMEdge]:
             # A contour is any edge where one face is visible and the other isn't.
             contour_edges = []
@@ -641,7 +694,7 @@ class Geometry(bonsai.core.tool.Geometry):
         # Calculate outline edges
         bm = bmesh.new()
         bm.from_mesh(obj.data)
-        visible_faces = get_visible_faces(obj, bm, axis=axis)
+        visible_faces = cls.get_visible_faces(obj, bm, axis=axis)
         outline_edges = set(get_contour_edges(visible_faces))
         outline_edges.update(get_crease_edges(visible_faces, radians(60)))
 

@@ -306,6 +306,12 @@ class AddRepresentation(bpy.types.Operator, tool.Ifc.Operator):
         items=[
             ("OUTLINE", "Trace Outline", "Traces outline by local XY axes, for Profile - by local XZ axes."),
             (
+                "SILHOUETTE",
+                "Trace Silhouette",
+                "Traces a single outer silhouette polyline by local XY axes, for Profile - by local XZ axes.\n"
+                "Unlike Trace Outline, internal/crease edges are not included, avoiding double lines.",
+            ),
+            (
                 "BOX",
                 "Bounding Box",
                 "Creates a bounding box representation.\n"
@@ -362,6 +368,14 @@ class AddRepresentation(bpy.types.Operator, tool.Ifc.Operator):
                 new_rep_data = tool.Geometry.generate_outline_mesh(obj, axis="-Y")
             else:
                 new_rep_data = tool.Geometry.generate_outline_mesh(obj, axis="+Z")
+            tool.Geometry.change_object_data(obj, new_rep_data, is_global=True)
+        elif conversion_method == "SILHOUETTE":
+            if ifc_context.ContextType == "Plan":
+                new_rep_data = tool.Geometry.generate_silhouette_mesh(obj, axis="+Z")
+            elif ifc_context.ContextIdentifier == "Profile":
+                new_rep_data = tool.Geometry.generate_silhouette_mesh(obj, axis="-Y")
+            else:
+                new_rep_data = tool.Geometry.generate_silhouette_mesh(obj, axis="+Z")
             tool.Geometry.change_object_data(obj, new_rep_data, is_global=True)
         elif conversion_method == "BOX":
             if ifc_context.ContextType == "Plan":
@@ -440,6 +454,11 @@ class AddPlanRepresentations(bpy.types.Operator, tool.Ifc.Operator):
         items=[
             ("BOX", "Bounding Box", "Creates a 2D bounding box representation as seen from above."),
             ("OUTLINE", "Trace Outline", "Traces the outline of the object as seen from above."),
+            (
+                "SILHOUETTE",
+                "Trace Silhouette",
+                "Traces a single outer silhouette polyline of the object as seen from above.",
+            ),
         ],
         default="BOX",
         name="Representation Conversion Method",
@@ -471,10 +490,22 @@ class AddPlanRepresentations(bpy.types.Operator, tool.Ifc.Operator):
             )
 
         added = skipped = failed = 0
+        processed_types: set[int] = set()
         for obj in context.selected_objects:
             element = tool.Ifc.get_entity(obj)
             if not element:
                 continue
+
+            # If this element has a type, generating a representation for one
+            # instance pushes it to the type and propagates it to every
+            # instance of that type. So only the first selected instance of
+            # each type needs to be processed.
+            element_type = ifcopenshell.util.element.get_type(element)
+            if element_type:
+                if element_type.id() in processed_types:
+                    skipped += 1
+                    continue
+                processed_types.add(element_type.id())
 
             if self.skip_existing and ifcopenshell.util.representation.get_representation(
                 element, "Plan", "Body", "PLAN_VIEW"
@@ -491,6 +522,8 @@ class AddPlanRepresentations(bpy.types.Operator, tool.Ifc.Operator):
 
             if self.representation_conversion_method == "OUTLINE":
                 new_rep_data = tool.Geometry.generate_outline_mesh(obj, axis="+Z")
+            elif self.representation_conversion_method == "SILHOUETTE":
+                new_rep_data = tool.Geometry.generate_silhouette_mesh(obj, axis="+Z")
             else:
                 new_rep_data = tool.Geometry.generate_2d_box_mesh(obj, axis="Z")
 

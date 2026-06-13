@@ -2255,6 +2255,9 @@ class Model(bonsai.core.tool.Model):
                     else:
                         loop_verts.append(edge.other_vert(loop_verts[-1]))
 
+                if not loop_verts or None in loop_verts:
+                    return (False, "DISCONNECTED_LOOP")
+
                 if is_closed := loop_verts[0] == loop_verts[-1]:
                     loop_verts.pop()
 
@@ -2394,15 +2397,15 @@ class Model(bonsai.core.tool.Model):
 
         # Sanity check
         group_verts = {"IFCARCINDEX": {}, "IFCCIRCLE": {}}
-        if deform_layer:
-            for vert in bm.verts:
+        for vert in bm.verts:
+            if len(vert.link_edges) > 2:  # Forked loop
+                return (False, "FORKED_LOOP")
+            if deform_layer:
                 vert_group_indices = tool.Blender.bmesh_get_vertex_groups(vert, deform_layer)
                 for group_index in vert_group_indices:
                     group_type = "IFCARCINDEX" if group_index in groups["IFCARCINDEX"] else "IFCCIRCLE"
                     group_verts[group_type].setdefault(group_index, 0)
                     group_verts[group_type][group_index] += 1
-                if len(vert.link_edges) > 2:  # Forked loop
-                    return (False, "FORKED_LOOP")
 
         for group_type, group_counts in group_verts.items():
             if group_type == "IFCARCINDEX":
@@ -2477,6 +2480,9 @@ class Model(bonsai.core.tool.Model):
                             loop_verts.append(edge.verts[1])
                     else:
                         loop_verts.append(edge.other_vert(loop_verts[-1]))
+
+                if not loop_verts or None in loop_verts:
+                    return (False, "DISCONNECTED_LOOP")
 
                 if is_closed := loop_verts[0] == loop_verts[-1]:
                     loop_verts.pop()
