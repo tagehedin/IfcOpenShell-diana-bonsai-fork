@@ -36,6 +36,7 @@ from mathutils import Vector
 import bonsai.bim.module.root.prop as root_prop
 import bonsai.core.geometry
 import bonsai.core.root as core
+import bonsai.core.type as core_type
 import bonsai.tool as tool
 from bonsai.bim.helper import get_enum_items, prop_with_search
 from bonsai.bim.ifc import IfcStore
@@ -822,6 +823,23 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
         bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
         tool.Blender.set_active_object(obj)
 
+        if props.ifc_product == "IfcElementType" and props.also_add_instance:
+            occurrence_classes = ifcopenshell.util.type.get_applicable_entities(props.ifc_class, ifc_file.schema)
+            if occurrence_classes:
+                instance_obj = bpy.data.objects.new(occurrence_classes[0][3:], None)
+                instance_obj.matrix_world = obj.matrix_world.copy()
+                instance_element = core.assign_class(
+                    tool.Ifc,
+                    tool.Collector,
+                    tool.Root,
+                    obj=instance_obj,
+                    ifc_class=occurrence_classes[0],
+                    should_add_representation=False,
+                )
+                core_type.assign_type(tool.Ifc, tool.Model, tool.Type, element=instance_element, type=element)
+                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=instance_obj)
+                tool.Blender.set_active_object(instance_obj)
+
     def draw(self, context):
         props = tool.Root.get_root_props()
         self.layout.use_property_split = True
@@ -852,3 +870,6 @@ class AddElement(bpy.types.Operator, tool.Ifc.Operator):
             prop_with_search(self.layout, props, "profile", text="Profile", should_click_ok=True)
         if props.representation_template != "EMPTY":
             prop_with_search(self.layout, props, "contexts", should_click_ok=True)
+        if props.ifc_product == "IfcElementType":
+            row = self.layout.row()
+            row.prop(props, "also_add_instance")

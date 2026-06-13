@@ -35,8 +35,14 @@ class Collector(bonsai.core.tool.Collector):
                 # Users are free to use extra collections for their own
                 # purposes except for the reserved keyword "Ifc" and
                 # "Collection" (which is the default collection that comes with
-                # a Blender session) and "Unsorted" (our special collection).
-                if "Ifc" in users_collection.name or users_collection.name in ("Collection", "Unsorted"):
+                # a Blender session), "Unsorted" (our special collection), and
+                # the scene's root collection (used by UnlinkObject as a
+                # parking spot for objects with no IFC entity).
+                if (
+                    "Ifc" in users_collection.name
+                    or users_collection.name in ("Collection", "Unsorted")
+                    or users_collection == bpy.context.scene.collection
+                ):
                     users_collection.objects.unlink(obj)
 
         element = tool.Ifc.get_entity(obj)
@@ -69,6 +75,14 @@ class Collector(bonsai.core.tool.Collector):
         elif element.is_a("IfcTypeProduct"):
             collection = cls._create_project_child_collection("IfcTypeProduct")
             cls.link_collection_object_safe(collection, obj)
+            # New types should be hidden like every other type, even if the
+            # "IfcTypeProduct" collection already existed (and so its
+            # hide_viewport wasn't (re)applied by _create_project_child_collection).
+            # During IFC import the object may not be in the view layer yet,
+            # in which case hide_set() isn't applicable (and unnecessary, as
+            # the loader applies collection visibility separately).
+            if obj.name in bpy.context.view_layer.objects:
+                obj.hide_set(True)
         elif element.is_a("IfcSpace"):
             if tool.Geometry.is_locked(element):
                 tool.Geometry.lock_object(obj)

@@ -178,6 +178,11 @@ class BIMRootProperties(PropertyGroup):
         description="The representation will be a tessellation of the selected object",
     )
     profile: EnumProperty(name="Profile for profile type object", items=get_profile)
+    also_add_instance: bpy.props.BoolProperty(
+        name="Also Add Instance",
+        description="Also place an occurrence (instance) of this type in the same location",
+        default=False,
+    )
     relating_class_object: PointerProperty(
         type=bpy.types.Object,
         name="Copy Class",
@@ -203,3 +208,4 @@ class BIMRootProperties(PropertyGroup):
         representation_obj: Union[bpy.types.Object, None]
         profile: str
         relating_class_object: Union[bpy.types.Object, None]
+        also_add_instance: bool
