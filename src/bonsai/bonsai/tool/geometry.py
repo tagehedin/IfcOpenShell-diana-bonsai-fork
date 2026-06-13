@@ -1009,7 +1009,12 @@ class Geometry(bonsai.core.tool.Geometry):
                 mesh = tool.Loader.create_point_cloud_mesh(representation)
 
             if mesh is None:
-                raise Exception(f"Failed to process representation with custom method: {representation}.")
+                # E.g. an IfcCartesianPointList with no points. Don't crash the
+                # whole representation switch over one degenerate representation.
+                logging.getLogger("ImportIFC").warning(
+                    f"Skipping empty point cloud/point/vertex representation: {representation}."
+                )
+                return
 
             tool.Ifc.link(representation, mesh)
             for element in elements | element_types:
