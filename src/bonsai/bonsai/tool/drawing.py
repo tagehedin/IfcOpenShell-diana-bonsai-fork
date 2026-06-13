@@ -2501,7 +2501,12 @@ class Drawing(bonsai.core.tool.Drawing):
         target_view = cls.get_drawing_target_view(drawing)
         subcontexts = cls.get_drawing_subcontexts(target_view)
 
-        # Switch representations
+        # Switch representations. Collect targets and apply them in one batched
+        # pass (tool.Geometry.reimport_elements_batch) instead of calling
+        # switch_representation per element, which would spin up a separate
+        # ifcopenshell.geom.iterator (with its own multiprocessing worker pool)
+        # for every element.
+        representation_targets: dict[int, ifcopenshell.entity_instance] = {}
         for element in filtered_elements:
             obj = tool.Ifc.get_object(element)
             if not obj:
@@ -2511,23 +2516,21 @@ class Drawing(bonsai.core.tool.Drawing):
                 subcontext = current_representation.ContextOfItems
                 current_representation_subcontext = tool.Geometry.get_subcontext_parameters(subcontext)
 
-            has_context = False
             for subcontext in subcontexts:
                 # prioritize already active representation if it matches the subcontext
                 # (element could have multiple representations in the same subcontext)
                 if current_representation and subcontext == current_representation_subcontext:
-                    has_context = True
                     break
                 priority_representation = ifcopenshell.util.representation.get_representation(element, *subcontext)
                 if priority_representation:
-                    bonsai.core.geometry.switch_representation(
-                        tool.Ifc,
-                        tool.Geometry,
-                        obj=obj,
-                        representation=priority_representation,
+                    tool.Geometry.clear_cache(element)
+                    representation_targets[element.id()] = ifcopenshell.util.representation.resolve_representation(
+                        priority_representation
                     )
-                    has_context = True
                     break
+
+        if representation_targets:
+            tool.Geometry.reimport_elements_batch(representation_targets)
 
         # Library-linked objects (linked IFC chunk objects) cannot be selected in Blender,
         # so isolate_objects (which uses select + hide_view_set) would hide them all.

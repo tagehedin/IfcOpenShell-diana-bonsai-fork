@@ -2567,15 +2567,13 @@ class ActivateModel(bpy.types.Operator):
 
         def refine_elements(
             elements_mutable: set[ifcopenshell.entity_instance],
-        ) -> dict[ifcopenshell.entity_instance, tuple[ifcopenshell.entity_instance, bpy.types.Object]]:
+        ) -> dict[ifcopenshell.entity_instance, ifcopenshell.entity_instance]:
             """
-            :return: element -> (representation, obj)
+            :return: element -> resolved target representation, for every element
+                whose active representation needs to change (including all
+                elements sharing a representation with another stale element).
             """
-            # TODO: in the future reimport_element_representations should have an option
-            # not recalculate elements completely, but get the from cache, to speed up the process further.
-            refined_elements: dict[
-                ifcopenshell.entity_instance, tuple[ifcopenshell.entity_instance, bpy.types.Object]
-            ] = {}
+            refined_elements: dict[ifcopenshell.entity_instance, ifcopenshell.entity_instance] = {}
             elements = elements_mutable
             while elements:
                 element = elements.pop()
@@ -2592,13 +2590,15 @@ class ActivateModel(bpy.types.Operator):
                 if current_representation in (model, resolved_model):
                     continue
 
-                # reimport_element_representations automatically reloads all elements sharing representation.
-                # So we should avoid reloading same elements twice.
+                # Other elements sharing this representation are stale too, so
+                # mark them for reimport as well; remove from the work set so
+                # they aren't processed (and checked again) twice.
                 elements_sharing_representation = ifcopenshell.util.element.get_elements_by_representation(
                     ifc_file, resolved_model
                 )
-
-                refined_elements[element] = (model, obj)
+                for shared_element in elements_sharing_representation:
+                    refined_elements[shared_element] = resolved_model
+                refined_elements[element] = resolved_model
                 elements = elements - elements_sharing_representation
             return refined_elements
 
@@ -2607,13 +2607,11 @@ class ActivateModel(bpy.types.Operator):
         time_refine_elements = time.time() - t
 
         t = time.time()
-        for _, (model, obj) in refined_elements.items():
-            bonsai.core.geometry.switch_representation(
-                tool.Ifc,
-                tool.Geometry,
-                obj=obj,
-                representation=model,
-            )
+        representation_targets = {element.id(): model for element, model in refined_elements.items()}
+        if representation_targets:
+            for element in refined_elements:
+                tool.Geometry.clear_cache(element)
+            tool.Geometry.reimport_elements_batch(representation_targets)
         time_switch_representations = time.time() - t
 
         t = time.time()

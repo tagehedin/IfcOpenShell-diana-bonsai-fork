@@ -1117,6 +1117,128 @@ class Geometry(bonsai.core.tool.Geometry):
                     change_data(obj, element, mesh)
 
     @classmethod
+    def reimport_elements_batch(
+        cls,
+        representation_targets: dict[int, ifcopenshell.entity_instance],
+        apply_openings: bool = True,
+    ) -> None:
+        """Switch many elements to (possibly different) representations in one pass.
+
+        Like reimport_element_representations, but elements switching to a
+        representation in the same context are processed by a single
+        ifcopenshell.geom.iterator instead of one iterator per element. This
+        avoids paying the multiprocessing iterator setup cost once per
+        element, which dominates when activating a drawing with hundreds of
+        elements (e.g. switching to Plan Body representations).
+
+        :param representation_targets: A mapping of element.id() to the
+            representation (already resolved via
+            ifcopenshell.util.representation.resolve_representation) that
+            element's object should be switched to.
+        """
+        ifc_file = tool.Ifc.get()
+
+        def change_data(obj: bpy.types.Object, element: ifcopenshell.entity_instance, data: bpy.types.ID) -> None:
+            old_data = obj.data
+            if type(old_data) == type(data):
+                cls.change_object_data(obj, data, is_global=False)
+            else:
+                obj = cls.recreate_object_with_data(obj, data, is_global=False)
+            cls.record_object_materials(obj)
+            if not cls.has_data_users(old_data):
+                cls.delete_data(old_data)
+            cls.clear_modifiers(obj)
+            cls.clear_cache(element)
+
+        # Representation types that need special-case handling (point
+        # clouds, native swept disk solids, text literals) are rare and
+        # cheap to process individually - fall back to the per-element path
+        # for those instead of complicating the batched iterator below.
+        by_context: dict[int, dict[int, ifcopenshell.entity_instance]] = {}
+        for element_id, representation in representation_targets.items():
+            element = ifc_file.by_id(element_id)
+            obj = tool.Ifc.get_object(element)
+            if not obj:
+                continue
+            if (
+                representation.RepresentationType in ("PointCloud", "Point", "Vertex")
+                or tool.Loader.is_native_swept_disk_solid(element, representation)
+                or (not cls.get_object_data(obj) and cls.is_text_literal(representation))
+            ):
+                cls.reimport_element_representations(obj, representation, apply_openings=apply_openings)
+                continue
+            by_context.setdefault(representation.ContextOfItems.id(), {})[element_id] = representation
+
+        if not by_context:
+            return
+
+        logger = logging.getLogger("ImportIFC")
+        ifc_import_settings = bonsai.bim.import_ifc.IfcImportSettings.factory(bpy.context, None, logger)
+        ifc_importer = bonsai.bim.import_ifc.IfcImporter(ifc_import_settings)
+        ifc_importer.file = ifc_file
+
+        for context_id, targets in by_context.items():
+            settings = ifcopenshell.geom.settings()
+            settings.set("weld-vertices", True)
+            settings.set("apply-default-materials", False)
+            settings.set("layerset-first", True)
+            settings.set("keep-bounding-boxes", True)
+            settings.set("dimensionality", ifcopenshell.ifcopenshell_wrapper.CURVES_SURFACES_AND_SOLIDS)
+            settings.set("context-ids", [context_id])
+            if not apply_openings:
+                settings.set("disable-opening-subtractions", True)
+
+            elements = {ifc_file.by_id(eid) for eid in targets}
+            iterator = ifcopenshell.geom.iterator(settings, ifc_file, multiprocessing.cpu_count(), include=elements)
+
+            meshes: dict[str, bpy.types.Mesh] = {}
+            if not iterator.initialize():
+                continue
+            while True:
+                shape = iterator.get()
+                assert isinstance(shape, W.TriangulationElement)
+                element = ifc_file.by_id(shape.id)
+
+                target_representation = targets.get(element.id())
+                representation_id = tool.Loader.get_representation_id_from_shape(shape.geometry)
+                shape_representation = ifc_file.by_id(representation_id)
+                resolved_representation = ifcopenshell.util.representation.resolve_representation(
+                    shape_representation
+                )
+                if resolved_representation != target_representation:
+                    if not iterator.next():
+                        break
+                    continue
+
+                obj = tool.Ifc.get_object(element)
+                mesh_name = tool.Loader.get_mesh_name_from_shape(shape.geometry)
+                mesh = meshes.get(mesh_name)
+                if mesh is None:
+                    if element.is_a("IfcAnnotation") and element.ObjectType == "DRAWING":
+                        mesh = tool.Loader.create_camera(element, shape_representation, shape)
+                    elif element.is_a("IfcAnnotation") and ifc_importer.is_curve_annotation(element):
+                        mesh = ifc_importer.create_curve(element, shape)
+                    else:
+                        cartesian_point_offset = cls.get_cartesian_point_offset(obj)
+                        if cartesian_point_offset is None:
+                            cartesian_point_offset = False
+                        mesh = ifc_importer.create_mesh(element, shape, cartesian_point_offset=cartesian_point_offset)
+                        ifc_importer.material_creator.load_existing_materials()
+                        shape_has_openings = cls.does_shape_has_openings(shape)
+                        ifc_importer.material_creator.create(element, obj, mesh, shape_has_openings)
+                        mprops = tool.Geometry.get_mesh_props(mesh)
+                        mprops.has_openings_applied = apply_openings
+                        if not shape_has_openings:
+                            tool.Loader.load_indexed_colour_map(shape_representation, mesh)
+                    tool.Loader.link_mesh(shape, mesh)
+                    meshes[mesh_name] = mesh
+
+                change_data(obj, element, mesh)
+
+                if not iterator.next():
+                    break
+
+    @classmethod
     def does_shape_has_openings(
         cls, shape: Union[ifcopenshell.geom.ShapeElementType, ifcopenshell.geom.ShapeType]
     ) -> bool:

@@ -1630,6 +1630,8 @@ class CutDecorator:
         DecoratorData.cut_cache.clear()
         DecoratorData.slice_cache.clear()
         DecoratorData.fill_cache.clear()
+        DecoratorData.cut_assembled = None
+        DecoratorData.cut_visible_signature = None
         if cls.installed:
             cls.uninstall()
         handler = cls()
@@ -1677,46 +1679,94 @@ class CutDecorator:
         selected_elements_color = self.addon_prefs.decorator_color_selected
         self.fallback_colour = (0.3, 0.3, 0.3, 1)
 
-        all_vertices = []
-        all_edges = []
+        classes_no_cut_str = self.addon_prefs.doc.classes_no_cut
+        classes_no_cut = {word.strip() for word in classes_no_cut_str.split(",")}
+
+        # is_camera_moved() mutates the cached camera matrix when it detects
+        # movement, so it must be called exactly once per redraw (not once
+        # per object, which previously meant only the first object of each
+        # frame ever saw camera_moved == True).
+        camera_moved = self.is_camera_moved()
+
+        visible_objs = [o for o in bpy.context.visible_objects if o.type == "MESH"]
+        visible_signature = frozenset(o.name for o in visible_objs)
+        selected_signature = frozenset(o.name for o in context.selected_objects if o.type == "MESH")
+
+        rebuild_all = (
+            camera_moved
+            or DecoratorData.cut_assembled is None
+            or visible_signature != DecoratorData.cut_visible_signature
+            or selected_signature != DecoratorData.cut_selected_signature
+        )
+
+        if rebuild_all:
+            all_vertices = []
+            all_edges = []
+            fills = {}
+            all_vertex_i_offset = 0
+
+            for obj in visible_objs:
+                if obj.select_get():
+                    continue  # handled separately below, every frame
+                if not (element := tool.Ifc.get_entity(obj)):
+                    continue
+                # Skip the elements in the following classes
+                if element.is_a() in classes_no_cut:
+                    continue
+                self.decorate(context, obj, element, camera_moved)
+
+                verts, edges = DecoratorData.cut_cache[element.id()]
+                if verts:
+                    all_vertices.extend(verts)
+                    all_edges.extend([[vi + all_vertex_i_offset for vi in e] for e in edges])
+                    all_vertex_i_offset += len(verts)
+
+                verts, edges = DecoratorData.slice_cache.get(element.id(), (None, None))
+                if verts:
+                    all_vertices.extend(verts)
+                    all_edges.extend([[vi + all_vertex_i_offset for vi in e] for e in edges])
+                    all_vertex_i_offset += len(verts)
+
+                for colour, element_fills in DecoratorData.fill_cache[element.id()].items():
+                    fills.setdefault(colour, []).append(element_fills)
+
+            DecoratorData.cut_assembled = (all_vertices, all_edges, fills)
+            DecoratorData.cut_visible_signature = visible_signature
+            DecoratorData.cut_selected_signature = selected_signature
+        else:
+            cached_vertices, cached_edges, cached_fills = DecoratorData.cut_assembled
+            all_vertices = list(cached_vertices)
+            all_edges = list(cached_edges)
+            fills = {colour: list(element_fills) for colour, element_fills in cached_fills.items()}
+            all_vertex_i_offset = len(all_vertices)
+
+        # Selected objects may be actively being transformed, so their
+        # cut/slice/fill geometry is always recalculated, regardless of
+        # whether the rest of the scene needs rebuilding.
         selected_vertices = []
         selected_edges = []
-        fills = {}
-        all_vertex_i_offset = 0
         selected_vertex_i_offset = 0
 
-        classes_no_cut_str = self.addon_prefs.doc.classes_no_cut
-        classes_no_cut = [word.strip() for word in classes_no_cut_str.split(",")]
-
-        for obj in [o for o in bpy.context.visible_objects if o.type == "MESH"]:
+        for obj in context.selected_objects:
+            if obj.type != "MESH" or not obj.visible_get():
+                continue
             if not (element := tool.Ifc.get_entity(obj)):
                 continue
-            # Skip the elements in the following classes
             if element.is_a() in classes_no_cut:
                 continue
-            self.decorate(context, obj, element)
+            self.decorate(context, obj, element, True)
 
             verts, edges = DecoratorData.cut_cache[element.id()]
             if verts:
-                if obj.select_get():
-                    selected_vertices.extend(verts)
-                    selected_edges.extend([[vi + selected_vertex_i_offset for vi in e] for e in edges])
-                    selected_vertex_i_offset += len(verts)
-                else:
-                    all_vertices.extend(verts)
-                    all_edges.extend([[vi + all_vertex_i_offset for vi in e] for e in edges])
-                    all_vertex_i_offset += len(verts)
+                selected_vertices.extend(verts)
+                selected_edges.extend([[vi + selected_vertex_i_offset for vi in e] for e in edges])
+                selected_vertex_i_offset += len(verts)
 
             verts, edges = DecoratorData.slice_cache.get(element.id(), (None, None))
             if verts:
-                if obj.select_get():
-                    selected_vertices.extend(verts)
-                    selected_edges.extend([[vi + selected_vertex_i_offset for vi in e] for e in edges])
-                    selected_vertex_i_offset += len(verts)
-                else:
-                    all_vertices.extend(verts)
-                    all_edges.extend([[vi + all_vertex_i_offset for vi in e] for e in edges])
-                    all_vertex_i_offset += len(verts)
+                selected_vertices.extend(verts)
+                selected_edges.extend([[vi + selected_vertex_i_offset for vi in e] for e in edges])
+                selected_vertex_i_offset += len(verts)
 
             for colour, element_fills in DecoratorData.fill_cache[element.id()].items():
                 fills.setdefault(colour, []).append(element_fills)
@@ -1796,16 +1846,18 @@ class CutDecorator:
             return True
         return False
 
-    def decorate(self, context, obj: bpy.types.Object, element: ifcopenshell.entity_instance) -> None:
+    def decorate(
+        self, context, obj: bpy.types.Object, element: ifcopenshell.entity_instance, camera_moved: bool
+    ) -> None:
         has_cut_cache = element.id() in DecoratorData.cut_cache
         has_fill_cache = element.id() in DecoratorData.fill_cache
 
         # Currently selected objects must be recalculated as they may be being moved / edited.
         # If the camera is selected, we also recalculate as the user may be moving the camera.
 
-        if not has_cut_cache or obj.select_get() or self.is_camera_moved():
+        if not has_cut_cache or obj.select_get() or camera_moved:
             self.recalculate_cut(context, obj, element)
-        if not has_fill_cache or obj.select_get() or self.is_camera_moved():
+        if not has_fill_cache or obj.select_get() or camera_moved:
             self.recalculate_fill(context, obj, element)
 
     def recalculate_cut(self, context, obj: bpy.types.Object, element: ifcopenshell.entity_instance) -> None:

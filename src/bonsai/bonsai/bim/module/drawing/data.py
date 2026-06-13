@@ -241,11 +241,22 @@ class DecoratorData:
     camera_location_checksum = ""
     camera_rotation_checksum = ""
 
+    # Cached assembly of non-selected cut/slice/fill geometry for
+    # CutDecorator, keyed by cut_visible_signature. Avoids re-walking and
+    # re-copying every visible object's cached geometry on every viewport
+    # redraw (e.g. while orbiting) when nothing actually changed.
+    cut_assembled = None
+    cut_visible_signature = None
+    cut_selected_signature = None
+
     @classmethod
     def clear_cache(cls):
         cls.cut_cache = {}
         cls.layerset_cache = {}
         cls.fill_cache = {}
+        cls.cut_assembled = None
+        cls.cut_visible_signature = None
+        cls.cut_selected_signature = None
 
     @classmethod
     def load(cls, handler):
