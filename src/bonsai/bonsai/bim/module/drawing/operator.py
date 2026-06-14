@@ -2557,6 +2557,8 @@ class ActivateModel(bpy.types.Operator):
 
         ifc_file = tool.Ifc.get()
 
+        tool.Project.deactivate_links_2d()
+
         t = time.time()
         if not bpy.app.background:
             with context.temp_override(**tool.Blender.get_viewport_context()):

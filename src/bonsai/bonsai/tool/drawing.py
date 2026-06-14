@@ -2501,6 +2501,12 @@ class Drawing(bonsai.core.tool.Drawing):
         target_view = cls.get_drawing_target_view(drawing)
         subcontexts = cls.get_drawing_subcontexts(target_view)
 
+        # Swap linked IFC projects to their baked 2D ("Plan" context) storey
+        # collections for plan drawings, otherwise ensure they're showing 3D.
+        tool.Project.deactivate_links_2d()
+        if target_view in ("PLAN_VIEW", "REFLECTED_PLAN_VIEW"):
+            tool.Project.activate_links_2d()
+
         # Switch representations. Collect targets and apply them in one batched
         # pass (tool.Geometry.reimport_elements_batch) instead of calling
         # switch_representation per element, which would spin up a separate

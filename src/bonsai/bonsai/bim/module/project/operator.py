@@ -29,7 +29,7 @@ import traceback
 from collections import defaultdict
 from math import radians
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Union, get_args
+from typing import TYPE_CHECKING, Callable, Literal, Union, get_args
 
 import bpy
 import ifcopenshell
@@ -2395,133 +2395,182 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         with open(self.json_filepath, "w") as f:
             json.dump(data, f)
 
+        # Snapshot before pass 1 mutates self.elements, so pass 2 (2D contexts)
+        # can attempt every element again regardless of whether it already got
+        # a 3D representation baked.
+        self.elements_2d_initial = set(self.elements)
+
         for settings in tool.Loader.settings.context_settings:
             if not self.elements:
                 break
-
-            results = set()
-            iterator = ifcopenshell.geom.iterator(
-                settings, self.file, multiprocessing.cpu_count(), include=self.elements
-            )
-            self.meshes = {}
-            self.blender_mats = {}
-            blender_mats: dict[tuple[float, float, float, float], bpy.types.Material] = {}
-
-            default_mat = np.array([[1, 1, 1, 1]], dtype=np.float32)
-            chunk_size = 10000
-            ci = 0
-
-            # Per-storey chunk buffers keyed by storey id() (None = unassigned)
-            storey_bufs: dict[int | None, dict] = {}
-
-            def _empty_buf() -> dict:
-                return {
-                    "guids": [], "guid_ids": [],
-                    "verts": [], "faces": [],
-                    "materials": [], "material_ids": [],
-                    "material_offset": 0, "offset": 0,
-                }
-
-            def _flush_buf(storey_id: int | None) -> None:
-                buf = storey_bufs.get(storey_id)
-                if not buf or not buf["verts"]:
-                    return
-                mats = np.concatenate(buf["materials"])
-                midx = np.concatenate(buf["material_ids"])
-                mats, mapping = np.unique(mats, axis=0, return_inverse=True)
-                midx = mapping[midx]
-                mat_results: list[bpy.types.Material] = []
-                for mat in mats:
-                    mat = tuple(mat)
-                    blender_mat = blender_mats.get(mat, None)
-                    if not blender_mat:
-                        blender_mat = bpy.data.materials.new("Chunk")
-                        blender_mat.diffuse_color = mat
-                        blender_mats[mat] = blender_mat
-                    mat_results.append(blender_mat)
-                target_col = storey_collections.get(storey_id, storey_collections[None])
-                self.create_object(
-                    target_col,
-                    np.concatenate(buf["verts"]),
-                    np.concatenate(buf["faces"]),
-                    mat_results,
-                    midx,
-                    buf["guids"],
-                    buf["guid_ids"],
-                )
-                storey_bufs[storey_id] = _empty_buf()
-
-            if iterator.initialize():
-                while True:  # Main loop.
-                    shape = iterator.get()
-                    assert isinstance(shape, W.TriangulationElement)
-                    results.add(self.file.by_id(shape.id))
-                    geometry = shape.geometry
-
-                    storey_id = guid_to_storey.get(shape.guid)
-                    target_col = storey_collections.get(storey_id, storey_collections[None])
-
-                    # Elements with a lot of geometry benefit from instancing to save memory
-                    if ifcopenshell.util.shape.get_faces(geometry).shape[0] > 333:  # 333 tris
-                        self.process_occurrence(shape, target_col)
-                        if not iterator.next():
-                            for sid in list(storey_bufs.keys()):
-                                _flush_buf(sid)
-                            break  # Break from main loop.
-                        continue
-
-                    ci += 1
-                    if ci % 50 == 0:
-                        print("Doing chunk", ci)
-
-                    buf = storey_bufs.setdefault(storey_id, _empty_buf())
-
-                    ms = np.vstack([default_mat, ifcopenshell.util.shape.get_material_colors(shape.geometry)])
-                    mi = ifcopenshell.util.shape.get_faces_material_style_ids(shape.geometry)
-                    for geom_material_idx, geom_material in enumerate(shape.geometry.materials):
-                        if not geom_material.instance_id():
-                            ms[geom_material_idx + 1] = (0.8, 0.8, 0.8, 1)
-                    buf["materials"].append(ms)
-                    buf["material_ids"].append(mi + buf["material_offset"] + 1)
-                    buf["material_offset"] += len(ms)
-
-                    matrix = np.frombuffer(shape.transformation_buffer).reshape((4, 4), order="F")
-                    if gprops.has_blender_offset:
-                        matrix = ifcopenshell.util.geolocation.global2local(
-                            matrix,
-                            float(gprops.blender_offset_x) * self.unit_scale,
-                            float(gprops.blender_offset_y) * self.unit_scale,
-                            float(gprops.blender_offset_z) * self.unit_scale,
-                            float(gprops.blender_x_axis_abscissa),
-                            float(gprops.blender_x_axis_ordinate),
-                        )
-                    vs = ifcopenshell.util.shape.get_vertices(shape.geometry)
-                    vs = np.hstack((vs, np.ones((len(vs), 1))))
-                    vs = (np.asmatrix(matrix) * np.asmatrix(vs).T).T.A
-                    vs = vs[:, :3].ravel()
-                    fs = ifcopenshell.util.shape.get_faces(shape.geometry).ravel()
-                    buf["verts"].append(vs)
-                    buf["faces"].append(fs + buf["offset"])
-                    buf["offset"] += len(vs) // 3
-
-                    buf["guids"].append(shape.guid)
-                    if buf["guid_ids"]:
-                        buf["guid_ids"].append((len(fs) // 3) + buf["guid_ids"][-1])
-                    else:
-                        buf["guid_ids"].append(len(fs) // 3)
-
-                    if buf["offset"] > chunk_size:
-                        _flush_buf(storey_id)
-
-                    if not iterator.next():
-                        for sid in list(storey_bufs.keys()):
-                            _flush_buf(sid)
-                        break  # Break main loop.
+            get_collection = lambda storey_id: storey_collections.get(storey_id, storey_collections[None])
+            results = self.bake_geometry_pass(settings, self.elements, get_collection, guid_to_storey, gprops)
             self.elements -= results
 
         bpy.context.scene.collection.children.link(self.collection)
+
+        # Second pass: bake "Plan" context representations into a parallel
+        # "(2D)" sub-collection per storey, so a loaded link can be swapped
+        # to its 2D footprints when a Plan-view drawing is activated (see
+        # tool.Project.activate_links_2d / deactivate_links_2d). Storeys with
+        # no 2D representations simply get no "(2D)" sub-collection.
+        self.elements_2d = set(self.elements_2d_initial)
+        storey_collections_2d: dict[int | None, bpy.types.Collection] = {}
+
+        def get_2d_collection(storey_id: int | None) -> bpy.types.Collection:
+            col = storey_collections_2d.get(storey_id)
+            if col is None:
+                parent = storey_collections.get(storey_id, storey_collections[None])
+                col = bpy.data.collections.new(f"{parent.name} (2D)")
+                parent.children.link(col)
+                storey_collections_2d[storey_id] = col
+            return col
+
+        for context, settings in zip(tool.Loader.settings.contexts, tool.Loader.settings.context_settings):
+            if context.ContextType != "Plan":
+                continue
+            if not self.elements_2d:
+                break
+            results = self.bake_geometry_pass(settings, self.elements_2d, get_2d_collection, guid_to_storey, gprops)
+            self.elements_2d -= results
+
+        # Hide 2D collections by default - they're swapped in by
+        # tool.Project.activate_links_2d when a Plan-view drawing is active.
+        for col in storey_collections_2d.values():
+            for obj in col.objects:
+                obj.hide_viewport = True
+
         print("Finished", time.time() - start)
         return {"FINISHED"}
+
+    def bake_geometry_pass(
+        self,
+        settings: ifcopenshell.geom.settings,
+        elements: set[ifcopenshell.entity_instance],
+        get_collection: Callable[[Union[int, None]], bpy.types.Collection],
+        guid_to_storey: dict[str, Union[int, None]],
+        gprops,
+    ) -> set[ifcopenshell.entity_instance]:
+        """Iterate one geometric context and bake matching elements' shapes into
+        per-storey collections (chunked for low-poly geometry, individual objects
+        for high-poly geometry). Returns the set of elements that were processed."""
+        results: set[ifcopenshell.entity_instance] = set()
+        iterator = ifcopenshell.geom.iterator(settings, self.file, multiprocessing.cpu_count(), include=elements)
+        self.meshes = {}
+        self.blender_mats = {}
+        blender_mats: dict[tuple[float, float, float, float], bpy.types.Material] = {}
+
+        default_mat = np.array([[1, 1, 1, 1]], dtype=np.float32)
+        chunk_size = 10000
+        ci = 0
+
+        # Per-storey chunk buffers keyed by storey id() (None = unassigned)
+        storey_bufs: dict[int | None, dict] = {}
+
+        def _empty_buf() -> dict:
+            return {
+                "guids": [], "guid_ids": [],
+                "verts": [], "faces": [],
+                "materials": [], "material_ids": [],
+                "material_offset": 0, "offset": 0,
+            }
+
+        def _flush_buf(storey_id: int | None) -> None:
+            buf = storey_bufs.get(storey_id)
+            if not buf or not buf["verts"]:
+                return
+            mats = np.concatenate(buf["materials"])
+            midx = np.concatenate(buf["material_ids"])
+            mats, mapping = np.unique(mats, axis=0, return_inverse=True)
+            midx = mapping[midx]
+            mat_results: list[bpy.types.Material] = []
+            for mat in mats:
+                mat = tuple(mat)
+                blender_mat = blender_mats.get(mat, None)
+                if not blender_mat:
+                    blender_mat = bpy.data.materials.new("Chunk")
+                    blender_mat.diffuse_color = mat
+                    blender_mats[mat] = blender_mat
+                mat_results.append(blender_mat)
+            target_col = get_collection(storey_id)
+            self.create_object(
+                target_col,
+                np.concatenate(buf["verts"]),
+                np.concatenate(buf["faces"]),
+                mat_results,
+                midx,
+                buf["guids"],
+                buf["guid_ids"],
+            )
+            storey_bufs[storey_id] = _empty_buf()
+
+        if iterator.initialize():
+            while True:  # Main loop.
+                shape = iterator.get()
+                assert isinstance(shape, W.TriangulationElement)
+                results.add(self.file.by_id(shape.id))
+                geometry = shape.geometry
+
+                storey_id = guid_to_storey.get(shape.guid)
+                target_col = get_collection(storey_id)
+
+                # Elements with a lot of geometry benefit from instancing to save memory
+                if ifcopenshell.util.shape.get_faces(geometry).shape[0] > 333:  # 333 tris
+                    self.process_occurrence(shape, target_col)
+                    if not iterator.next():
+                        for sid in list(storey_bufs.keys()):
+                            _flush_buf(sid)
+                        break  # Break from main loop.
+                    continue
+
+                ci += 1
+                if ci % 50 == 0:
+                    print("Doing chunk", ci)
+
+                buf = storey_bufs.setdefault(storey_id, _empty_buf())
+
+                ms = np.vstack([default_mat, ifcopenshell.util.shape.get_material_colors(shape.geometry)])
+                mi = ifcopenshell.util.shape.get_faces_material_style_ids(shape.geometry)
+                for geom_material_idx, geom_material in enumerate(shape.geometry.materials):
+                    if not geom_material.instance_id():
+                        ms[geom_material_idx + 1] = (0.8, 0.8, 0.8, 1)
+                buf["materials"].append(ms)
+                buf["material_ids"].append(mi + buf["material_offset"] + 1)
+                buf["material_offset"] += len(ms)
+
+                matrix = np.frombuffer(shape.transformation_buffer).reshape((4, 4), order="F")
+                if gprops.has_blender_offset:
+                    matrix = ifcopenshell.util.geolocation.global2local(
+                        matrix,
+                        float(gprops.blender_offset_x) * self.unit_scale,
+                        float(gprops.blender_offset_y) * self.unit_scale,
+                        float(gprops.blender_offset_z) * self.unit_scale,
+                        float(gprops.blender_x_axis_abscissa),
+                        float(gprops.blender_x_axis_ordinate),
+                    )
+                vs = ifcopenshell.util.shape.get_vertices(shape.geometry)
+                vs = np.hstack((vs, np.ones((len(vs), 1))))
+                vs = (np.asmatrix(matrix) * np.asmatrix(vs).T).T.A
+                vs = vs[:, :3].ravel()
+                fs = ifcopenshell.util.shape.get_faces(shape.geometry).ravel()
+                buf["verts"].append(vs)
+                buf["faces"].append(fs + buf["offset"])
+                buf["offset"] += len(vs) // 3
+
+                buf["guids"].append(shape.guid)
+                if buf["guid_ids"]:
+                    buf["guid_ids"].append((len(fs) // 3) + buf["guid_ids"][-1])
+                else:
+                    buf["guid_ids"].append(len(fs) // 3)
+
+                if buf["offset"] > chunk_size:
+                    _flush_buf(storey_id)
+
+                if not iterator.next():
+                    for sid in list(storey_bufs.keys()):
+                        _flush_buf(sid)
+                    break  # Break main loop.
+        return results
 
     def process_occurrence(self, shape: W.TriangulationElement, collection: bpy.types.Collection) -> None:
         element = self.file.by_id(shape.id)
