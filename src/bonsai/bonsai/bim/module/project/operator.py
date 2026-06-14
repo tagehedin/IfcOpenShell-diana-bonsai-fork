@@ -21,6 +21,7 @@
 import datetime
 import json
 import logging
+import multiprocessing
 import os
 import subprocess
 import tempfile
@@ -2294,8 +2295,6 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         return ImportHelper.invoke(self, context, event)
 
     def execute(self, context):
-        import multiprocessing
-
         import ifcpatch
 
         start = time.time()
