@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
+import bpy
 import blf
 import gpu
 from bpy.types import SpaceView3D
@@ -29,6 +30,8 @@ import bonsai.tool as tool
 class ClashDecorator:
     is_installed = False
     handlers = []
+    a_highlight = None
+    b_highlight = None
 
     @classmethod
     def install(cls, context):
@@ -47,6 +50,33 @@ class ClashDecorator:
             except ValueError:
                 pass
         cls.is_installed = False
+        cls.a_highlight = None
+        cls.b_highlight = None
+
+    @classmethod
+    def set_clash_objects(cls, a, b) -> None:
+        """Set the objects (or linked-element references) to highlight for clash A and B.
+
+        Each of ``a``/``b`` may be ``None``, a ``bpy.types.Object`` (the whole
+        object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
+        tuple identifying a single element's geometry within a linked model's
+        chunked mesh.
+        """
+        cls.a_highlight = cls._normalize_highlight(a)
+        cls.b_highlight = cls._normalize_highlight(b)
+
+    @staticmethod
+    def _normalize_highlight(value):
+        if value is None:
+            return None
+        if isinstance(value, tuple):
+            obj, guid = value
+            return (ClashDecorator._obj_key(obj), guid) if obj else None
+        return (ClashDecorator._obj_key(value), None)
+
+    @staticmethod
+    def _obj_key(obj: "bpy.types.Object") -> "tuple[str, str | None]":
+        return (obj.name, obj.library.filepath if obj.library else None)
 
     def draw_batch(self, shader_type, content_pos, color, indices=None):
         if not tool.Blender.validate_shader_batch_data(content_pos, indices):
@@ -55,6 +85,59 @@ class ClashDecorator:
         batch = batch_for_shader(shader, shader_type, {"pos": content_pos}, indices=indices)
         shader.uniform_float("color", color)
         batch.draw(shader)
+
+    @staticmethod
+    def _feature_edges(positions, triangle_indices):
+        """Return edge index pairs for wireframe drawing, skipping interior
+        edges between two coplanar triangles (e.g. the diagonal of a
+        triangulated rectangular face)."""
+        edge_faces: dict[tuple[int, int], list[Vector]] = {}
+        for tri in triangle_indices:
+            a, b, c = tri[0], tri[1], tri[2]
+            normal = (positions[b] - positions[a]).cross(positions[c] - positions[a]).normalized()
+            for edge in ((a, b), (b, c), (c, a)):
+                edge_faces.setdefault(tuple(sorted(edge)), []).append(normal)
+
+        edges = []
+        for edge, normals in edge_faces.items():
+            if len(normals) == 1 or any(normals[0].dot(n) < 0.999 for n in normals[1:]):
+                edges.append(edge)
+        return edges
+
+    def draw_highlighted_object(self, highlight, color):
+        if not highlight:
+            return
+        obj_key, guid = highlight
+        obj = bpy.data.objects.get(obj_key)
+        if not obj or obj.type != "MESH" or obj.hide_viewport:
+            return
+        # Linked-model chunk objects live in an instance collection and are
+        # never part of the active view layer, so `visible_get()` is only
+        # meaningful for whole-object highlights of active-file elements.
+        if guid is None and not obj.visible_get():
+            return
+
+        mesh = obj.data
+        matrix_world = obj.matrix_world
+
+        if guid and tool.Project.Link.is_linked_element(obj):
+            # `obj` is a chunk of a linked model's mesh containing many
+            # elements. Only highlight the polygons belonging to `guid`.
+            polygons = mesh.polygons[tool.Project.Link.get_linked_element_geom_slice(obj, guid)]
+            vertex_ids = sorted({vi for polygon in polygons for vi in polygon.vertices})
+            vert_map = {vi: i for i, vi in enumerate(vertex_ids)}
+            positions = [matrix_world @ mesh.vertices[vi].co for vi in vertex_ids]
+            triangle_indices = [tuple(vert_map[vi] for vi in polygon.vertices) for polygon in polygons]
+        else:
+            positions = [matrix_world @ v.co for v in mesh.vertices]
+            mesh.calc_loop_triangles()
+            triangle_indices = [tri.vertices for tri in mesh.loop_triangles]
+
+        edge_indices = self._feature_edges(positions, triangle_indices)
+
+        fill_color = [*color[:3], 0.3]
+        self.draw_batch("TRIS", positions, fill_color, triangle_indices)
+        self.draw_batch("LINES", positions, color, edge_indices)
 
     def draw_text(self, context):
         self.addon_prefs = tool.Blender.get_addon_preferences()
@@ -104,3 +187,6 @@ class ClashDecorator:
         self.draw_batch("POINTS", selected_vertices, special_elements_color)
         if selected_edges:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
+
+        self.draw_highlighted_object(self.a_highlight, selected_elements_color)
+        self.draw_highlighted_object(self.b_highlight, self.addon_prefs.decorator_color_error)

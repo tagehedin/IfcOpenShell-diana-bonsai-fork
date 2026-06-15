@@ -21,7 +21,7 @@ import logging
 import tempfile
 from math import radians
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 import bpy
 import ifcopenshell
@@ -250,12 +250,9 @@ class ExecuteIfcClash(bpy.types.Operator, ExportHelper):
             self.filepath = temp_file.name
         else:
             extension = Path(self.filepath).suffix.lower()
-            if extension != ".bcf":
+            if extension not in (".bcf", ".json"):
                 self.filepath = bpy.path.ensure_ext(self.filepath, ".json")
-            # TODO Temporarily until BCF support comes back
-            if extension != ".json":
-                self.filepath = bpy.path.ensure_ext(self.filepath, ".bcf")
-            assert extension in (".bcf", ".json")
+                extension = ".json"
             self.props.export_path = self.filepath
 
         settings = ifcclash.ClashSettings()
@@ -407,6 +404,16 @@ class SelectClash(bpy.types.Operator):
     bl_description = "Select the clashing IFC geometry stored in a file"
     index: bpy.props.IntProperty()
 
+    @staticmethod
+    def find_linked_obj_by_guid(collection: bpy.types.Collection, guid: str) -> Union[bpy.types.Object, None]:
+        for obj in collection.objects:
+            if guid in obj.get("guids", []):
+                return obj
+        for child in collection.children:
+            if obj := SelectClash.find_linked_obj_by_guid(child, guid):
+                return obj
+        return None
+
     def execute(self, context):
         self.props = tool.Clash.get_clash_props()
         assert (active_clash := self.props.active_clash)
@@ -419,15 +426,31 @@ class SelectClash(bpy.types.Operator):
             return {"FINISHED"}
 
         products: list[ifcopenshell.entity_instance] = []
+        highlights: list = [None, None]
 
-        for global_id in (clash["a_global_id"], clash["b_global_id"]):
+        for i, global_id in enumerate((clash["a_global_id"], clash["b_global_id"])):
             try:
-                products.append(tool.Ifc.get().by_guid(global_id))
+                product = tool.Ifc.get().by_guid(global_id)
+                products.append(product)
+                highlights[i] = tool.Ifc.get_object(product)
+                continue
             except:
                 pass
 
+            # Not part of the active IFC file - check loaded link models.
+            for link in tool.Project.get_project_props().links:
+                if not link.is_loaded:
+                    continue
+                handle = tool.Project.get_link_empty_handle(link)
+                if not handle or not (col := handle.instance_collection):
+                    continue
+                if link_obj := self.find_linked_obj_by_guid(col, global_id):
+                    highlights[i] = (link_obj, global_id)
+                    break
+
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
+        ClashDecorator.set_clash_objects(highlights[0], highlights[1])
         target = Vector(clash["p1"])
         tool.Clash.look_at(target, target + Vector((5, 5, 5)))
         self.props.p1 = clash["p1"]
