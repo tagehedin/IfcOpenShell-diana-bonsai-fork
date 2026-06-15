@@ -7,7 +7,7 @@
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260613",
+      "version": "0.8.6-diana-bonsai-fork-260615",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -46,16 +46,16 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260613/bonsai_py313-0.8.6-alpha260613-linux-x64.zip",
-      "archive_size": 150848565,
-      "archive_hash": "sha256:6bf1a1c82970f76e6b45655b495546aba284a8e14727b8b4b78c7d7395c9082b"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260615/bonsai_py313-0.8.6-alpha260615-linux-x64.zip",
+      "archive_size": 150862718,
+      "archive_hash": "sha256:437dfc99b57a85d20a233d200c91c163f71c1f787b841ef0f1ef537c6ff08552"
     },
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260613",
+      "version": "0.8.6-diana-bonsai-fork-260615",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -94,16 +94,16 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260613/bonsai_py313-0.8.6-alpha260613-macos-arm64.zip",
-      "archive_size": 135045324,
-      "archive_hash": "sha256:7c70262dd286c4d979f5c161df6988865a4b97ce0716010bcab57d37c86a74a6"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260615/bonsai_py313-0.8.6-alpha260615-macos-arm64.zip",
+      "archive_size": 135057613,
+      "archive_hash": "sha256:94fd174ceb7dfbe4ba1c93e658e3c0c7029800b0f4a20c588bfb9038fd0fcc96"
     },
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260613",
+      "version": "0.8.6-diana-bonsai-fork-260615",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -142,9 +142,9 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260613/bonsai_py313-0.8.6-alpha260613-windows-x64.zip",
-      "archive_size": 121952832,
-      "archive_hash": "sha256:97796295bb2bd2e4e3db1fc25c14e22003176b38d41b5fdab9ae509b182a3d16"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260615/bonsai_py313-0.8.6-alpha260615-windows-x64.zip",
+      "archive_size": 121964886,
+      "archive_hash": "sha256:c3d20d9728d17615d71cb74f5317d86f5934cfe986bfc04d8e4d3b3af417f4d6"
     }
   ]
 }
