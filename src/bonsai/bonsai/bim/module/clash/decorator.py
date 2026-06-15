@@ -30,9 +30,9 @@ import bonsai.tool as tool
 class ClashDecorator:
     is_installed = False
     handlers = []
-    a_highlight = None
-    b_highlight = None
-    c_highlight = None
+    a_highlights: list = []
+    b_highlights: list = []
+    c_highlights: list = []
     show_a_highlight = True
     show_b_highlight = True
     show_c_highlight = True
@@ -58,25 +58,26 @@ class ClashDecorator:
             except ValueError:
                 pass
         cls.is_installed = False
-        cls.a_highlight = None
-        cls.b_highlight = None
-        cls.c_highlight = None
+        cls.a_highlights = []
+        cls.b_highlights = []
+        cls.c_highlights = []
 
     @classmethod
-    def set_clash_objects(cls, a, b, intersection=None) -> None:
-        """Set the objects (or linked-element references) to highlight for clash A and B.
+    def set_clash_objects(cls, a_list, b_list, intersections=None) -> None:
+        """Set the objects (or linked-element references) to highlight for one or more clashes.
 
-        Each of ``a``/``b`` may be ``None``, a ``bpy.types.Object`` (the whole
-        object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
+        Each entry in ``a_list``/``b_list`` may be ``None``, a ``bpy.types.Object``
+        (the whole object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
         tuple identifying a single element's geometry within a linked model's
         chunked mesh.
 
-        ``intersection``, if given, is a static ``(positions, triangle_indices)``
-        tuple in world space describing the clash's overlapping volume.
+        ``intersections``, if given, is a list of static
+        ``(positions, triangle_indices)`` tuples in world space describing each
+        clash's overlapping volume.
         """
-        cls.a_highlight = cls._normalize_highlight(a)
-        cls.b_highlight = cls._normalize_highlight(b)
-        cls.c_highlight = intersection
+        cls.a_highlights = [h for a in a_list if (h := cls._normalize_highlight(a)) is not None]
+        cls.b_highlights = [h for b in b_list if (h := cls._normalize_highlight(b)) is not None]
+        cls.c_highlights = [g for g in (intersections or []) if g is not None]
 
     @staticmethod
     def _normalize_highlight(value):
@@ -215,8 +216,14 @@ class ClashDecorator:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
 
         if self.show_a_highlight:
-            self.draw_highlighted_object(self.a_highlight, selected_elements_color)
+            for highlight in self.a_highlights:
+                self.draw_highlighted_object(highlight, selected_elements_color)
         if self.show_b_highlight:
-            self.draw_highlighted_object(self.b_highlight, self.addon_prefs.decorator_color_error)
+            for highlight in self.b_highlights:
+                self.draw_highlighted_object(highlight, self.addon_prefs.decorator_color_error)
         if self.show_c_highlight:
-            self.draw_geometry_highlight(self.c_highlight, (1.0, 0.5, 0.0))
+            previous_depth_test = gpu.state.depth_test_get()
+            gpu.state.depth_test_set("ALWAYS")
+            for geometry in self.c_highlights:
+                self.draw_geometry_highlight(geometry, (0.0, 0.5, 1.0, 0.8))
+            gpu.state.depth_test_set(previous_depth_test)

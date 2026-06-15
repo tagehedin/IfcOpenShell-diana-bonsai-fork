@@ -315,7 +315,8 @@ class Clasher:
 
             positions = []
             for clash in clashes.values():
-                positions.append(clash["position"])
+                p1, p2 = clash["p1"], clash["p2"]
+                positions.append([(a + b) / 2 for a, b in zip(p1, p2)])
 
             # INPUTS
             # set the desired maximum distance between the grouped points

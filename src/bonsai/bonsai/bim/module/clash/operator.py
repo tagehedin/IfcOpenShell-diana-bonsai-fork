@@ -416,6 +416,34 @@ class SelectClash(bpy.types.Operator):
         return None
 
     @staticmethod
+    def resolve_global_id_highlight(ifc_file: ifcopenshell.file, global_id: str):
+        """Resolve a GlobalId to a highlight (and the IFC product, if any) for
+        drawing and selection.
+
+        Returns ``(highlight, product)``, where ``highlight`` is either a
+        ``bpy.types.Object`` (active file element), a ``(bpy.types.Object, guid)``
+        tuple (linked model element), or ``None`` if the element can't be found;
+        ``product`` is the ``ifcopenshell.entity_instance`` for active file
+        elements, else ``None``.
+        """
+        try:
+            product = ifc_file.by_guid(global_id)
+            return tool.Ifc.get_object(product), product
+        except RuntimeError:
+            pass
+
+        # Not part of the active IFC file - check loaded link models.
+        for link in tool.Project.get_project_props().links:
+            if not link.is_loaded:
+                continue
+            handle = tool.Project.get_link_empty_handle(link)
+            if not handle or not (col := handle.instance_collection):
+                continue
+            if link_obj := SelectClash.find_linked_obj_by_guid(col, global_id):
+                return (link_obj, global_id), None
+        return None, None
+
+    @staticmethod
     def compute_intersection_geometry(geometry_a, geometry_b):
         """Compute the boolean intersection volume of two world-space meshes,
         each given as ``(positions, triangle_indices)``. Returns the
@@ -463,53 +491,71 @@ class SelectClash(bpy.types.Operator):
 
     def execute(self, context):
         self.props = tool.Clash.get_clash_props()
-        assert (active_clash := self.props.active_clash)
         assert (active_clash_set := self.props.active_clash_set)
         clash_set = tool.Clash.get_clash_set(active_clash_set.name)
         assert clash_set
-        clash = tool.Clash.get_clash(clash_set, active_clash.a_global_id, active_clash.b_global_id)
 
-        if not clash:
-            return {"FINISHED"}
+        clash_props = [c for c in active_clash_set.clashes if c.selected]
+        if not clash_props:
+            assert (active_clash := self.props.active_clash)
+            clash_props = [active_clash]
 
         products: list[ifcopenshell.entity_instance] = []
-        highlights: list = [None, None]
+        a_highlights: list = []
+        b_highlights: list = []
+        intersections: list = []
+        first_clash = None
 
-        for i, global_id in enumerate((clash["a_global_id"], clash["b_global_id"])):
-            try:
-                product = tool.Ifc.get().by_guid(global_id)
-                products.append(product)
-                highlights[i] = tool.Ifc.get_object(product)
+        for clash_prop in clash_props:
+            clash = tool.Clash.get_clash(clash_set, clash_prop.a_global_id, clash_prop.b_global_id)
+            if not clash:
                 continue
-            except:
-                pass
+            if first_clash is None:
+                first_clash = clash
 
-            # Not part of the active IFC file - check loaded link models.
-            for link in tool.Project.get_project_props().links:
-                if not link.is_loaded:
+            highlights: list = [None, None]
+            for i, global_id in enumerate((clash["a_global_id"], clash["b_global_id"])):
+                try:
+                    product = tool.Ifc.get().by_guid(global_id)
+                    products.append(product)
+                    highlights[i] = tool.Ifc.get_object(product)
                     continue
-                handle = tool.Project.get_link_empty_handle(link)
-                if not handle or not (col := handle.instance_collection):
-                    continue
-                if link_obj := self.find_linked_obj_by_guid(col, global_id):
-                    highlights[i] = (link_obj, global_id)
-                    break
+                except:
+                    pass
 
-        geometries = [
-            ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
-        ]
-        intersection = None
-        if geometries[0] and geometries[1]:
-            intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
+                # Not part of the active IFC file - check loaded link models.
+                for link in tool.Project.get_project_props().links:
+                    if not link.is_loaded:
+                        continue
+                    handle = tool.Project.get_link_empty_handle(link)
+                    if not handle or not (col := handle.instance_collection):
+                        continue
+                    if link_obj := self.find_linked_obj_by_guid(col, global_id):
+                        highlights[i] = (link_obj, global_id)
+                        break
+
+            a_highlights.append(highlights[0])
+            b_highlights.append(highlights[1])
+
+            geometries = [
+                ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
+            ]
+            if geometries[0] and geometries[1]:
+                intersections.append(self.compute_intersection_geometry(geometries[0], geometries[1]))
+
+        if first_clash is None:
+            return {"FINISHED"}
 
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(highlights[0], highlights[1], intersection)
-        target = Vector(clash["p1"])
+        ClashDecorator.set_clash_objects(a_highlights, b_highlights, intersections)
+        target = Vector(first_clash["p1"])
         tool.Clash.look_at(target, target + Vector((5, 5, 5)))
-        self.props.p1 = clash["p1"]
-        self.props.p2 = clash["p2"]
-        self.props.active_clash_text = clash["type"].title() + " " + str(round(clash["distance"] * 1000)) + "mm"
+        self.props.p1 = first_clash["p1"]
+        self.props.p2 = first_clash["p2"]
+        self.props.active_clash_text = (
+            first_clash["type"].title() + " " + str(round(first_clash["distance"] * 1000)) + "mm"
+        )
         return {"FINISHED"}
 
 
@@ -642,13 +688,46 @@ class SelectSmartGroup(bpy.types.Operator):
         props = tool.Clash.get_clash_props()
         selected_smart_group = props.active_smart_group
         assert selected_smart_group
+
         products: list[ifcopenshell.entity_instance] = []
-        for global_id in selected_smart_group.global_ids:
-            try:
-                products.append(ifc_file.by_guid(global_id.name))
-            except RuntimeError:
-                continue
+        a_highlights: list = []
+        b_highlights: list = []
+        intersections: list = []
+
+        # `global_ids` is a_global_id, b_global_id, a_global_id, b_global_id, ...
+        # (one pair per clash in the group).
+        global_ids = list(selected_smart_group.global_ids)
+        for i in range(0, len(global_ids) - 1, 2):
+            a_highlight, a_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i].name)
+            b_highlight, b_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i + 1].name)
+
+            if a_product:
+                products.append(a_product)
+            if b_product:
+                products.append(b_product)
+
+            a_highlights.append(a_highlight)
+            b_highlights.append(b_highlight)
+
+            geometry_a = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(a_highlight))
+            geometry_b = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(b_highlight))
+            if geometry_a and geometry_b:
+                intersections.append(SelectClash.compute_intersection_geometry(geometry_a, geometry_b))
+
         tool.Spatial.select_products(products, unhide=True)
+        ClashDecorator.install(bpy.context)
+        ClashDecorator.set_clash_objects(a_highlights, b_highlights, intersections)
+
+        positions = []
+        for highlight in a_highlights + b_highlights:
+            geometry = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(highlight))
+            if geometry:
+                positions.extend(geometry[0])
+
+        if positions:
+            target = sum(positions, Vector()) / len(positions)
+            tool.Clash.look_at(target, target + Vector((5, 5, 5)))
+
         context_override = tool.Blender.get_viewport_context()
         with bpy.context.temp_override(**context_override):
             bpy.ops.view3d.view_selected()

@@ -71,6 +71,11 @@ class Clash(PropertyGroup):
         description="Clash status, not stored anywhere - currently just displayed in UI for convenience.",
         default=False,
     )
+    selected: BoolProperty(
+        name="Selected",
+        description="Include this clash when visualizing multiple selected clashes at once.",
+        default=False,
+    )
 
     if TYPE_CHECKING:
         a_global_id: str
@@ -79,6 +84,7 @@ class Clash(PropertyGroup):
         b_name: str
         clash_type: ClashType
         status: bool
+        selected: bool
 
 
 def clashes_loaded_update(self: "ClashSet", context: bpy.types.Context) -> None:
@@ -168,8 +174,14 @@ class BIMClashProperties(PropertyGroup):
     active_clash_index: IntProperty(name="Active Clash Index")
     smart_clash_groups: CollectionProperty(name="Smart Clash Groups", type=SmartClashGroup)
     active_smart_group_index: IntProperty(name="Active Smart Group Index")
-    smart_clash_grouping_max_distance: IntProperty(
-        name="Smart Clash Grouping Max Distance", default=3, soft_min=1, soft_max=10
+    smart_clash_grouping_max_distance: FloatProperty(
+        name="Smart Clash Grouping Max Distance",
+        description="Clashes whose contact points are within this distance of each other "
+        "(directly or transitively) are grouped together.",
+        default=3.0,
+        soft_min=0.1,
+        soft_max=10.0,
+        subtype="DISTANCE",
     )
     p1: FloatVectorProperty(name="P1", default=(0.0, 0.0, 0.0), subtype="XYZ")
     p2: FloatVectorProperty(name="P2", default=(0.0, 0.0, 0.0), subtype="XYZ")
@@ -194,7 +206,7 @@ class BIMClashProperties(PropertyGroup):
         active_clash_index: int
         smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
         active_smart_group_index: int
-        smart_clash_grouping_max_distance: int
+        smart_clash_grouping_max_distance: float
         p1: Vector
         p2: Vector
         active_clash_text: str

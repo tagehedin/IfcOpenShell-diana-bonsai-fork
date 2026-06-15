@@ -290,7 +290,10 @@ class BIM_UL_clashes(bpy.types.UIList):
         fit_flag,
     ) -> None:
         if item:
-            split = layout.split(factor=0.05, align=True)
+            row = layout.row(align=True)
+            row.prop(item, "selected", text="")
+
+            split = row.split(factor=0.05, align=True)
             split.label(text=str(index + 1))
 
             row = split.row(align=False)
