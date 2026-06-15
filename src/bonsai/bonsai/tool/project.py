@@ -132,9 +132,11 @@ class Project(bonsai.core.tool.Project):
 
     @classmethod
     def activate_links_2d(cls) -> None:
-        """Swap loaded links from their 3D storey collections to their "(2D)"
-        sibling collections (baked from "Plan" contexts), per storey. Storeys
-        without a "(2D)" collection are left untouched."""
+        """Swap loaded links' "(3D for 2D)" sub-collections (elements that have
+        a 2D representation) for their "(2D)" sibling sub-collections (baked
+        from "Plan" contexts), per storey. Elements without a 2D
+        representation stay in the main storey collection and remain visible.
+        Storeys without a "(2D)" collection are left untouched."""
         props = cls.get_project_props()
         for link in props.links:
             if not link.is_loaded or not link.include_in_drawings:
@@ -148,8 +150,10 @@ class Project(bonsai.core.tool.Project):
                 col_2d = next((c for c in storey_col.children if c.name == f"{storey_col.name} (2D)"), None)
                 if not col_2d or not col_2d.objects:
                     continue
-                for obj in storey_col.objects:
-                    obj.hide_viewport = True
+                col_3d = next((c for c in storey_col.children if c.name == f"{storey_col.name} (3D for 2D)"), None)
+                if col_3d:
+                    for obj in col_3d.objects:
+                        obj.hide_viewport = True
                 for obj in col_2d.objects:
                     obj.hide_viewport = False
                 swapped_storeys.append(storey_col.name)
@@ -161,8 +165,9 @@ class Project(bonsai.core.tool.Project):
 
     @classmethod
     def deactivate_links_2d(cls) -> None:
-        """Reverse `activate_links_2d`, restoring the 3D storey collections and
-        re-hiding the "(2D)" collections for all loaded links."""
+        """Reverse `activate_links_2d`, restoring the "(3D for 2D)"
+        sub-collections and re-hiding the "(2D)" sub-collections for all
+        loaded links."""
         props = cls.get_project_props()
         for link in props.links:
             if not link.is_loaded:
@@ -177,8 +182,10 @@ class Project(bonsai.core.tool.Project):
                     if storey_col.name not in swapped_storeys:
                         continue
                     col_2d = next((c for c in storey_col.children if c.name == f"{storey_col.name} (2D)"), None)
-                    for obj in storey_col.objects:
-                        obj.hide_viewport = False
+                    col_3d = next((c for c in storey_col.children if c.name == f"{storey_col.name} (3D for 2D)"), None)
+                    if col_3d:
+                        for obj in col_3d.objects:
+                            obj.hide_viewport = False
                     if col_2d:
                         for obj in col_2d.objects:
                             obj.hide_viewport = True

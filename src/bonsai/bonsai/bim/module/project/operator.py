@@ -2394,29 +2394,63 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         with open(self.json_filepath, "w") as f:
             json.dump(data, f)
 
-        # Snapshot before pass 1 mutates self.elements, so pass 2 (2D contexts)
-        # can attempt every element again regardless of whether it already got
-        # a 3D representation baked.
-        self.elements_2d_initial = set(self.elements)
+        # Determine up front which elements have a "Plan" context representation
+        # (e.g. 2D footprints), so pass 1 can bake their 3D geometry into a
+        # separate "(3D for 2D)" sub-collection that gets hidden alongside the
+        # "(2D)" sub-collection when a Plan-view drawing is activated (see
+        # tool.Project.activate_links_2d / deactivate_links_2d). Elements with
+        # no 2D representation stay in the normal storey collection and remain
+        # visible in both model and drawing views.
+        # Only "Body"/"Facetation" Plan representations are real 2D footprints
+        # (matching tool.Drawing.get_drawing_context_filters for PLAN_VIEW /
+        # REFLECTED_PLAN_VIEW). "Plan/Axis" (e.g. wall centrelines) are not
+        # footprints and shouldn't trigger hiding an element's 3D body.
+        plan_contexts = [
+            c
+            for c in tool.Loader.settings.contexts
+            if c.ContextType == "Plan" and getattr(c, "ContextIdentifier", None) in ("Body", "Facetation")
+        ]
+        elements_with_plan_rep: set[ifcopenshell.entity_instance] = set()
+        if plan_contexts:
+            for element in self.elements:
+                for context in plan_contexts:
+                    if ifcopenshell.util.representation.get_representation(
+                        element,
+                        context.ContextType,
+                        getattr(context, "ContextIdentifier", None),
+                        getattr(context, "TargetView", None),
+                    ):
+                        elements_with_plan_rep.add(element)
+                        break
+
+        storey_collections_2d: dict[int | None, bpy.types.Collection] = {}
+        storey_collections_3d_for_2d: dict[int | None, bpy.types.Collection] = {}
+
+        def get_3d_for_2d_collection(storey_id: int | None) -> bpy.types.Collection:
+            col = storey_collections_3d_for_2d.get(storey_id)
+            if col is None:
+                parent = storey_collections.get(storey_id, storey_collections[None])
+                col = bpy.data.collections.new(f"{parent.name} (3D for 2D)")
+                parent.children.link(col)
+                storey_collections_3d_for_2d[storey_id] = col
+            return col
+
+        def get_collection_3d(storey_id: int | None, element: ifcopenshell.entity_instance) -> bpy.types.Collection:
+            if element in elements_with_plan_rep:
+                return get_3d_for_2d_collection(storey_id)
+            return storey_collections.get(storey_id, storey_collections[None])
 
         for settings in tool.Loader.settings.context_settings:
             if not self.elements:
                 break
-            get_collection = lambda storey_id: storey_collections.get(storey_id, storey_collections[None])
-            results = self.bake_geometry_pass(settings, self.elements, get_collection, guid_to_storey, gprops)
+            results = self.bake_geometry_pass(settings, self.elements, get_collection_3d, guid_to_storey, gprops)
             self.elements -= results
 
         bpy.context.scene.collection.children.link(self.collection)
 
-        # Second pass: bake "Plan" context representations into a parallel
-        # "(2D)" sub-collection per storey, so a loaded link can be swapped
-        # to its 2D footprints when a Plan-view drawing is activated (see
-        # tool.Project.activate_links_2d / deactivate_links_2d). Storeys with
-        # no 2D representations simply get no "(2D)" sub-collection.
-        self.elements_2d = set(self.elements_2d_initial)
-        storey_collections_2d: dict[int | None, bpy.types.Collection] = {}
-
-        def get_2d_collection(storey_id: int | None) -> bpy.types.Collection:
+        # Second pass: bake the "Plan" context representations of the elements
+        # identified above into a parallel "(2D)" sub-collection per storey.
+        def get_2d_collection(storey_id: int | None, element: ifcopenshell.entity_instance) -> bpy.types.Collection:
             col = storey_collections_2d.get(storey_id)
             if col is None:
                 parent = storey_collections.get(storey_id, storey_collections[None])
@@ -2425,8 +2459,10 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                 storey_collections_2d[storey_id] = col
             return col
 
+        self.elements_2d = set(elements_with_plan_rep)
+        plan_context_ids = {c.id() for c in plan_contexts}
         for context, settings in zip(tool.Loader.settings.contexts, tool.Loader.settings.context_settings):
-            if context.ContextType != "Plan":
+            if context.id() not in plan_context_ids:
                 continue
             if not self.elements_2d:
                 break
@@ -2446,7 +2482,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         self,
         settings: ifcopenshell.geom.settings,
         elements: set[ifcopenshell.entity_instance],
-        get_collection: Callable[[Union[int, None]], bpy.types.Collection],
+        get_collection: Callable[[Union[int, None], ifcopenshell.entity_instance], bpy.types.Collection],
         guid_to_storey: dict[str, Union[int, None]],
         gprops,
     ) -> set[ifcopenshell.entity_instance]:
@@ -2463,19 +2499,19 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         chunk_size = 10000
         ci = 0
 
-        # Per-storey chunk buffers keyed by storey id() (None = unassigned)
-        storey_bufs: dict[int | None, dict] = {}
+        # Chunk buffers keyed by target collection (as returned by get_collection)
+        col_bufs: dict[bpy.types.Collection, dict] = {}
 
         def _empty_buf() -> dict:
             return {
                 "guids": [], "guid_ids": [],
-                "verts": [], "faces": [],
+                "verts": [], "faces": [], "edges": [],
                 "materials": [], "material_ids": [],
                 "material_offset": 0, "offset": 0,
             }
 
-        def _flush_buf(storey_id: int | None) -> None:
-            buf = storey_bufs.get(storey_id)
+        def _flush_buf(target_col: bpy.types.Collection) -> None:
+            buf = col_bufs.get(target_col)
             if not buf or not buf["verts"]:
                 return
             mats = np.concatenate(buf["materials"])
@@ -2491,34 +2527,36 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                     blender_mat.diffuse_color = mat
                     blender_mats[mat] = blender_mat
                 mat_results.append(blender_mat)
-            target_col = get_collection(storey_id)
+            edges = np.concatenate(buf["edges"]) if buf["edges"] else np.array([], dtype=np.int32)
             self.create_object(
                 target_col,
                 np.concatenate(buf["verts"]),
                 np.concatenate(buf["faces"]),
+                edges,
                 mat_results,
                 midx,
                 buf["guids"],
                 buf["guid_ids"],
             )
-            storey_bufs[storey_id] = _empty_buf()
+            col_bufs[target_col] = _empty_buf()
 
         if iterator.initialize():
             while True:  # Main loop.
                 shape = iterator.get()
                 assert isinstance(shape, W.TriangulationElement)
-                results.add(self.file.by_id(shape.id))
+                element = self.file.by_id(shape.id)
+                results.add(element)
                 geometry = shape.geometry
 
                 storey_id = guid_to_storey.get(shape.guid)
-                target_col = get_collection(storey_id)
+                target_col = get_collection(storey_id, element)
 
                 # Elements with a lot of geometry benefit from instancing to save memory
                 if ifcopenshell.util.shape.get_faces(geometry).shape[0] > 333:  # 333 tris
                     self.process_occurrence(shape, target_col)
                     if not iterator.next():
-                        for sid in list(storey_bufs.keys()):
-                            _flush_buf(sid)
+                        for col in list(col_bufs.keys()):
+                            _flush_buf(col)
                         break  # Break from main loop.
                     continue
 
@@ -2526,7 +2564,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                 if ci % 50 == 0:
                     print("Doing chunk", ci)
 
-                buf = storey_bufs.setdefault(storey_id, _empty_buf())
+                buf = col_bufs.setdefault(target_col, _empty_buf())
 
                 ms = np.vstack([default_mat, ifcopenshell.util.shape.get_material_colors(shape.geometry)])
                 mi = ifcopenshell.util.shape.get_faces_material_style_ids(shape.geometry)
@@ -2552,8 +2590,10 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                 vs = (np.asmatrix(matrix) * np.asmatrix(vs).T).T.A
                 vs = vs[:, :3].ravel()
                 fs = ifcopenshell.util.shape.get_faces(shape.geometry).ravel()
+                es = ifcopenshell.util.shape.get_edges(shape.geometry).ravel()
                 buf["verts"].append(vs)
                 buf["faces"].append(fs + buf["offset"])
+                buf["edges"].append(es + buf["offset"])
                 buf["offset"] += len(vs) // 3
 
                 buf["guids"].append(shape.guid)
@@ -2563,11 +2603,11 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                     buf["guid_ids"].append(len(fs) // 3)
 
                 if buf["offset"] > chunk_size:
-                    _flush_buf(storey_id)
+                    _flush_buf(target_col)
 
                 if not iterator.next():
-                    for sid in list(storey_bufs.keys()):
-                        _flush_buf(sid)
+                    for col in list(col_bufs.keys()):
+                        _flush_buf(col)
                     break  # Break main loop.
         return results
 
@@ -2641,6 +2681,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         collection: bpy.types.Collection,
         verts: np.ndarray,
         faces: np.ndarray,
+        edges: np.ndarray,
         materials: list[bpy.types.Material],
         material_ids: np.ndarray,
         guids: list[str],
@@ -2656,6 +2697,14 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             mesh.materials.append(material)
         if material_ids.size > 0 and len(mesh.polygons) == len(material_ids):
             mesh.polygons.foreach_set("material_index", material_ids)
+
+        # Curve-only representations (e.g. 2D Plan/FootPrint annotations) have
+        # no faces, so fall back to the edges from the original tessellation.
+        if not faces.size and edges.size:
+            num_edges = len(edges) // 2
+            mesh.edges.add(num_edges)
+            mesh.edges.foreach_set("vertices", edges)
+
         mesh.update()
 
         obj = bpy.data.objects.new("Chunk", mesh)
