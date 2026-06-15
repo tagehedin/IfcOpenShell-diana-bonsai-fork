@@ -257,10 +257,40 @@ class Clasher:
         with open(self.settings.output, "w", encoding="utf-8") as clashes_file:
             json.dump(clash_sets, clashes_file, indent=4)
 
+    @staticmethod
+    def cluster_points_by_distance(positions: list, max_distance: float) -> list[int]:
+        """Group points into clusters by single-linkage distance.
+
+        Any two points within ``max_distance`` of each other (directly or
+        transitively through other points) are assigned the same cluster id.
+        Points with no neighbour within ``max_distance`` become their own
+        singleton cluster. Returns a list of cluster ids, one per point, in
+        input order.
+        """
+        data = np.array(positions)
+        diffs = data[:, np.newaxis, :] - data[np.newaxis, :, :]
+        distances = np.sqrt((diffs**2).sum(axis=2))
+        np.fill_diagonal(distances, np.inf)
+        neighbours = distances <= max_distance
+
+        labels = [-1] * len(positions)
+        next_label = 0
+        for i in range(len(positions)):
+            if labels[i] != -1:
+                continue
+            stack = [i]
+            labels[i] = next_label
+            while stack:
+                j = stack.pop()
+                for k in np.nonzero(neighbours[j])[0]:
+                    if labels[k] == -1:
+                        labels[k] = next_label
+                        stack.append(int(k))
+            next_label += 1
+        return labels
+
     def smart_group_clashes(self, clash_sets: list[ClashSet], max_clustering_distance: float):
         from collections import defaultdict
-
-        from sklearn.cluster import OPTICS
 
         count_of_input_clashes = 0
         count_of_clash_sets = 0
@@ -288,8 +318,6 @@ class Clasher:
             for clash in clashes.values():
                 positions.append(clash["position"])
 
-            data = np.array(positions)
-
             # INPUTS
             # set the desired maximum distance between the grouped points
             if max_clustering_distance > 0:
@@ -297,22 +325,12 @@ class Clasher:
             else:
                 max_distance_between_grouped_points = 3
 
-            model = OPTICS(min_samples=2, max_eps=max_distance_between_grouped_points)
-            model.fit_predict(data)
-            pred = model.fit_predict(data)
+            pred = self.cluster_points_by_distance(positions, max_distance_between_grouped_points)
 
             # Insert the smart groups into the clashes
             if len(pred) == len(clashes.values()):
-                i = 0
-                for clash in clashes.values():
-                    int_prediction = int(pred[i])
-                    if int_prediction == -1:
-                        # ungroup this clash since it's a single clash that we were not able to group.
-                        new_clash_group_number = np.amax(pred).item() + 1 + i
-                        clash["smart_group"] = new_clash_group_number
-                    else:
-                        clash["smart_group"] = int_prediction
-                    i += 1
+                for i, clash in enumerate(clashes.values()):
+                    clash["smart_group"] = pred[i]
 
         # Create JSON with smart_groups that contain GlobalIDs
         output_clash_sets = defaultdict(list)

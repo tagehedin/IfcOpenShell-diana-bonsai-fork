@@ -174,6 +174,7 @@ class SelectClashResults(bpy.types.Operator, ImportHelper):
     bl_label = "Select Clash Results"
     bl_description = "Select filepath for clash results."
     bl_options = {"REGISTER", "UNDO"}
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
 
     def execute(self, context):
         props = tool.Clash.get_clash_props()
@@ -547,7 +548,7 @@ class SmartClashGroup(bpy.types.Operator):
 
         settings = ifcclash.ClashSettings()
         props = tool.Clash.get_clash_props()
-        self.filepath = bpy.path.ensure_ext(props.clash_results_path, ".json")
+        self.filepath = str(Path(props.clash_results_path).with_suffix(".json"))
         settings.output = self.filepath
         settings.logger = logging.getLogger("Clash")
         settings.logger.setLevel(logging.DEBUG)
