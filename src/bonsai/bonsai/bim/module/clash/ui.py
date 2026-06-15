@@ -174,6 +174,14 @@ class BIM_PT_ifcclash(Panel):
             row = layout.row()
             row.operator("bim.select_clash")
             row.operator("bim.hide_clash", text="", icon="HIDE_ON")
+
+            row = layout.row(align=True)
+            icon_a = "HIDE_OFF" if props.show_a_highlight else "HIDE_ON"
+            icon_b = "HIDE_OFF" if props.show_b_highlight else "HIDE_ON"
+            icon_c = "HIDE_OFF" if props.show_c_highlight else "HIDE_ON"
+            row.prop(props, "show_a_highlight", text="Highlight A", icon=icon_a, toggle=True)
+            row.prop(props, "show_b_highlight", text="Highlight B", icon=icon_b, toggle=True)
+            row.prop(props, "show_c_highlight", text="Volume", icon=icon_c, toggle=True)
         else:
             row.label(text="Clashes Are Not Loaded", icon="PIVOT_CURSOR")
 

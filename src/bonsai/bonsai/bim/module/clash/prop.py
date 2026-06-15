@@ -87,6 +87,15 @@ def clashes_loaded_update(self: "ClashSet", context: bpy.types.Context) -> None:
     tool.Clash.clear_active_clash_set_results()
 
 
+def highlight_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    ClashDecorator.show_a_highlight = self.show_a_highlight
+    ClashDecorator.show_b_highlight = self.show_b_highlight
+    ClashDecorator.show_c_highlight = self.show_c_highlight
+    tool.Blender.update_all_viewports(context)
+
+
 class ClashSet(PropertyGroup):
     mode: EnumProperty(
         items=[
@@ -165,6 +174,9 @@ class BIMClashProperties(PropertyGroup):
     p1: FloatVectorProperty(name="P1", default=(0.0, 0.0, 0.0), subtype="XYZ")
     p2: FloatVectorProperty(name="P2", default=(0.0, 0.0, 0.0), subtype="XYZ")
     active_clash_text: StringProperty(name="Active Clash Text")
+    show_a_highlight: BoolProperty(name="Show A", default=True, update=highlight_visibility_update)
+    show_b_highlight: BoolProperty(name="Show B", default=True, update=highlight_visibility_update)
+    show_c_highlight: BoolProperty(name="Show Volume", default=True, update=highlight_visibility_update)
     export_path: StringProperty(
         name="Export Path",
         description=".bcf or .json file to export the clash results to",
@@ -186,6 +198,9 @@ class BIMClashProperties(PropertyGroup):
         p1: Vector
         p2: Vector
         active_clash_text: str
+        show_a_highlight: bool
+        show_b_highlight: bool
+        show_c_highlight: bool
         export_path: str
 
     @property

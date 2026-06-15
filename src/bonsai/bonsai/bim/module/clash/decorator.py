@@ -32,11 +32,19 @@ class ClashDecorator:
     handlers = []
     a_highlight = None
     b_highlight = None
+    c_highlight = None
+    show_a_highlight = True
+    show_b_highlight = True
+    show_c_highlight = True
 
     @classmethod
     def install(cls, context):
         if cls.is_installed:
             cls.uninstall()
+        props = tool.Clash.get_clash_props()
+        cls.show_a_highlight = props.show_a_highlight
+        cls.show_b_highlight = props.show_b_highlight
+        cls.show_c_highlight = props.show_c_highlight
         handler = cls()
         cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
         cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
@@ -52,18 +60,23 @@ class ClashDecorator:
         cls.is_installed = False
         cls.a_highlight = None
         cls.b_highlight = None
+        cls.c_highlight = None
 
     @classmethod
-    def set_clash_objects(cls, a, b) -> None:
+    def set_clash_objects(cls, a, b, intersection=None) -> None:
         """Set the objects (or linked-element references) to highlight for clash A and B.
 
         Each of ``a``/``b`` may be ``None``, a ``bpy.types.Object`` (the whole
         object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
         tuple identifying a single element's geometry within a linked model's
         chunked mesh.
+
+        ``intersection``, if given, is a static ``(positions, triangle_indices)``
+        tuple in world space describing the clash's overlapping volume.
         """
         cls.a_highlight = cls._normalize_highlight(a)
         cls.b_highlight = cls._normalize_highlight(b)
+        cls.c_highlight = intersection
 
     @staticmethod
     def _normalize_highlight(value):
@@ -104,18 +117,22 @@ class ClashDecorator:
                 edges.append(edge)
         return edges
 
-    def draw_highlighted_object(self, highlight, color):
+    @staticmethod
+    def resolve_highlight_geometry(highlight):
+        """Return ``(positions, triangle_indices)`` in world space for a
+        highlight tuple, or ``None`` if it can't be resolved / shouldn't be
+        drawn right now."""
         if not highlight:
-            return
+            return None
         obj_key, guid = highlight
         obj = bpy.data.objects.get(obj_key)
         if not obj or obj.type != "MESH" or obj.hide_viewport:
-            return
+            return None
         # Linked-model chunk objects live in an instance collection and are
         # never part of the active view layer, so `visible_get()` is only
         # meaningful for whole-object highlights of active-file elements.
         if guid is None and not obj.visible_get():
-            return
+            return None
 
         mesh = obj.data
         matrix_world = obj.matrix_world
@@ -131,13 +148,22 @@ class ClashDecorator:
         else:
             positions = [matrix_world @ v.co for v in mesh.vertices]
             mesh.calc_loop_triangles()
-            triangle_indices = [tri.vertices for tri in mesh.loop_triangles]
+            triangle_indices = [tuple(tri.vertices) for tri in mesh.loop_triangles]
 
+        return positions, triangle_indices
+
+    def draw_geometry_highlight(self, geometry, color):
+        if not geometry:
+            return
+        positions, triangle_indices = geometry
         edge_indices = self._feature_edges(positions, triangle_indices)
 
         fill_color = [*color[:3], 0.3]
         self.draw_batch("TRIS", positions, fill_color, triangle_indices)
         self.draw_batch("LINES", positions, color, edge_indices)
+
+    def draw_highlighted_object(self, highlight, color):
+        self.draw_geometry_highlight(self.resolve_highlight_geometry(highlight), color)
 
     def draw_text(self, context):
         self.addon_prefs = tool.Blender.get_addon_preferences()
@@ -188,5 +214,9 @@ class ClashDecorator:
         if selected_edges:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
 
-        self.draw_highlighted_object(self.a_highlight, selected_elements_color)
-        self.draw_highlighted_object(self.b_highlight, self.addon_prefs.decorator_color_error)
+        if self.show_a_highlight:
+            self.draw_highlighted_object(self.a_highlight, selected_elements_color)
+        if self.show_b_highlight:
+            self.draw_highlighted_object(self.b_highlight, self.addon_prefs.decorator_color_error)
+        if self.show_c_highlight:
+            self.draw_geometry_highlight(self.c_highlight, (1.0, 0.5, 0.0))

@@ -414,6 +414,52 @@ class SelectClash(bpy.types.Operator):
                 return obj
         return None
 
+    @staticmethod
+    def compute_intersection_geometry(geometry_a, geometry_b):
+        """Compute the boolean intersection volume of two world-space meshes,
+        each given as ``(positions, triangle_indices)``. Returns the
+        intersection in the same form, or ``None`` if there's no overlap."""
+        pos_a, tris_a = geometry_a
+        pos_b, tris_b = geometry_b
+        if not pos_a or not tris_a or not pos_b or not tris_b:
+            return None
+
+        mesh_a = bpy.data.meshes.new("ClashIntersectA")
+        mesh_a.from_pydata(pos_a, [], tris_a)
+        mesh_a.update()
+        obj_a = bpy.data.objects.new("ClashIntersectA", mesh_a)
+
+        mesh_b = bpy.data.meshes.new("ClashIntersectB")
+        mesh_b.from_pydata(pos_b, [], tris_b)
+        mesh_b.update()
+        obj_b = bpy.data.objects.new("ClashIntersectB", mesh_b)
+
+        bpy.context.scene.collection.objects.link(obj_a)
+        bpy.context.scene.collection.objects.link(obj_b)
+
+        modifier = obj_a.modifiers.new("ClashIntersect", "BOOLEAN")
+        modifier.operation = "INTERSECT"
+        modifier.object = obj_b
+        modifier.solver = "EXACT"
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        eval_obj = obj_a.evaluated_get(depsgraph)
+        result_mesh = bpy.data.meshes.new_from_object(eval_obj)
+        result_mesh.calc_loop_triangles()
+
+        positions = [v.co.copy() for v in result_mesh.vertices]
+        triangle_indices = [tuple(tri.vertices) for tri in result_mesh.loop_triangles]
+
+        bpy.data.objects.remove(obj_a, do_unlink=True)
+        bpy.data.objects.remove(obj_b, do_unlink=True)
+        bpy.data.meshes.remove(mesh_a)
+        bpy.data.meshes.remove(mesh_b)
+        bpy.data.meshes.remove(result_mesh)
+
+        if not positions or not triangle_indices:
+            return None
+        return positions, triangle_indices
+
     def execute(self, context):
         self.props = tool.Clash.get_clash_props()
         assert (active_clash := self.props.active_clash)
@@ -448,9 +494,16 @@ class SelectClash(bpy.types.Operator):
                     highlights[i] = (link_obj, global_id)
                     break
 
+        geometries = [
+            ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
+        ]
+        intersection = None
+        if geometries[0] and geometries[1]:
+            intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
+
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(highlights[0], highlights[1])
+        ClashDecorator.set_clash_objects(highlights[0], highlights[1], intersection)
         target = Vector(clash["p1"])
         tool.Clash.look_at(target, target + Vector((5, 5, 5)))
         self.props.p1 = clash["p1"]
