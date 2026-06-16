@@ -358,7 +358,11 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
             self.quick_clash = True
             return self.execute(context)
         if self.filepath:
-            return self.execute(context)
+            abs_path = bpy.path.abspath(self.filepath)
+            if Path(abs_path).parent.is_dir():
+                return self.execute(context)
+            # Path is stale (e.g. old Windows path stored in blend file) — open dialog
+            self.filepath = ""
         return ExportHelper.invoke(self, context, event)
 
     def execute(self, context):
