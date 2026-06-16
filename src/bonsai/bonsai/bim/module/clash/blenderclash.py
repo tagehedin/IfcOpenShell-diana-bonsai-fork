@@ -478,8 +478,11 @@ class BlenderClasher:
             return []
 
         c = float(clearance)
-        b_min = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z] for e in b_list], dtype=np.float32)
-        b_max = np.array([[e.bbox_max.x, e.bbox_max.y, e.bbox_max.z] for e in b_list], dtype=np.float32)
+        b_arr = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z,
+                           e.bbox_max.x, e.bbox_max.y, e.bbox_max.z]
+                          for e in b_list], dtype=np.float32)
+        b_min_x, b_min_y, b_min_z = b_arr[:, 0], b_arr[:, 1], b_arr[:, 2]
+        b_max_x, b_max_y, b_max_z = b_arr[:, 3], b_arr[:, 4], b_arr[:, 5]
 
         pairs: list[tuple[int, int]] = []
         seen: Optional[set] = set() if same_source else None
@@ -487,13 +490,22 @@ class BlenderClasher:
 
         for i0 in range(0, len(a_list), chunk):
             a_slice = a_list[i0: i0 + chunk]
-            a_min_c = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z] for e in a_slice], dtype=np.float32)
-            a_max_c = np.array([[e.bbox_max.x, e.bbox_max.y, e.bbox_max.z] for e in a_slice], dtype=np.float32)
+            a_arr = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z,
+                               e.bbox_max.x, e.bbox_max.y, e.bbox_max.z]
+                              for e in a_slice], dtype=np.float32)
+            a_min_x, a_min_y, a_min_z = a_arr[:, 0], a_arr[:, 1], a_arr[:, 2]
+            a_max_x, a_max_y, a_max_z = a_arr[:, 3], a_arr[:, 4], a_arr[:, 5]
 
+            # Axis-separated comparison: 6 × (C, B) bool arrays, much less peak memory
+            # than the (C, B, 3) broadcast approach.
             overlap = (
-                (a_min_c[:, np.newaxis, :] - c <= b_max[np.newaxis, :, :]) &
-                (a_max_c[:, np.newaxis, :] + c >= b_min[np.newaxis, :, :])
-            ).all(axis=2)
+                (a_min_x[:, np.newaxis] - c <= b_max_x[np.newaxis, :]) &
+                (a_max_x[:, np.newaxis] + c >= b_min_x[np.newaxis, :]) &
+                (a_min_y[:, np.newaxis] - c <= b_max_y[np.newaxis, :]) &
+                (a_max_y[:, np.newaxis] + c >= b_min_y[np.newaxis, :]) &
+                (a_min_z[:, np.newaxis] - c <= b_max_z[np.newaxis, :]) &
+                (a_max_z[:, np.newaxis] + c >= b_min_z[np.newaxis, :])
+            )
 
             for ci, bj in np.argwhere(overlap):
                 ai = i0 + int(ci)
