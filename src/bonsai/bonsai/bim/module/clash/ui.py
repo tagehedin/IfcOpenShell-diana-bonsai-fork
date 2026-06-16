@@ -94,6 +94,7 @@ class BIM_PT_ifcclash(Panel):
         def draw_clash_set_group(group: tool.Clash.ClashSourceGroup) -> None:
             row = layout.row(align=True)
             row.label(text=f"Group {group.upper()}:", icon="OUTLINER_OB_POINTCLOUD")
+            row.operator("bim.add_clash_source_from_link", icon="LINKED", text="").group = group
             row.operator("bim.add_clash_source", icon="ADD", text="").group = group
 
             sources = clash_set.get_clash_sources_group(group)
@@ -176,8 +177,11 @@ class BIM_PT_ifcclash(Panel):
 
             layout.template_list("BIM_UL_clashes", "", props.active_clash_set, "clashes", props, "active_clash_index")
             row = layout.row()
-            row.operator("bim.select_clash")
+            row.operator("bim.select_clash", text="Move to Clash", icon="CAMERA_DATA")
             row.operator("bim.hide_clash", text="", icon="HIDE_ON")
+            row = layout.row()
+            op = row.operator("bim.select_clash", text="Activate Clash", icon="RESTRICT_SELECT_OFF")
+            op.move_camera = False
 
             row = layout.row(align=True)
             icon_a = "HIDE_OFF" if props.show_a_highlight else "HIDE_ON"
@@ -186,6 +190,19 @@ class BIM_PT_ifcclash(Panel):
             row.prop(props, "show_a_highlight", text="Highlight A", icon=icon_a, toggle=True)
             row.prop(props, "show_b_highlight", text="Highlight B", icon=icon_b, toggle=True)
             row.prop(props, "show_c_highlight", text="Volume", icon=icon_c, toggle=True)
+
+            row = layout.row()
+            row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")
+            if props.use_link_color_override:
+                box = layout.box()
+                for item in props.link_color_overrides:
+                    display = item.name.split("/")[-1].split("\\")[-1]
+                    row = box.row(align=True)
+                    row.prop(item, "enabled", text="")
+                    sub = row.row(align=True)
+                    sub.active = item.enabled
+                    sub.label(text=display)
+                    sub.prop(item, "color", text="")
         else:
             row.label(text="Clashes Are Not Loaded", icon="PIVOT_CURSOR")
 
@@ -243,7 +260,10 @@ class BIM_PT_smart_clash_manager(Panel):
         layout.template_list("BIM_UL_smart_groups", "", props, "smart_clash_groups", props, "active_smart_group_index")
 
         row = layout.row(align=True)
-        row.operator("bim.select_smart_group")
+        row.operator("bim.select_smart_group", text="Move to Smart Group", icon="CAMERA_DATA")
+        row = layout.row(align=True)
+        op = row.operator("bim.select_smart_group", text="Activate Smart Group", icon="RESTRICT_SELECT_OFF")
+        op.move_camera = False
 
 
 class BIM_UL_clash_sets(bpy.types.UIList):

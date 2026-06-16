@@ -102,6 +102,107 @@ def highlight_visibility_update(self: "BIMClashProperties", context: bpy.types.C
     tool.Blender.update_all_viewports(context)
 
 
+_DEFAULT_LINK_COLORS = [
+    (0.9, 0.35, 0.35, 1.0),
+    (0.35, 0.75, 0.35, 1.0),
+    (0.35, 0.55, 1.0, 1.0),
+    (1.0, 0.75, 0.15, 1.0),
+    (0.15, 0.8, 0.8, 1.0),
+    (0.8, 0.35, 0.8, 1.0),
+    (1.0, 0.5, 0.1, 1.0),
+    (0.55, 0.15, 0.85, 1.0),
+]
+
+
+def _apply_link_colors(context: bpy.types.Context, props: "BIMClashProperties") -> None:
+    if not context.screen:
+        return
+    proj_props = tool.Project.get_project_props()
+    if props.use_link_color_override:
+        color_map = {o.name: o for o in props.link_color_overrides}
+        for link in proj_props.links:
+            item = color_map.get(link.name)
+            handle = tool.Project.get_link_empty_handle(link)
+            if not handle:
+                continue
+            if item and item.enabled:
+                c = item.color
+                handle.color = (c[0], c[1], c[2], 1.0)
+            else:
+                handle.color = (1.0, 1.0, 1.0, 1.0)
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                for space in area.spaces:
+                    if space.type == "VIEW_3D":
+                        space.shading.type = "SOLID"
+                        space.shading.color_type = "OBJECT"
+    else:
+        for link in proj_props.links:
+            handle = tool.Project.get_link_empty_handle(link)
+            if handle:
+                handle.color = (1.0, 1.0, 1.0, 1.0)
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                for space in area.spaces:
+                    if space.type == "VIEW_3D":
+                        space.shading.color_type = "MATERIAL"
+    tool.Blender.update_all_viewports(context)
+
+
+def _sync_link_color_overrides(props: "BIMClashProperties") -> None:
+    proj_props = tool.Project.get_project_props()
+    existing = {o.name for o in props.link_color_overrides}
+    current = {link.name for link in proj_props.links}
+    to_remove = [i for i, o in enumerate(props.link_color_overrides) if o.name not in current]
+    for i in reversed(to_remove):
+        props.link_color_overrides.remove(i)
+    for link in proj_props.links:
+        if link.name not in existing:
+            item = props.link_color_overrides.add()
+            item.name = link.name
+            idx = len(props.link_color_overrides) - 1
+            item.color = _DEFAULT_LINK_COLORS[idx % len(_DEFAULT_LINK_COLORS)]
+
+
+def link_color_override_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    _sync_link_color_overrides(self)
+    _apply_link_colors(context, self)
+
+
+def link_color_item_update(self: "BIMLinkColorOverride", context: bpy.types.Context) -> None:
+    props = tool.Clash.get_clash_props()
+    if not props.use_link_color_override:
+        return
+    proj_props = tool.Project.get_project_props()
+    for link in proj_props.links:
+        if link.name == self.name:
+            handle = tool.Project.get_link_empty_handle(link)
+            if handle:
+                if self.enabled:
+                    handle.color = (self.color[0], self.color[1], self.color[2], 1.0)
+                else:
+                    handle.color = (1.0, 1.0, 1.0, 1.0)
+                tool.Blender.update_all_viewports(context)
+            break
+
+
+class BIMLinkColorOverride(PropertyGroup):
+    enabled: BoolProperty(name="Override", default=True, update=link_color_item_update)
+    color: FloatVectorProperty(
+        name="Color",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        update=link_color_item_update,
+    )
+
+    if TYPE_CHECKING:
+        enabled: bool
+        color: tuple[float, float, float, float]
+
+
 class ClashSet(PropertyGroup):
     mode: EnumProperty(
         items=[
@@ -189,6 +290,13 @@ class BIMClashProperties(PropertyGroup):
     show_a_highlight: BoolProperty(name="Show A", default=True, update=highlight_visibility_update)
     show_b_highlight: BoolProperty(name="Show B", default=True, update=highlight_visibility_update)
     show_c_highlight: BoolProperty(name="Show Volume", default=True, update=highlight_visibility_update)
+    use_link_color_override: BoolProperty(
+        name="Override Link Colors",
+        description="Switch viewport to per-link solid colors to distinguish models during clash review",
+        default=False,
+        update=link_color_override_update,
+    )
+    link_color_overrides: CollectionProperty(name="Link Color Overrides", type=BIMLinkColorOverride)
     export_path: StringProperty(
         name="Export Path",
         description=".bcf or .json file to export the clash results to",
@@ -213,6 +321,8 @@ class BIMClashProperties(PropertyGroup):
         show_a_highlight: bool
         show_b_highlight: bool
         show_c_highlight: bool
+        use_link_color_override: bool
+        link_color_overrides: bpy.types.bpy_prop_collection_idprop[BIMLinkColorOverride]
         export_path: str
 
     @property

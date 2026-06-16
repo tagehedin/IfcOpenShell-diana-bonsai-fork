@@ -546,7 +546,7 @@ class BlenderClasher:
                 "b_ifc_class": b.ifc_class,
                 "a_name": a.ifc_name,
                 "b_name": b.ifc_name,
-                "type": mode,
+                "type": "collision",
                 "p1": list(p1),
                 "p2": list(p2),
                 "distance": 0.0,

@@ -23,6 +23,7 @@ from . import operator, prop, ui
 classes = (
     operator.AddClashSet,
     operator.AddClashSource,
+    operator.AddClashSourceFromLink,
     operator.ExecuteBlenderClash,
     operator.ExecuteIfcClash,
     operator.ExportClashSets,
@@ -37,6 +38,7 @@ classes = (
     operator.SelectSmartGroup,
     operator.SelectSmartGroupedClashesPath,
     operator.SmartClashGroup,
+    prop.BIMLinkColorOverride,
     prop.Clash,
     prop.ClashSource,
     prop.ClashSet,

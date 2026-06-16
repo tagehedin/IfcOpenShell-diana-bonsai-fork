@@ -134,6 +134,63 @@ class AddClashSource(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _link_abs_ifc_path(link) -> str:
+    """Return absolute IFC filepath for a loaded link by reading obj['ifc_filepath'] from its chunk objects."""
+    handle = tool.Project.get_link_empty_handle(link)
+    if not handle:
+        return ""
+    col = handle.instance_collection
+    if not col:
+        return ""
+    for obj in col.objects:
+        fp = obj.get("ifc_filepath", "")
+        if fp:
+            return fp
+    for child_col in col.children_recursive:
+        for obj in child_col.objects:
+            fp = obj.get("ifc_filepath", "")
+            if fp:
+                return fp
+    return ""
+
+
+class AddClashSourceFromLink(bpy.types.Operator):
+    bl_idname = "bim.add_clash_source_from_link"
+    bl_label = "Add Clash Source from Loaded Link"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Pick a currently loaded IFC link to add as a clash source"
+    group: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def _link_items(self, context):
+        proj_props = tool.Project.get_project_props()
+        items = []
+        for link in proj_props.links:
+            abs_path = _link_abs_ifc_path(link)
+            if not abs_path:
+                continue
+            display = link.name.replace("\\", "/").rsplit("/", 1)[-1]
+            items.append((abs_path, display, abs_path))
+        return items or [("__none__", "(No IFC links loaded)", "", "ERROR", 0)]
+
+    link: bpy.props.EnumProperty(name="IFC Link", items=_link_items)
+
+    def draw(self, context):
+        self.layout.prop(self, "link", text="")
+
+    def execute(self, context):
+        if self.link == "__none__":
+            return {"CANCELLED"}
+        props = tool.Clash.get_clash_props()
+        clash_set = props.active_clash_set
+        assert clash_set
+        source = clash_set.get_clash_sources_group(self.group).add()
+        source.name = bpy.path.relpath(self.link) if bpy.data.filepath else self.link
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=400)
+
+
 class RemoveClashSource(bpy.types.Operator):
     bl_idname = "bim.remove_clash_source"
     bl_label = "Remove Clash Source"
@@ -471,10 +528,11 @@ class SelectIfcClashResults(bpy.types.Operator, ImportHelper):
 
 class SelectClash(bpy.types.Operator):
     bl_idname = "bim.select_clash"
-    bl_label = "Select Clash"
+    bl_label = "Move to Clash"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "Select the clashing IFC geometry stored in a file"
+    bl_description = "Highlight clashing elements and move the camera to the clash point"
     index: bpy.props.IntProperty()
+    move_camera: bpy.props.BoolProperty(default=True, options={"SKIP_SAVE"})
 
     @staticmethod
     def find_linked_obj_by_guid(collection: bpy.types.Collection, guid: str) -> Union[bpy.types.Object, None]:
@@ -621,7 +679,8 @@ class SelectClash(bpy.types.Operator):
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(a_highlights, b_highlights, intersections)
         target = Vector(first_clash["p1"])
-        tool.Clash.look_at(target, target + Vector((5, 5, 5)))
+        if self.move_camera:
+            tool.Clash.look_at(target, target + Vector((5, 5, 5)))
         self.props.p1 = first_clash["p1"]
         self.props.p2 = first_clash["p2"]
         self.props.active_clash_text = (
@@ -746,8 +805,9 @@ class LoadSmartGroupsForActiveClashSet(bpy.types.Operator):
 
 class SelectSmartGroup(bpy.types.Operator):
     bl_idname = "bim.select_smart_group"
-    bl_label = "Select Smart Group"
+    bl_label = "Move to Smart Group"
     bl_options = {"REGISTER", "UNDO"}
+    move_camera: bpy.props.BoolProperty(default=True, options={"SKIP_SAVE"})
 
     @classmethod
     def poll(cls, context):
@@ -795,11 +855,10 @@ class SelectSmartGroup(bpy.types.Operator):
             if geometry:
                 positions.extend(geometry[0])
 
-        if positions:
+        if self.move_camera and positions:
             target = sum(positions, Vector()) / len(positions)
             tool.Clash.look_at(target, target + Vector((5, 5, 5)))
-
-        context_override = tool.Blender.get_viewport_context()
-        with bpy.context.temp_override(**context_override):
-            bpy.ops.view3d.view_selected()
+            context_override = tool.Blender.get_viewport_context()
+            with bpy.context.temp_override(**context_override):
+                bpy.ops.view3d.view_selected()
         return {"FINISHED"}

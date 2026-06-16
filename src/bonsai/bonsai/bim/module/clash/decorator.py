@@ -159,7 +159,7 @@ class ClashDecorator:
     def draw_highlighted_object(self, highlight, color):
         key = highlight
         geometry = None if key in ClashDecorator._batch_cache else self.resolve_highlight_geometry(highlight)
-        self._draw_tris_cached(key, geometry, [*color[:3], 0.3])
+        self._draw_tris_cached(key, geometry, [*color[:3], 0.15])
 
     def draw_text(self, context):
         self.addon_prefs = tool.Blender.get_addon_preferences()
@@ -215,10 +215,10 @@ class ClashDecorator:
                 self.draw_highlighted_object(highlight, selected_elements_color)
         if self.show_b_highlight:
             for highlight in self.b_highlights:
-                self.draw_highlighted_object(highlight, self.addon_prefs.decorator_color_error)
+                self.draw_highlighted_object(highlight, (0.0, 0.4, 1.0, 0.15))
         if self.show_c_highlight:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
             for i, geometry in enumerate(self.c_highlights):
-                self._draw_tris_cached(("__c__", i), geometry, (0.0, 0.5, 1.0, 0.8))
+                self._draw_tris_cached(("__c__", i), geometry, (1.0, 0.1, 0.1, 0.4))
             gpu.state.depth_test_set(previous_depth_test)
