@@ -7,7 +7,7 @@
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260616",
+      "version": "0.8.6-diana-bonsai-fork-260617",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -18,7 +18,7 @@
       "permissions": {
         "network": "Augin / Cove.Tool integration for VR and environmental analysis",
         "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste error logs"
+        "clipboard": "Copy and paste energy logs"
       },
       "tags": [
         "3D View",
@@ -46,16 +46,16 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260616/bonsai_py313-0.8.6-alpha260616-linux-x64.zip",
-      "archive_size": 150866324,
-      "archive_hash": "sha256:536cb4b591b3f0d20c07b8a54e72563eb7c41df31b89a3ece4d70d1f2996e525"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260617/bonsai_py313-0.8.6-alpha260617-linux-x64.zip",
+      "archive_size": 150873518,
+      "archive_hash": "sha256:50e52b6ff51db19c43631257cedb0bd363eb0837239469dc134c38361a0fe112"
     },
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260616",
+      "version": "0.8.6-diana-bonsai-fork-260617",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -66,7 +66,7 @@
       "permissions": {
         "network": "Augin / Cove.Tool integration for VR and environmental analysis",
         "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste error logs"
+        "clipboard": "Copy and paste energy logs"
       },
       "tags": [
         "3D View",
@@ -94,16 +94,16 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260616/bonsai_py313-0.8.6-alpha260616-macos-arm64.zip",
-      "archive_size": 135060889,
-      "archive_hash": "sha256:c63831d580b2ed22d5b2fd12bef96b01790321f4e91fa9592360309c76617e1f"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260617/bonsai_py313-0.8.6-alpha260617-macos-arm64.zip",
+      "archive_size": 135068124,
+      "archive_hash": "sha256:f20c2065424febcc820c8c2a0dfc4577aaf28a7531f221dca0aa40334f07fe08"
     },
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "bonsai-diana-fork",
       "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-260616",
+      "version": "0.8.6-diana-bonsai-fork-260617",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -114,7 +114,7 @@
       "permissions": {
         "network": "Augin / Cove.Tool integration for VR and environmental analysis",
         "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste error logs"
+        "clipboard": "Copy and paste energy logs"
       },
       "tags": [
         "3D View",
@@ -142,9 +142,9 @@
       "python_versions": [
         "3.13"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260616/bonsai_py313-0.8.6-alpha260616-windows-x64.zip",
-      "archive_size": 121968779,
-      "archive_hash": "sha256:cf147e7823c88968a50e6a9fd17f99c8e49a4a7bf319cd28179463266529e79d"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha260617/bonsai_py313-0.8.6-alpha260617-windows-x64.zip",
+      "archive_size": 112561360,
+      "archive_hash": "sha256:0f4f967035eeb23c5b785a8262a58cb9a91812e9293c191edd0fb1111a799c3e"
     }
   ]
 }
