@@ -36,6 +36,7 @@ class ClashDecorator:
     show_a_highlight = True
     show_b_highlight = True
     show_c_highlight = True
+    _batch_cache: dict = {}
 
     @classmethod
     def install(cls, context):
@@ -61,6 +62,7 @@ class ClashDecorator:
         cls.a_highlights = []
         cls.b_highlights = []
         cls.c_highlights = []
+        cls._batch_cache = {}
 
     @classmethod
     def set_clash_objects(cls, a_list, b_list, intersections=None) -> None:
@@ -75,6 +77,7 @@ class ClashDecorator:
         ``(positions, triangle_indices)`` tuples in world space describing each
         clash's overlapping volume.
         """
+        cls._batch_cache.clear()
         cls.a_highlights = [h for a in a_list if (h := cls._normalize_highlight(a)) is not None]
         cls.b_highlights = [h for b in b_list if (h := cls._normalize_highlight(b)) is not None]
         cls.c_highlights = [g for g in (intersections or []) if g is not None]
@@ -99,24 +102,6 @@ class ClashDecorator:
         batch = batch_for_shader(shader, shader_type, {"pos": content_pos}, indices=indices)
         shader.uniform_float("color", color)
         batch.draw(shader)
-
-    @staticmethod
-    def _feature_edges(positions, triangle_indices):
-        """Return edge index pairs for wireframe drawing, skipping interior
-        edges between two coplanar triangles (e.g. the diagonal of a
-        triangulated rectangular face)."""
-        edge_faces: dict[tuple[int, int], list[Vector]] = {}
-        for tri in triangle_indices:
-            a, b, c = tri[0], tri[1], tri[2]
-            normal = (positions[b] - positions[a]).cross(positions[c] - positions[a]).normalized()
-            for edge in ((a, b), (b, c), (c, a)):
-                edge_faces.setdefault(tuple(sorted(edge)), []).append(normal)
-
-        edges = []
-        for edge, normals in edge_faces.items():
-            if len(normals) == 1 or any(normals[0].dot(n) < 0.999 for n in normals[1:]):
-                edges.append(edge)
-        return edges
 
     @staticmethod
     def resolve_highlight_geometry(highlight):
@@ -153,18 +138,28 @@ class ClashDecorator:
 
         return positions, triangle_indices
 
-    def draw_geometry_highlight(self, geometry, color):
-        if not geometry:
-            return
-        positions, triangle_indices = geometry
-        edge_indices = self._feature_edges(positions, triangle_indices)
-
-        fill_color = [*color[:3], 0.3]
-        self.draw_batch("TRIS", positions, fill_color, triangle_indices)
-        self.draw_batch("LINES", positions, color, edge_indices)
+    def _draw_tris_cached(self, key, geometry, color):
+        """Draw filled triangles for key, building and caching the GPUBatch on first call."""
+        if key not in ClashDecorator._batch_cache:
+            if not geometry:
+                ClashDecorator._batch_cache[key] = None
+                return
+            positions, triangle_indices = geometry
+            if not positions or not triangle_indices:
+                ClashDecorator._batch_cache[key] = None
+                return
+            ClashDecorator._batch_cache[key] = batch_for_shader(
+                self.shader, "TRIS", {"pos": positions}, indices=triangle_indices
+            )
+        batch = ClashDecorator._batch_cache[key]
+        if batch:
+            self.shader.uniform_float("color", color)
+            batch.draw(self.shader)
 
     def draw_highlighted_object(self, highlight, color):
-        self.draw_geometry_highlight(self.resolve_highlight_geometry(highlight), color)
+        key = highlight
+        geometry = None if key in ClashDecorator._batch_cache else self.resolve_highlight_geometry(highlight)
+        self._draw_tris_cached(key, geometry, [*color[:3], 0.3])
 
     def draw_text(self, context):
         self.addon_prefs = tool.Blender.get_addon_preferences()
@@ -224,6 +219,6 @@ class ClashDecorator:
         if self.show_c_highlight:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
-            for geometry in self.c_highlights:
-                self.draw_geometry_highlight(geometry, (0.0, 0.5, 1.0, 0.8))
+            for i, geometry in enumerate(self.c_highlights):
+                self._draw_tris_cached(("__c__", i), geometry, (0.0, 0.5, 1.0, 0.8))
             gpu.state.depth_test_set(previous_depth_test)
