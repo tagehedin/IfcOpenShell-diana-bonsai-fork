@@ -23,6 +23,7 @@ from . import operator, prop, ui
 classes = (
     operator.AddClashSet,
     operator.AddClashSource,
+    operator.ExecuteBlenderClash,
     operator.ExecuteIfcClash,
     operator.ExportClashSets,
     operator.HideClash,

@@ -1466,7 +1466,7 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
     use_relative_path: bpy.props.BoolProperty(
         name="Use Relative Path",
         description="Whether to store linked model path relative to the currently opened IFC file.",
-        default=False,
+        default=True,
     )
     use_cache: bpy.props.BoolProperty(name="Use Cache", default=True)
     query: bpy.props.StringProperty(

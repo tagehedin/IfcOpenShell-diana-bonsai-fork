@@ -51,7 +51,7 @@ class Clash(bonsai.core.tool.Clash):
             b: list[ClashSource] = []
             for ab, ab_data in clash_set.get_clash_sources().items():
                 for data in ab_data:
-                    clash_source: ClashSource = {"file": data.name}
+                    clash_source: ClashSource = {"file": bpy.path.abspath(data.name)}
                     query = tool.Search.export_filter_query(data.filter_groups)
                     if query and data.mode != "a":
                         clash_source["selector"] = query

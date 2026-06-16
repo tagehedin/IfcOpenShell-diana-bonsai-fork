@@ -155,6 +155,10 @@ class BIM_PT_ifcclash(Panel):
         op.filepath = props.export_path
 
         row = layout.row()
+        op = row.operator("bim.execute_blender_clash", icon="MESH_DATA")
+        op.filepath = props.export_path
+
+        row = layout.row()
         if clash_set.clashes_loaded:
             row.column().label(text=f"{len(clash_set.clashes)} Clashes Found", icon="PIVOT_CURSOR")
 

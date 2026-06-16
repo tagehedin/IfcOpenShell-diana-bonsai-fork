@@ -165,7 +165,7 @@ class SelectClashSource(bpy.types.Operator, ImportHelper):
         clash_set = props.active_clash_set
         assert clash_set
         clash_source = clash_set.get_clash_sources_group(self.group)[self.index]
-        clash_source.name = self.filepath
+        clash_source.name = bpy.path.relpath(self.filepath) if bpy.data.filepath else self.filepath
         return {"FINISHED"}
 
 
@@ -178,7 +178,7 @@ class SelectClashResults(bpy.types.Operator, ImportHelper):
 
     def execute(self, context):
         props = tool.Clash.get_clash_props()
-        props.clash_results_path = self.filepath
+        props.clash_results_path = bpy.path.relpath(self.filepath) if bpy.data.filepath else self.filepath
         return {"FINISHED"}
 
 
@@ -190,7 +190,7 @@ class SelectSmartGroupedClashesPath(bpy.types.Operator, ImportHelper):
 
     def execute(self, context):
         props = tool.Clash.get_clash_props()
-        props.smart_grouped_clashes_path = self.filepath
+        props.smart_grouped_clashes_path = bpy.path.relpath(self.filepath) if bpy.data.filepath else self.filepath
         return {"FINISHED"}
 
 
@@ -236,7 +236,7 @@ class ExecuteIfcClash(bpy.types.Operator, ExportHelper):
         for clash_set in self.props.clash_sets:
             for clash_sources in clash_set.get_clash_sources().values():
                 for clash_source in clash_sources:
-                    if not Path(clash_source.name).is_file():
+                    if not Path(bpy.path.abspath(clash_source.name)).is_file():
                         self.report(
                             {"ERROR"},
                             f"One of the provided clash source filepaths do not exist: '{clash_source.name}'.",
@@ -331,6 +331,73 @@ class ExecuteIfcClash(bpy.types.Operator, ExportHelper):
             self.report({"INFO"}, "IFC Clash completed and results are loaded.")
         else:
             self.report({"INFO"}, f"IFC Clash results are saved to '{Path(self.filepath).name}'.")
+        return {"FINISHED"}
+
+
+class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
+    bl_idname = "bim.execute_blender_clash"
+    bl_label = "Execute Blender Clash"
+    bl_description = (
+        "Run BVH-based clash detection using already-loaded linked model meshes.\n"
+        "Faster than IFC Clash — no re-tessellation needed.\n\n"
+        "ALT+click to run without selecting an output file."
+    )
+
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
+    filename_ext = ".json"
+    filepath: bpy.props.StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE"})
+    quick_clash: bpy.props.BoolProperty(options={"SKIP_SAVE"})
+
+    if TYPE_CHECKING:
+        filter_glob: str
+        filepath: str
+        quick_clash: bool
+
+    def invoke(self, context, event):
+        if event.alt:
+            self.quick_clash = True
+            return self.execute(context)
+        if self.filepath:
+            return self.execute(context)
+        return ExportHelper.invoke(self, context, event)
+
+    def execute(self, context):
+        from bonsai.bim.module.clash.blenderclash import BlenderClasher
+
+        props = tool.Clash.get_clash_props()
+
+        temp_file = None
+        if self.quick_clash:
+            temp_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+            temp_file.close()
+            self.filepath = temp_file.name
+        else:
+            self.filepath = bpy.path.ensure_ext(self.filepath, ".json")
+            props.export_path = self.filepath
+
+        class _Settings:
+            pass
+
+        settings = _Settings()
+        settings.output = self.filepath
+        settings.logger = logging.getLogger("BlenderClash")
+        settings.logger.setLevel(logging.DEBUG)
+
+        clasher = BlenderClasher()
+        clasher.settings = settings
+        clasher.clash_sets = tool.Clash.export_clash_sets()
+        clasher.clash()
+        clasher.export()
+
+        tool.Clash.load_clash_sets(self.filepath)
+        tool.Clash.import_active_clashes()
+
+        if self.quick_clash:
+            assert temp_file is not None
+            Path(temp_file.name).unlink()
+            self.report({"INFO"}, "Blender Clash completed and results are loaded.")
+        else:
+            self.report({"INFO"}, f"Blender Clash results saved to '{Path(self.filepath).name}'.")
         return {"FINISHED"}
 
 
@@ -594,7 +661,7 @@ class SmartClashGroup(bpy.types.Operator):
 
         settings = ifcclash.ClashSettings()
         props = tool.Clash.get_clash_props()
-        self.filepath = str(Path(props.clash_results_path).with_suffix(".json"))
+        self.filepath = str(Path(bpy.path.abspath(props.clash_results_path)).with_suffix(".json"))
         settings.output = self.filepath
         settings.logger = logging.getLogger("Clash")
         settings.logger.setLevel(logging.DEBUG)
@@ -604,7 +671,7 @@ class SmartClashGroup(bpy.types.Operator):
             clash_sets = json.load(f)
 
         # execute the smart grouping
-        save_path = bpy.path.ensure_ext(props.smart_grouped_clashes_path, ".json")
+        save_path = bpy.path.ensure_ext(bpy.path.abspath(props.smart_grouped_clashes_path), ".json")
         smart_grouped_clashes = ifc_clasher.smart_group_clashes(clash_sets, props.smart_clash_grouping_max_distance)
 
         # save smart_groups to json
@@ -646,7 +713,7 @@ class LoadSmartGroupsForActiveClashSet(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Clash.get_clash_props()
-        smart_groups_path = bpy.path.ensure_ext(props.smart_grouped_clashes_path, ".json")
+        smart_groups_path = bpy.path.ensure_ext(bpy.path.abspath(props.smart_grouped_clashes_path), ".json")
 
         assert props.active_clash_set
         clash_set_name = props.active_clash_set.name
