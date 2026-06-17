@@ -32,6 +32,38 @@ import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.clash.decorator import ClashDecorator
 
+import bpy.utils.previews as _bpy_previews
+
+_preview_collections: dict = {}
+
+
+def _get_saved_view_pcoll():
+    if "clash_saved_views" not in _preview_collections:
+        _preview_collections["clash_saved_views"] = _bpy_previews.new()
+    return _preview_collections["clash_saved_views"]
+
+
+def get_saved_view_icon_id(image_path: str) -> int:
+    """Return an icon_id for the image at image_path, loading/caching as needed."""
+    if not image_path or not Path(image_path).exists():
+        return 0
+    pcoll = _get_saved_view_pcoll()
+    if image_path not in pcoll:
+        pcoll.load(image_path, image_path, "IMAGE")
+    return pcoll[image_path].icon_id
+
+
+def _invalidate_preview(image_path: str) -> None:
+    pcoll = _get_saved_view_pcoll()
+    if image_path in pcoll:
+        del pcoll[image_path]
+
+
+def free_preview_collections() -> None:
+    for pcoll in _preview_collections.values():
+        _bpy_previews.remove(pcoll)
+    _preview_collections.clear()
+
 
 class ExportClashSets(bpy.types.Operator, ExportHelper):
     bl_idname = "bim.export_clash_sets"
@@ -223,6 +255,242 @@ class SelectClashSource(bpy.types.Operator, ImportHelper):
         assert clash_set
         clash_source = clash_set.get_clash_sources_group(self.group)[self.index]
         clash_source.name = bpy.path.relpath(self.filepath) if bpy.data.filepath else self.filepath
+        return {"FINISHED"}
+
+
+def _get_view3d_region_data(context):
+    for area in context.screen.areas:
+        if area.type == "VIEW_3D":
+            for region in area.regions:
+                if region.type == "WINDOW":
+                    return area, region, region.data
+    return None, None, None
+
+
+def _capture_viewport_snapshot(context, filepath: Path) -> bool:
+    """Render the current viewport to a JPEG at filepath. Returns True on success."""
+    scene = context.scene
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    old = {
+        "filepath": scene.render.filepath,
+        "file_format": scene.render.image_settings.file_format,
+        "quality": scene.render.image_settings.quality,
+        "res_x": scene.render.resolution_x,
+        "res_y": scene.render.resolution_y,
+        "pct": scene.render.resolution_percentage,
+    }
+    try:
+        scene.render.filepath = str(filepath)
+        scene.render.image_settings.file_format = "JPEG"
+        scene.render.image_settings.quality = 85
+        scene.render.resolution_x = 480
+        scene.render.resolution_y = 270
+        scene.render.resolution_percentage = 100
+        area, _, _ = _get_view3d_region_data(context)
+        if not area:
+            return False
+        with context.temp_override(area=area):
+            bpy.ops.render.opengl(write_still=True)
+        return filepath.exists()
+    except Exception:
+        return False
+    finally:
+        scene.render.filepath = old["filepath"]
+        scene.render.image_settings.file_format = old["file_format"]
+        scene.render.image_settings.quality = old["quality"]
+        scene.render.resolution_x = old["res_x"]
+        scene.render.resolution_y = old["res_y"]
+        scene.render.resolution_percentage = old["pct"]
+
+
+def _save_view_state(view: "bonsai.bim.module.clash.prop.BIMSavedView", context) -> None:
+    """Write current camera + clip planes into a saved view entry."""
+    _, _, rd = _get_view3d_region_data(context)
+    if rd:
+        view.view_location = rd.view_location
+        view.view_rotation = rd.view_rotation
+        view.view_distance = rd.view_distance
+        view.view_perspective = rd.view_perspective
+
+    view.planes.clear()
+    proj_props = tool.Project.get_project_props()
+    for cp in proj_props.clipping_planes:
+        if not cp.obj:
+            continue
+        m = cp.obj.matrix_world
+        plane = view.planes.add()
+        plane.matrix = [m[r][c] for r in range(4) for c in range(4)]
+
+
+def _restore_clip_planes(context, view) -> None:
+    """Delete existing clip planes and recreate them from saved view data."""
+    import bmesh as _bmesh
+    from itertools import cycle
+
+    proj_props = tool.Project.get_project_props()
+
+    # Remove all current clip plane objects and entries
+    for i in range(len(proj_props.clipping_planes) - 1, -1, -1):
+        cp = proj_props.clipping_planes[i]
+        if cp.obj:
+            try:
+                bpy.data.objects.remove(cp.obj, do_unlink=True)
+            except Exception:
+                pass
+        proj_props.clipping_planes.remove(i)
+
+    # Recreate from saved matrices
+    verts = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)]
+    for plane_data in view.planes:
+        mesh = bpy.data.meshes.new(name="ClippingPlane")
+        mesh.from_pydata(verts, [], [(0, 1, 2, 3)])
+        mesh.update()
+        obj = bpy.data.objects.new("ClippingPlane", mesh)
+        obj.show_in_front = True
+        obj.display_type = "WIRE"
+        context.collection.objects.link(obj)
+        m = plane_data.matrix
+        obj.matrix_world = Matrix([[m[r * 4 + c] for c in range(4)] for r in range(4)])
+        new_cp = proj_props.clipping_planes.add()
+        new_cp.obj = obj
+
+    # Update viewport clip state directly (mirrors RefreshClippingPlanes.refresh_clipping_planes)
+    area, region, data = _get_view3d_region_data(context)
+    if not area or not data:
+        return
+    if not proj_props.clipping_planes:
+        data.use_clip_planes = False
+    else:
+        with context.temp_override(area=area, region=region):
+            bpy.ops.view3d.clip_border()
+            clip_planes = []
+            for cp in proj_props.clipping_planes:
+                if not cp.obj:
+                    continue
+                bm = _bmesh.new()
+                bm.from_mesh(cp.obj.data)
+                wm = cp.obj.matrix_world
+                bm.faces.ensure_lookup_table()
+                face = bm.faces[0]
+                center = wm @ face.calc_center_median()
+                normal = wm.to_3x3() @ face.normal * -1
+                center += normal * -0.01
+                normal.normalize()
+                distance = -center.dot(normal)
+                clip_planes.append((normal.x, normal.y, normal.z, distance))
+                bm.free()
+            clip_planes_cycled = cycle(clip_planes)
+            data.clip_planes = [tuple(next(clip_planes_cycled)) for _ in range(6)]
+    data.update()
+    region.tag_redraw()
+
+
+class SaveClashView(bpy.types.Operator):
+    bl_idname = "bim.save_clash_view"
+    bl_label = "Save View"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Save current camera position and clipping planes as a new view"
+
+    def execute(self, context):
+        if not bpy.data.filepath:
+            self.report({"WARNING"}, "Save the blend file first so the snapshot folder can be created.")
+            return {"CANCELLED"}
+        props = tool.Clash.get_clash_props()
+        view = props.saved_views.add()
+        view.name = f"View {len(props.saved_views)}"
+        _save_view_state(view, context)
+        self._write_snapshot(context, view)
+        return {"FINISHED"}
+
+    def _write_snapshot(self, context, view):
+        import datetime
+        blend_dir = Path(bpy.path.abspath("//"))
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = blend_dir / "saved views" / f"view_{ts}.jpg"
+        if _capture_viewport_snapshot(context, img_path):
+            view.image_path = bpy.path.relpath(str(img_path))
+            # Invalidate preview cache so the new image loads
+            _invalidate_preview(str(img_path))
+
+
+class ReloadClashView(bpy.types.Operator):
+    bl_idname = "bim.reload_clash_view"
+    bl_label = "Reload View"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Overwrite this saved view with the current camera position and clipping planes"
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        if not bpy.data.filepath:
+            self.report({"WARNING"}, "Save the blend file first.")
+            return {"CANCELLED"}
+        props = tool.Clash.get_clash_props()
+        if self.index >= len(props.saved_views):
+            return {"CANCELLED"}
+        view = props.saved_views[self.index]
+        _save_view_state(view, context)
+        # Overwrite snapshot file
+        import datetime
+        old_path = bpy.path.abspath(view.image_path) if view.image_path else ""
+        if old_path and Path(old_path).exists():
+            img_path = Path(old_path)
+        else:
+            blend_dir = Path(bpy.path.abspath("//"))
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            img_path = blend_dir / "saved views" / f"view_{ts}.jpg"
+        if _capture_viewport_snapshot(context, img_path):
+            view.image_path = bpy.path.relpath(str(img_path))
+            _invalidate_preview(str(img_path))
+        return {"FINISHED"}
+
+
+class OpenClashView(bpy.types.Operator):
+    bl_idname = "bim.open_clash_view"
+    bl_label = "Open View"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Restore this saved camera position and clipping planes"
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        props = tool.Clash.get_clash_props()
+        if self.index >= len(props.saved_views):
+            return {"CANCELLED"}
+        view = props.saved_views[self.index]
+
+        # Restore camera
+        _, _, rd = _get_view3d_region_data(context)
+        if rd:
+            rd.view_location = Vector(view.view_location)
+            rd.view_rotation = Vector(view.view_rotation)  # quaternion stored as 4-vec
+            rd.view_distance = view.view_distance
+            if view.view_perspective in ("PERSP", "ORTHO"):
+                rd.view_perspective = view.view_perspective
+
+        # Restore clip planes
+        _restore_clip_planes(context, view)
+        tool.Blender.update_all_viewports(context)
+        return {"FINISHED"}
+
+
+class RemoveClashView(bpy.types.Operator):
+    bl_idname = "bim.remove_clash_view"
+    bl_label = "Remove Saved View"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Delete this saved view and its snapshot"
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        props = tool.Clash.get_clash_props()
+        if self.index >= len(props.saved_views):
+            return {"CANCELLED"}
+        view = props.saved_views[self.index]
+        if view.image_path:
+            img_path = Path(bpy.path.abspath(view.image_path))
+            if img_path.exists():
+                img_path.unlink(missing_ok=True)
+            _invalidate_preview(str(img_path))
+        props.saved_views.remove(self.index)
         return {"FINISHED"}
 
 
@@ -705,6 +973,59 @@ class HideClash(bpy.types.Operator):
     def execute(self, context):
         ClashDecorator.uninstall()
         tool.Blender.update_all_viewports(context)
+        return {"FINISHED"}
+
+
+class SelectClashListItem(bpy.types.Operator):
+    bl_idname = "bim.select_clash_list_item"
+    bl_label = ""
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Select clash (Shift: range, Ctrl: toggle)"
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        props = tool.Clash.get_clash_props()
+        clash_set = props.active_clash_set
+        if not clash_set:
+            return {"CANCELLED"}
+        clashes = clash_set.clashes
+        if self.index >= len(clashes):
+            return {"CANCELLED"}
+
+        if event.shift and props.last_selected_clash_index >= 0:
+            start = min(props.last_selected_clash_index, self.index)
+            end = max(props.last_selected_clash_index, self.index)
+            target = not clashes[self.index].selected
+            for i in range(start, end + 1):
+                clashes[i].selected = target
+        elif event.ctrl:
+            clashes[self.index].selected = not clashes[self.index].selected
+        else:
+            for clash in clashes:
+                clash.selected = False
+            clashes[self.index].selected = True
+
+        props.last_selected_clash_index = self.index
+        props.active_clash_index = self.index
+        return {"FINISHED"}
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+
+class SelectAllClashes(bpy.types.Operator):
+    bl_idname = "bim.select_all_clashes"
+    bl_label = "Select All Clashes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = tool.Clash.get_clash_props()
+        clash_set = props.active_clash_set
+        if not clash_set:
+            return {"CANCELLED"}
+        target = not all(c.selected for c in clash_set.clashes)
+        for clash in clash_set.clashes:
+            clash.selected = target
         return {"FINISHED"}
 
 

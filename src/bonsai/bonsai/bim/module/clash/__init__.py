@@ -30,15 +30,23 @@ classes = (
     operator.HideClash,
     operator.ImportClashSets,
     operator.LoadSmartGroupsForActiveClashSet,
+    operator.OpenClashView,
+    operator.ReloadClashView,
     operator.RemoveClashSet,
     operator.RemoveClashSource,
+    operator.RemoveClashView,
+    operator.SaveClashView,
+    operator.SelectAllClashes,
     operator.SelectClash,
+    operator.SelectClashListItem,
     operator.SelectClashResults,
     operator.SelectClashSource,
     operator.SelectSmartGroup,
     operator.SelectSmartGroupedClashesPath,
     operator.SmartClashGroup,
     prop.BIMLinkColorOverride,
+    prop.BIMSavedViewPlane,
+    prop.BIMSavedView,
     prop.Clash,
     prop.ClashSource,
     prop.ClashSet,
@@ -47,6 +55,7 @@ classes = (
     ui.BIM_PT_ifcclash,
     ui.BIM_PT_clash_manager,
     ui.BIM_PT_smart_clash_manager,
+    ui.BIM_PT_saved_clash_views,
     ui.BIM_UL_clashes,
     ui.BIM_UL_clash_sets,
     ui.BIM_UL_smart_groups,
@@ -58,4 +67,5 @@ def register():
 
 
 def unregister():
+    operator.free_preview_collections()
     del bpy.types.Scene.BIMClashProperties

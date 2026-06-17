@@ -36,6 +36,45 @@ import bonsai.tool as tool
 from bonsai.bim.prop import BIMFilterGroup, StrProperty
 
 
+class BIMSavedViewPlane(PropertyGroup):
+    matrix: FloatVectorProperty(name="Matrix", size=16)
+
+    if TYPE_CHECKING:
+        matrix: tuple[float, ...]
+
+
+class BIMSavedView(PropertyGroup):
+    name: StringProperty(name="Name", default="View")
+    description: StringProperty(name="Description")
+    status: EnumProperty(
+        name="Status",
+        items=[
+            ("new", "New", ""),
+            ("in_progress", "In Progress", ""),
+            ("resolved", "Resolved", ""),
+            ("approved", "Approved", ""),
+            ("wont_fix", "Won't Fix", ""),
+        ],
+    )
+    image_path: StringProperty(name="Image", subtype="FILE_PATH")
+    view_location: FloatVectorProperty(name="Location", size=3)
+    view_rotation: FloatVectorProperty(name="Rotation", size=4)
+    view_distance: FloatProperty(name="Distance")
+    view_perspective: StringProperty(name="Perspective")
+    planes: CollectionProperty(name="Clip Planes", type=BIMSavedViewPlane)
+
+    if TYPE_CHECKING:
+        name: str
+        description: str
+        status: str
+        image_path: str
+        view_location: tuple[float, float, float]
+        view_rotation: tuple[float, float, float, float]
+        view_distance: float
+        view_perspective: str
+        planes: bpy.types.bpy_prop_collection_idprop[BIMSavedViewPlane]
+
+
 class ClashSource(PropertyGroup):
     name: StringProperty(
         name="File",
@@ -287,6 +326,7 @@ class BIMClashProperties(PropertyGroup):
     p1: FloatVectorProperty(name="P1", default=(0.0, 0.0, 0.0), subtype="XYZ")
     p2: FloatVectorProperty(name="P2", default=(0.0, 0.0, 0.0), subtype="XYZ")
     active_clash_text: StringProperty(name="Active Clash Text")
+    last_selected_clash_index: IntProperty(name="Last Selected Clash Index", default=-1)
     show_a_highlight: BoolProperty(name="Show A", default=True, update=highlight_visibility_update)
     show_b_highlight: BoolProperty(name="Show B", default=True, update=highlight_visibility_update)
     show_c_highlight: BoolProperty(name="Show Volume", default=True, update=highlight_visibility_update)
@@ -297,6 +337,7 @@ class BIMClashProperties(PropertyGroup):
         update=link_color_override_update,
     )
     link_color_overrides: CollectionProperty(name="Link Color Overrides", type=BIMLinkColorOverride)
+    saved_views: CollectionProperty(name="Saved Views", type=BIMSavedView)
     export_path: StringProperty(
         name="Export Path",
         description=".bcf or .json file to export the clash results to",
@@ -323,6 +364,7 @@ class BIMClashProperties(PropertyGroup):
         show_c_highlight: bool
         use_link_color_override: bool
         link_color_overrides: bpy.types.bpy_prop_collection_idprop[BIMLinkColorOverride]
+        saved_views: bpy.types.bpy_prop_collection_idprop[BIMSavedView]
         export_path: str
 
     @property

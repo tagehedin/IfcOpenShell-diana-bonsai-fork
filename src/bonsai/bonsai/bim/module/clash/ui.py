@@ -175,6 +175,15 @@ class BIM_PT_ifcclash(Panel):
             row.label(text="Group B Element")
             row.label(text="Type")
 
+            clashes = props.active_clash_set.clashes
+            all_selected = bool(clashes) and all(c.selected for c in clashes)
+            row = layout.row()
+            row.operator(
+                "bim.select_all_clashes",
+                text="Deselect All" if all_selected else "Select All",
+                icon="CHECKBOX_HLT" if all_selected else "CHECKBOX_DEHLT",
+                emboss=False,
+            )
             layout.template_list("BIM_UL_clashes", "", props.active_clash_set, "clashes", props, "active_clash_index")
             row = layout.row()
             row.operator("bim.select_clash", text="Move to Clash", icon="CAMERA_DATA")
@@ -300,6 +309,48 @@ class BIM_UL_smart_groups(bpy.types.UIList):
             layout.label(text="", translate=False)
 
 
+class BIM_PT_saved_clash_views(Panel):
+    bl_label = "Saved Views"
+    bl_idname = "BIM_PT_saved_clash_views"
+    bl_parent_id = "BIM_PT_ifcclash"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        from bonsai.bim.module.clash.operator import get_saved_view_icon_id
+        layout = self.layout
+        props = tool.Clash.get_clash_props()
+
+        layout.operator("bim.save_clash_view", icon="BOOKMARKS")
+
+        for i, view in enumerate(props.saved_views):
+            box = layout.box()
+
+            # Snapshot thumbnail
+            abs_path = bpy.path.abspath(view.image_path) if view.image_path else ""
+            icon_id = get_saved_view_icon_id(abs_path)
+            if icon_id:
+                box.template_icon(icon_value=icon_id, scale=10)
+            else:
+                box.label(text="No snapshot", icon="IMAGE_DATA")
+
+            # Fields
+            box.prop(view, "name", text="Name")
+            box.prop(view, "description", text="Description")
+            box.prop(view, "status", text="Status")
+
+            # Action buttons
+            row = box.row(align=True)
+            op = row.operator("bim.open_clash_view", text="Open View", icon="RESTRICT_VIEW_OFF")
+            op.index = i
+            op = row.operator("bim.reload_clash_view", text="Reload View", icon="FILE_REFRESH")
+            op.index = i
+            op = row.operator("bim.remove_clash_view", text="", icon="X")
+            op.index = i
+
+
 class BIM_UL_clashes(bpy.types.UIList):
     def draw_item(
         self,
@@ -320,14 +371,16 @@ class BIM_UL_clashes(bpy.types.UIList):
             split = row.split(factor=0.05, align=True)
             split.label(text=str(index + 1))
 
-            row = split.row(align=False)
-            row.label(text=str(item.a_name), translate=False, icon="NONE", icon_value=0)
-            row.label(text=str(item.b_name), translate=False, icon="NONE", icon_value=0)
+            inner = split.row(align=True)
+            op = inner.operator("bim.select_clash_list_item", text=str(item.a_name), emboss=False)
+            op.index = index
+            op = inner.operator("bim.select_clash_list_item", text=str(item.b_name), emboss=False)
+            op.index = index
 
-            col = row.column()
+            col = inner.column()
             col.enabled = False
             col.prop(item, "clash_type", text="")
 
-            row.prop(item, "status", text="")
+            inner.prop(item, "status", text="")
         else:
             layout.label(text="", translate=False)
