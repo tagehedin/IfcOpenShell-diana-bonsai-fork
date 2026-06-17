@@ -897,9 +897,9 @@ class SelectClash(bpy.types.Operator):
             assert (active_clash := self.props.active_clash)
             clash_props = [active_clash]
 
+        from collections import defaultdict
         products: list[ifcopenshell.entity_instance] = []
-        a_highlights: list = []
-        b_highlights: list = []
+        group_highlights: dict = defaultdict(list)
         intersections: list = []
         first_clash = None
 
@@ -919,8 +919,6 @@ class SelectClash(bpy.types.Operator):
                     continue
                 except:
                     pass
-
-                # Not part of the active IFC file - check loaded link models.
                 for link in tool.Project.get_project_props().links:
                     if not link.is_loaded:
                         continue
@@ -931,8 +929,11 @@ class SelectClash(bpy.types.Operator):
                         highlights[i] = (link_obj, global_id)
                         break
 
-            a_highlights.append(highlights[0])
-            b_highlights.append(highlights[1])
+            pair = clash.get("pair", "ab")
+            g1 = pair[0] if len(pair) >= 1 else "a"
+            g2 = pair[1] if len(pair) >= 2 else "b"
+            group_highlights[g1].append(highlights[0])
+            group_highlights[g2].append(highlights[1])
 
             geometries = [
                 ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
@@ -945,7 +946,7 @@ class SelectClash(bpy.types.Operator):
 
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(a_highlights, b_highlights, intersections)
+        ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
         target = Vector(first_clash["p1"])
         if self.move_camera:
             tool.Clash.look_at(target, target + Vector((5, 5, 5)))
@@ -1141,13 +1142,19 @@ class SelectSmartGroup(bpy.types.Operator):
         selected_smart_group = props.active_smart_group
         assert selected_smart_group
 
+        from collections import defaultdict
         products: list[ifcopenshell.entity_instance] = []
-        a_highlights: list = []
-        b_highlights: list = []
+        group_highlights: dict = defaultdict(list)
         intersections: list = []
 
+        # Build a guid→pair lookup from active clash set results
+        pair_lookup: dict[str, str] = {}
+        if props.active_clash_set and props.active_clash_set.clashes_loaded:
+            for clash in props.active_clash_set.clashes:
+                key = f"{clash.a_global_id}-{clash.b_global_id}"
+                pair_lookup[key] = clash.clash_pair
+
         # `global_ids` is a_global_id, b_global_id, a_global_id, b_global_id, ...
-        # (one pair per clash in the group).
         global_ids = list(selected_smart_group.global_ids)
         for i in range(0, len(global_ids) - 1, 2):
             a_highlight, a_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i].name)
@@ -1158,8 +1165,11 @@ class SelectSmartGroup(bpy.types.Operator):
             if b_product:
                 products.append(b_product)
 
-            a_highlights.append(a_highlight)
-            b_highlights.append(b_highlight)
+            pair = pair_lookup.get(f"{global_ids[i].name}-{global_ids[i+1].name}", "ab")
+            g1 = pair[0] if len(pair) >= 1 else "a"
+            g2 = pair[1] if len(pair) >= 2 else "b"
+            group_highlights[g1].append(a_highlight)
+            group_highlights[g2].append(b_highlight)
 
             geometry_a = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(a_highlight))
             geometry_b = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(b_highlight))
@@ -1168,13 +1178,14 @@ class SelectSmartGroup(bpy.types.Operator):
 
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(a_highlights, b_highlights, intersections)
+        ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
 
         positions = []
-        for highlight in a_highlights + b_highlights:
-            geometry = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(highlight))
-            if geometry:
-                positions.extend(geometry[0])
+        for highlights in group_highlights.values():
+            for highlight in highlights:
+                geometry = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(highlight))
+                if geometry:
+                    positions.extend(geometry[0])
 
         if self.move_camera and positions:
             target = sum(positions, Vector()) / len(positions)

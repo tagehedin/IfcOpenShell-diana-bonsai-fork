@@ -44,6 +44,7 @@ classes = (
     operator.SelectSmartGroup,
     operator.SelectSmartGroupedClashesPath,
     operator.SmartClashGroup,
+    prop.BIMGroupColor,
     prop.BIMLinkColorOverride,
     prop.BIMSavedViewPlane,
     prop.BIMSavedView,

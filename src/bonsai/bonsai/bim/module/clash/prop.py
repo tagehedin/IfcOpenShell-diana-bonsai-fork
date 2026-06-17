@@ -36,6 +36,46 @@ import bonsai.tool as tool
 from bonsai.bim.prop import BIMFilterGroup, StrProperty
 
 
+GROUP_NAMES = ("a", "b", "c", "d", "e", "f", "g", "h")
+_GROUP_DEFAULT_COLORS: dict[str, tuple] = {
+    "a": (0.2, 0.9, 0.2),
+    "b": (0.0, 0.4, 1.0),
+    "c": (1.0, 0.85, 0.0),
+    "d": (1.0, 0.5, 0.0),
+    "e": (0.0, 0.8, 0.8),
+    "f": (0.8, 0.0, 0.8),
+    "g": (0.6, 1.0, 0.4),
+    "h": (1.0, 0.4, 0.6),
+}
+
+
+def group_color_update(self: "BIMGroupColor", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+    ClashDecorator.group_colors[self.name] = tuple(self.color)
+    tool.Blender.update_all_viewports(context)
+
+
+def group_show_update(self: "BIMGroupColor", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+    ClashDecorator.show_groups[self.name] = self.show_highlight
+    tool.Blender.update_all_viewports(context)
+
+
+def volume_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+    ClashDecorator.show_volume = self.show_volume_highlight
+    tool.Blender.update_all_viewports(context)
+
+
+def ensure_group_colors(props: "BIMClashProperties") -> None:
+    existing = {item.name for item in props.group_highlight_colors}
+    for name in GROUP_NAMES:
+        if name not in existing:
+            item = props.group_highlight_colors.add()
+            item.name = name
+            item.color = _GROUP_DEFAULT_COLORS[name]
+
+
 class BIMSavedViewPlane(PropertyGroup):
     matrix: FloatVectorProperty(name="Matrix", size=16)
 
@@ -75,6 +115,18 @@ class BIMSavedView(PropertyGroup):
         planes: bpy.types.bpy_prop_collection_idprop[BIMSavedViewPlane]
 
 
+class BIMGroupColor(PropertyGroup):
+    color: FloatVectorProperty(
+        name="Color", subtype="COLOR", size=3, min=0.0, max=1.0,
+        default=(1.0, 1.0, 1.0), update=group_color_update,
+    )
+    show_highlight: BoolProperty(name="Show", default=True, update=group_show_update)
+
+    if TYPE_CHECKING:
+        color: tuple[float, float, float]
+        show_highlight: bool
+
+
 class ClashSource(PropertyGroup):
     name: StringProperty(
         name="File",
@@ -105,6 +157,7 @@ class Clash(PropertyGroup):
         name="Clash Type",
         items=tuple((i, i, "") for i in CLASH_TYPE_ITEMS),
     )
+    clash_pair: StringProperty(name="Pair", default="ab")
     status: BoolProperty(
         name="Status",
         description="Clash status, not stored anywhere - currently just displayed in UI for convenience.",
@@ -122,6 +175,7 @@ class Clash(PropertyGroup):
         a_name: str
         b_name: str
         clash_type: ClashType
+        clash_pair: str  # two-letter pair e.g. "ab", "ac", "dh"
         status: bool
         selected: bool
 
@@ -130,15 +184,6 @@ def clashes_loaded_update(self: "ClashSet", context: bpy.types.Context) -> None:
     if self.clashes_loaded:
         return
     tool.Clash.clear_active_clash_set_results()
-
-
-def highlight_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
-    from bonsai.bim.module.clash.decorator import ClashDecorator
-
-    ClashDecorator.show_a_highlight = self.show_a_highlight
-    ClashDecorator.show_b_highlight = self.show_b_highlight
-    ClashDecorator.show_c_highlight = self.show_c_highlight
-    tool.Blender.update_all_viewports(context)
 
 
 _DEFAULT_LINK_COLORS = [
@@ -263,6 +308,12 @@ class ClashSet(PropertyGroup):
     check_all: BoolProperty(name="Check All", default=False)
     a: CollectionProperty(name="Group A", type=ClashSource)
     b: CollectionProperty(name="Group B", type=ClashSource)
+    c: CollectionProperty(name="Group C", type=ClashSource)
+    d: CollectionProperty(name="Group D", type=ClashSource)
+    e: CollectionProperty(name="Group E", type=ClashSource)
+    f: CollectionProperty(name="Group F", type=ClashSource)
+    g: CollectionProperty(name="Group G", type=ClashSource)
+    h: CollectionProperty(name="Group H", type=ClashSource)
     clashes: CollectionProperty(name="Clashes", type=Clash)
     clashes_loaded: BoolProperty(
         name="Clash Results Are Loaded",
@@ -278,6 +329,12 @@ class ClashSet(PropertyGroup):
         check_all: bool
         a: bpy.types.bpy_prop_collection_idprop[ClashSource]
         b: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        c: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        d: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        e: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        f: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        g: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        h: bpy.types.bpy_prop_collection_idprop[ClashSource]
         clashes: bpy.types.bpy_prop_collection_idprop[Clash]
         clashes_loaded: bool
 
@@ -327,9 +384,8 @@ class BIMClashProperties(PropertyGroup):
     p2: FloatVectorProperty(name="P2", default=(0.0, 0.0, 0.0), subtype="XYZ")
     active_clash_text: StringProperty(name="Active Clash Text")
     last_selected_clash_index: IntProperty(name="Last Selected Clash Index", default=-1)
-    show_a_highlight: BoolProperty(name="Show A", default=True, update=highlight_visibility_update)
-    show_b_highlight: BoolProperty(name="Show B", default=True, update=highlight_visibility_update)
-    show_c_highlight: BoolProperty(name="Show Volume", default=True, update=highlight_visibility_update)
+    group_highlight_colors: CollectionProperty(name="Group Colors", type=BIMGroupColor)
+    show_volume_highlight: BoolProperty(name="Show Volume", default=True, update=volume_visibility_update)
     use_link_color_override: BoolProperty(
         name="Override Link Colors",
         description="Switch viewport to per-link solid colors to distinguish models during clash review",
@@ -361,10 +417,13 @@ class BIMClashProperties(PropertyGroup):
         active_clash_text: str
         show_a_highlight: bool
         show_b_highlight: bool
+        show_c_element_highlight: bool
         show_c_highlight: bool
         use_link_color_override: bool
         link_color_overrides: bpy.types.bpy_prop_collection_idprop[BIMLinkColorOverride]
         saved_views: bpy.types.bpy_prop_collection_idprop[BIMSavedView]
+        group_highlight_colors: bpy.types.bpy_prop_collection_idprop[BIMGroupColor]
+        show_volume_highlight: bool
         export_path: str
 
     @property

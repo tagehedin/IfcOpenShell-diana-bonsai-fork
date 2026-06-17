@@ -39,28 +39,28 @@ class Clash(bonsai.core.tool.Clash):
     def get_clash_props(cls) -> BIMClashProperties:
         return bpy.context.scene.BIMClashProperties
 
-    ClashSourceGroup = Literal["a", "b"]
-    CLASH_SOURCE_GROUP_LITERALS = ("a", "b")
+    ClashSourceGroup = Literal["a", "b", "c", "d", "e", "f", "g", "h"]
+    CLASH_SOURCE_GROUP_LITERALS = ("a", "b", "c", "d", "e", "f", "g", "h")
 
     @classmethod
     def export_clash_sets(cls) -> list[ifcclash.ClashSet]:
         clash_sets: list[ifcclash.ClashSet] = []
         props = cls.get_clash_props()
         for clash_set in props.clash_sets:
-            a: list[ClashSource] = []
-            b: list[ClashSource] = []
-            for ab, ab_data in clash_set.get_clash_sources().items():
-                for data in ab_data:
+            groups: dict[str, list[ClashSource]] = {g: [] for g in ("a", "b", "c", "d", "e", "f", "g", "h")}
+            for group, group_data in clash_set.get_clash_sources().items():
+                for data in group_data:
                     clash_source: ClashSource = {"file": bpy.path.abspath(data.name)}
                     query = tool.Search.export_filter_query(data.filter_groups)
                     if query and data.mode != "a":
                         clash_source["selector"] = query
                         clash_source["mode"] = data.mode
-                    if ab == "a":
-                        a.append(clash_source)
-                    elif ab == "b":
-                        b.append(clash_source)
-            clash_set_data = ifcclash.ClashSet(name=clash_set.name, mode=clash_set.mode, a=a, b=b)
+                    groups[group].append(clash_source)
+            clash_set_data = ifcclash.ClashSet(name=clash_set.name, mode=clash_set.mode,
+                                               a=groups["a"], b=groups["b"])
+            for g in ("c", "d", "e", "f", "g", "h"):
+                if groups[g]:
+                    clash_set_data[g] = groups[g]
             if clash_set.mode == "intersection":
                 clash_set_data["tolerance"] = clash_set.tolerance
                 clash_set_data["check_all"] = clash_set.check_all
@@ -109,6 +109,7 @@ class Clash(bonsai.core.tool.Clash):
             blender_clash.a_name = "{}/{}".format(clash["a_ifc_class"], clash["a_name"])
             blender_clash.b_name = "{}/{}".format(clash["b_ifc_class"], clash["b_name"])
             blender_clash.clash_type = clash["type"]
+            blender_clash.clash_pair = clash.get("pair", "ab")
             blender_clash.status = False if not "status" in clash else clash["status"]
         clash_set.clashes_loaded = True
 

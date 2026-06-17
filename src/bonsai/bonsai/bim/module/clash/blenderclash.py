@@ -430,38 +430,46 @@ class BlenderClasher:
         name = clash_set.get("name", "?")
         self._log(f"Processing clash set: {name}")
 
-        a_elements: list[_ElementGeom] = []
-        for src in clash_set.get("a", []):
-            a_elements.extend(self._collect_elements(src))
-
-        b_sources = clash_set.get("b", [])
-        if b_sources:
-            b_elements: list[_ElementGeom] = []
-            for src in b_sources:
-                b_elements.extend(self._collect_elements(src))
-            same_source = False
-        else:
-            b_elements = a_elements
-            same_source = True
-
         mode = clash_set.get("mode", "intersection")
         clearance = float(clash_set.get("clearance", 0.0)) if mode == "clearance" else 0.0
 
-        self._log(f"  {len(a_elements)} A elements, {len(b_elements)} B elements, mode={mode}")
+        # Collect elements for all non-empty groups
+        all_groups: dict[str, list[_ElementGeom]] = {}
+        for group in ("a", "b", "c", "d", "e", "f", "g", "h"):
+            sources = clash_set.get(group, [])
+            if not sources:
+                continue
+            elements: list[_ElementGeom] = []
+            for src in sources:
+                elements.extend(self._collect_elements(src))
+            if elements:
+                all_groups[group] = elements
+                self._log(f"  {len(elements)} {group.upper()} elements")
 
-        candidates = self._bbox_filter(a_elements, b_elements, clearance, same_source)
-        self._log(f"  {len(candidates)} candidates after AABB filter")
+        # If only A has sources, self-clash A vs A
+        group_list = list(all_groups.keys())
+        if len(group_list) == 1:
+            g = group_list[0]
+            all_groups["_self"] = all_groups[g]
+            group_list = [g, "_self"]
 
         results: dict = {}
-        for ai, bi in candidates:
-            a = a_elements[ai]
-            b = b_elements[bi]
-            clash = self._check_pair(a, b, mode, clearance)
-            if clash:
-                results[f"{a.guid}-{b.guid}"] = clash
+        for i, g1 in enumerate(group_list):
+            for g2 in group_list[i + 1:]:
+                pair_name = (g1 + g2).replace("_self", g1)
+                same = g1 == g2 or "_self" in (g1, g2)
+                elems1, elems2 = all_groups[g1], all_groups[g2]
+                candidates = self._bbox_filter(elems1, elems2, clearance, same)
+                self._log(f"  {len(candidates)} {g1.upper()}-{g2.upper()} candidates")
+                for ai, bi in candidates:
+                    a, b = elems1[ai], elems2[bi]
+                    clash = self._check_pair(a, b, mode, clearance)
+                    if clash:
+                        clash["pair"] = pair_name
+                        results[f"{a.guid}-{b.guid}"] = clash
 
         clash_set["clashes"] = results
-        self._log(f"  Found {len(results)} clashes")
+        self._log(f"  Found {len(results)} clashes total")
 
     # ------------------------------------------------------------------
     # AABB pre-filter (vectorised)

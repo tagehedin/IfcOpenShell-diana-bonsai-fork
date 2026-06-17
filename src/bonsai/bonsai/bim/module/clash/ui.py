@@ -91,8 +91,16 @@ class BIM_PT_ifcclash(Panel):
         else:
             assert_never(clash_set.mode)
 
+        from bonsai.bim.module.clash.prop import ensure_group_colors, GROUP_NAMES
+        ensure_group_colors(props)
+        color_map = {item.name: item for item in props.group_highlight_colors}
+
         def draw_clash_set_group(group: tool.Clash.ClashSourceGroup) -> None:
             row = layout.row(align=True)
+            if (color_item := color_map.get(group)):
+                icon = "HIDE_OFF" if color_item.show_highlight else "HIDE_ON"
+                row.prop(color_item, "show_highlight", text="", icon=icon, toggle=True)
+                row.prop(color_item, "color", text="")
             row.label(text=f"Group {group.upper()}:", icon="OUTLINER_OB_POINTCLOUD")
             row.operator("bim.add_clash_source_from_link", icon="LINKED", text="").group = group
             row.operator("bim.add_clash_source", icon="ADD", text="").group = group
@@ -141,19 +149,19 @@ class BIM_PT_ifcclash(Panel):
                     )
 
         layout.separator()
-        draw_clash_set_group("a")
-        layout.separator()
-        draw_clash_set_group("b")
-        layout.separator()
+        # Always show A and B; show each further group only if the previous has sources
+        last_filled = max(
+            (i for i, g in enumerate(GROUP_NAMES) if clash_set.get_clash_sources_group(g)),
+            default=1,
+        )
+        for group in GROUP_NAMES[: min(last_filled + 2, len(GROUP_NAMES))]:
+            draw_clash_set_group(group)
+            layout.separator()
 
         row = layout.row()
         row.prop(props, "should_create_clash_snapshots")
 
         layout.prop(props, "export_path")
-
-        row = layout.row()
-        op = row.operator("bim.execute_ifc_clash")
-        op.filepath = props.export_path
 
         row = layout.row()
         op = row.operator("bim.execute_blender_clash", icon="MESH_DATA")
@@ -193,12 +201,8 @@ class BIM_PT_ifcclash(Panel):
             op.move_camera = False
 
             row = layout.row(align=True)
-            icon_a = "HIDE_OFF" if props.show_a_highlight else "HIDE_ON"
-            icon_b = "HIDE_OFF" if props.show_b_highlight else "HIDE_ON"
-            icon_c = "HIDE_OFF" if props.show_c_highlight else "HIDE_ON"
-            row.prop(props, "show_a_highlight", text="Highlight A", icon=icon_a, toggle=True)
-            row.prop(props, "show_b_highlight", text="Highlight B", icon=icon_b, toggle=True)
-            row.prop(props, "show_c_highlight", text="Volume", icon=icon_c, toggle=True)
+            icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
+            row.prop(props, "show_volume_highlight", text="Intersection Volume", icon=icon_v, toggle=True)
 
             row = layout.row()
             row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")

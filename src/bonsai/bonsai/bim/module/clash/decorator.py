@@ -75,12 +75,11 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
 class ClashDecorator:
     is_installed = False
     handlers = []
-    a_highlights: list = []
-    b_highlights: list = []
-    c_highlights: list = []
-    show_a_highlight = True
-    show_b_highlight = True
-    show_c_highlight = True
+    group_highlights: dict = {}   # {"a": [highlight, ...], "b": [...], ...}
+    group_colors: dict = {}       # {"a": (r,g,b), ...}
+    show_groups: dict = {}        # {"a": True, ...}
+    c_highlights: list = []       # boolean intersection volumes
+    show_volume = True
     _batch_cache: dict = {}
 
     @classmethod
@@ -88,9 +87,11 @@ class ClashDecorator:
         if cls.is_installed:
             cls.uninstall()
         props = tool.Clash.get_clash_props()
-        cls.show_a_highlight = props.show_a_highlight
-        cls.show_b_highlight = props.show_b_highlight
-        cls.show_c_highlight = props.show_c_highlight
+        from bonsai.bim.module.clash.prop import ensure_group_colors
+        ensure_group_colors(props)
+        cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
+        cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
+        cls.show_volume = props.show_volume_highlight
         handler = cls()
         cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
         cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
@@ -104,13 +105,12 @@ class ClashDecorator:
             except ValueError:
                 pass
         cls.is_installed = False
-        cls.a_highlights = []
-        cls.b_highlights = []
+        cls.group_highlights = {}
         cls.c_highlights = []
         cls._batch_cache = {}
 
     @classmethod
-    def set_clash_objects(cls, a_list, b_list, intersections=None) -> None:
+    def set_clash_objects(cls, group_highlights_dict: dict, intersections=None) -> None:
         """Set the objects (or linked-element references) to highlight for one or more clashes.
 
         Each entry in ``a_list``/``b_list`` may be ``None``, a ``bpy.types.Object``
@@ -123,8 +123,10 @@ class ClashDecorator:
         clash's overlapping volume.
         """
         cls._batch_cache.clear()
-        cls.a_highlights = [h for a in a_list if (h := cls._normalize_highlight(a)) is not None]
-        cls.b_highlights = [h for b in b_list if (h := cls._normalize_highlight(b)) is not None]
+        cls.group_highlights = {
+            g: [h for x in highlights if (h := cls._normalize_highlight(x)) is not None]
+            for g, highlights in group_highlights_dict.items()
+        }
         cls.c_highlights = [g for g in (intersections or []) if g is not None]
 
     @staticmethod
@@ -281,13 +283,14 @@ class ClashDecorator:
         if selected_edges:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
 
-        if self.show_a_highlight:
-            for highlight in self.a_highlights:
-                self.draw_highlighted_object(highlight, selected_elements_color, clip_planes, clip_key)
-        if self.show_b_highlight:
-            for highlight in self.b_highlights:
-                self.draw_highlighted_object(highlight, (0.0, 0.4, 1.0, 0.15), clip_planes, clip_key)
-        if self.show_c_highlight:
+        for group, highlights in self.group_highlights.items():
+            if not self.show_groups.get(group, True):
+                continue
+            rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
+            color = (*rgb, 0.15)
+            for highlight in highlights:
+                self.draw_highlighted_object(highlight, color, clip_planes, clip_key)
+        if self.show_volume:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
             for i, raw_geometry in enumerate(self.c_highlights):
