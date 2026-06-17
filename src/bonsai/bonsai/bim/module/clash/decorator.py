@@ -27,6 +27,51 @@ from mathutils import Vector
 import bonsai.tool as tool
 
 
+def _clip_geometry(positions, triangle_indices, clip_planes):
+    """Clip triangles against half-spaces using Sutherland-Hodgman.
+
+    Each clip plane is (nx, ny, nz, d); the visible side is dot(pos, normal) + d >= 0.
+    Returns a new (positions, triangle_indices) pair where positions are plain tuples.
+    """
+    def _clip_poly(poly, plane):
+        nx, ny, nz, d = plane
+        out = []
+        n = len(poly)
+        for i in range(n):
+            c, nxt = poly[i], poly[(i + 1) % n]
+            dc = nx * c[0] + ny * c[1] + nz * c[2] + d
+            dn = nx * nxt[0] + ny * nxt[1] + nz * nxt[2] + d
+            if dc >= 0:
+                out.append(c)
+            if (dc >= 0) != (dn >= 0):
+                t = dc / (dc - dn)
+                out.append((c[0] + t * (nxt[0] - c[0]),
+                             c[1] + t * (nxt[1] - c[1]),
+                             c[2] + t * (nxt[2] - c[2])))
+        return out
+
+    out_pos = []
+    out_idx = []
+    pos_index = 0
+
+    for tri in triangle_indices:
+        poly = [(positions[i].x, positions[i].y, positions[i].z) if hasattr(positions[i], 'x')
+                else tuple(positions[i]) for i in tri]
+        for plane in clip_planes:
+            poly = _clip_poly(poly, plane)
+            if not poly:
+                break
+        if len(poly) < 3:
+            continue
+        base = pos_index
+        out_pos.extend(poly)
+        for j in range(1, len(poly) - 1):
+            out_idx.append((base, base + j, base + j + 1))
+        pos_index += len(poly)
+
+    return out_pos, out_idx
+
+
 class ClashDecorator:
     is_installed = False
     handlers = []
@@ -138,6 +183,14 @@ class ClashDecorator:
 
         return positions, triangle_indices
 
+    def _draw_tris_direct(self, positions, triangle_indices, color):
+        """Draw filled triangles without caching (used when geometry is pre-clipped)."""
+        if not positions or not triangle_indices:
+            return
+        batch = batch_for_shader(self.shader, "TRIS", {"pos": positions}, indices=triangle_indices)
+        self.shader.uniform_float("color", color)
+        batch.draw(self.shader)
+
     def _draw_tris_cached(self, key, geometry, color):
         """Draw filled triangles for key, building and caching the GPUBatch on first call."""
         if key not in ClashDecorator._batch_cache:
@@ -156,9 +209,15 @@ class ClashDecorator:
             self.shader.uniform_float("color", color)
             batch.draw(self.shader)
 
-    def draw_highlighted_object(self, highlight, color):
-        key = highlight
-        geometry = None if key in ClashDecorator._batch_cache else self.resolve_highlight_geometry(highlight)
+    def draw_highlighted_object(self, highlight, color, clip_planes=None, clip_key=()):
+        key = (highlight, clip_key)
+        if key not in ClashDecorator._batch_cache:
+            geometry = self.resolve_highlight_geometry(highlight)
+            if clip_planes and geometry:
+                positions, triangle_indices = _clip_geometry(geometry[0], geometry[1], clip_planes)
+                geometry = (positions, triangle_indices) if positions else None
+        else:
+            geometry = None
         self._draw_tris_cached(key, geometry, [*color[:3], 0.15])
 
     def draw_text(self, context):
@@ -191,6 +250,18 @@ class ClashDecorator:
         gpu.state.point_size_set(6)
         gpu.state.blend_set("ALPHA")
 
+        region_data = context.region_data
+        clip_planes = None
+        if region_data and region_data.use_clip_planes:
+            # Deduplicate: Bonsai cycles one plane into all 6 slots
+            seen, clip_planes = set(), []
+            for p in region_data.clip_planes:
+                t = tuple(round(v, 6) for v in p)
+                if t not in seen:
+                    seen.add(t)
+                    clip_planes.append(tuple(p))
+        clip_key = tuple(v for plane in clip_planes for v in plane) if clip_planes else ()
+
         self.line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
         self.line_shader.bind()  # required to be able to change uniforms of the shader
         # POLYLINE_UNIFORM_COLOR specific uniforms
@@ -212,13 +283,19 @@ class ClashDecorator:
 
         if self.show_a_highlight:
             for highlight in self.a_highlights:
-                self.draw_highlighted_object(highlight, selected_elements_color)
+                self.draw_highlighted_object(highlight, selected_elements_color, clip_planes, clip_key)
         if self.show_b_highlight:
             for highlight in self.b_highlights:
-                self.draw_highlighted_object(highlight, (0.0, 0.4, 1.0, 0.15))
+                self.draw_highlighted_object(highlight, (0.0, 0.4, 1.0, 0.15), clip_planes, clip_key)
         if self.show_c_highlight:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
-            for i, geometry in enumerate(self.c_highlights):
-                self._draw_tris_cached(("__c__", i), geometry, (1.0, 0.1, 0.1, 0.4))
+            for i, raw_geometry in enumerate(self.c_highlights):
+                key = (("__c__", i), clip_key)
+                if key not in ClashDecorator._batch_cache:
+                    draw_geom = (_clip_geometry(raw_geometry[0], raw_geometry[1], clip_planes)
+                                 if clip_planes else raw_geometry)
+                    self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
+                else:
+                    self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
             gpu.state.depth_test_set(previous_depth_test)
