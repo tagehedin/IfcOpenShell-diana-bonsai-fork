@@ -1,0 +1,143 @@
+Bonsai 0.8.6-alpha2606181400 (diana-bonsai-fork)
+=================================================
+
+Incremental Python overlay on top of 260617 base.
+Commits: a5d263f6d
+
+Fixed: clash module register() crash (_RestrictData / bpy.data.scenes
+accessed during restricted registration context). This broke
+BIM_ADDON_preferences, icon loading, and all IFC project creation.
+
+Fixed: bim/ui.py UIData.load() icons=None crash loop on file open.
+Fixed: tool/blender.py are_viewport_gizmos_enabled() None guard.
+
+New: terminal progress output during BlenderClash execution:
+  Group A: N elements / Group B: N elements
+  AB: N candidates → BVH check...
+  → N clashes found in Xs
+
+New: "Close Clash View" button next to "Activate Clash" and
+"Activate Smart Group" — exits clash decorator and returns to normal
+Blender viewport state.
+
+Bonsai 0.8.6-alpha260617 (diana-bonsai-fork)
+=============================================
+
+Incremental Python overlay on top of 260615 full build.
+Commits: c2d8e3c98, 5e2a14057
+
+New: BlenderClash (ifcclash2) — BVH-based clash detection using
+already-loaded linked model meshes. No re-reading or re-tessellating
+IFC files on every run.
+
+- New "Execute Blender Clash" button in the Clash panel (below "Execute
+  IFC Clash"). ALT+click for quick run without file-save dialog.
+- Reads IFC class/name from .ifc.cache.sqlite (56ms) vs ifcopenshell.open (15s).
+- AABB pre-filter: 5883 × 20994 = 123M pairs in ~1s via axis-separated
+  numpy (4× faster than previous (N,B,3) broadcast approach).
+- BVH overlap check: 2080 candidates → 245 clashes in 0.8s.
+- Total: ~6s for V-57 vs VS-50 (26877 elements across both models).
+- Output format identical to ifcclash → existing clash list, decorator,
+  smart grouping, and JSON export all work unchanged.
+- Clearance mode also supported.
+
+Also fixed: clash source file paths were stored/used without bpy.path.abspath
+(stale pyc bug from previous session); now always resolved to absolute paths.
+
+Also fixed: LinkIfc default use_relative_path changed False→True so new
+linked IFC models are stored with relative paths by default.
+
+Bonsai 0.8.6-alpha260615 (diana-bonsai-fork)
+=============================================
+
+Full rebuild, based on official upstream daily build
+bonsai-0.8.6-alpha2606121908 (matches the fork's merge-base with
+upstream/v0.8.0 exactly - no C++ rebuild drift), patched with all
+fork-specific changes since that merge-base.
+
+New since 0.8.6-alpha260613:
+
+- 2D plan representations for linked IFC projects: link caches now bake
+  both 3D bodies and Plan/Body or Plan/Facetation 2D footprints.
+  Elements with a real 2D footprint get a parallel "(3D for 2D)"/"(2D)"
+  collection pair that auto-swaps when a Plan-view drawing is
+  activated/deactivated; elements without a 2D footprint (e.g. walls,
+  which only have a Plan/Axis centreline) stay visible as before.
+- Fixed 2D bakes of curve-only Plan/Body representations producing
+  disconnected point clouds (now carry proper edge connectivity).
+- Fixed a NameError crash in the linked-project geometry baking pass.
+
+Also merges further upstream/v0.8.0 changes brought in via the
+36b9b977e merge, including updates to the example programs and core
+IFC parsing (IfcSpfHeader, geometry mapping).
+
+Previously (0.8.6-alpha260613):
+
+- Fixed ActivateModel re-importing type-mapped representations on every
+  call (29s -> <1s on large models with type-instanced elements).
+
+Bonsai 0.8.6-alpha260611 (diana-bonsai-fork)
+=============================================
+
+Built from official upstream daily build bonsai_py313-0.8.6-alpha260611,
+patched with the following fork-specific changes:
+
+New since 0.8.6-alpha260610:
+
+- Fixed deleting representation items that belong to an
+  IfcGeometricSet/IfcGeometricCurveSet (e.g. annotation curves) -
+  previously could leave a dangling reference or fail.
+
+- New "Generate 2D Plan Representations" operator (Geometry & Materials
+  > Representations panel): creates a Plan/Body/PLAN_VIEW representation
+  for selected objects from their 3D geometry, via a bounding box or
+  traced outline. Useful for elements imported from other software that
+  only carry 3D representations.
+
+- Cross-file paste (Ctrl+V) fixes:
+  - Fixed stale entity references after append_asset's reuse_identities
+    pass merges/drops duplicates mid-paste.
+  - Fixed paste creating up to 4 Blender objects per pasted element (3
+    of them orphaned) due to the multiprocessing geometry iterator
+    yielding duplicate shapes.
+  - Paste-at-cursor now translates the whole pasted group by the offset
+    from its centroid to the cursor, instead of collapsing every pasted
+    object onto the cursor position.
+  - Duplicate representation contexts created by append_asset are now
+    remapped instead of removed, avoiding crashes in
+    ifcopenshell.geom.iterator from corrupted inverse indices.
+
+Also merges 39 commits from upstream/v0.8.0, including:
+- MEP pipe/duct segment edit gizmos and bend preview (PR
+  bonsai/mep-edit-gizmos)
+- Pending-opening-cuts banner backport
+- Door/window container assignment fix (#8138)
+- Decomposition error guard (#8149)
+- IFC2X3 HasShapeAspects guard
+- Partial-state rollback on execute_ifc_operator
+
+Previously (0.8.6-alpha260610):
+
+- IFC copy/paste (Ctrl+C / Ctrl+V, Ctrl+Shift+V to paste at cursor):
+  cross-file paste of elements including openings, fillings, and
+  aggregate parts; container preserved by name; batch import with
+  progress feedback; schema-mismatch guard.
+
+- Fixed pasted elements losing their IfcSurfaceStyle when the style is
+  attached directly via IfcStyledItem (common in Revit/Tekla exports),
+  including styles wrapped in the legacy IfcPresentationStyleAssignment.
+
+- Paste no longer creates duplicate "Model"/"Plan" representation
+  contexts; existing files can be cleaned up with the new "Merge
+  Duplicate Contexts" button in Geometry & Materials > Representations.
+
+- New IfcMaterial picker: eyedropper button in the Materials panel
+  (Scene > Geometry & Materials > Materials) - click any object in the
+  3D viewport to jump to its assigned material in the list.
+
+- "Assign to Selected" button in Spatial Decomposition panel - reassign
+  container without moving objects.
+
+Also includes upstream's parametric wall framework (wall gizmos, fillet
+corners, array edit lifecycle, door/window/stair menu-pick gizmos) merged
+from upstream/v0.8.0 PR #8148.
