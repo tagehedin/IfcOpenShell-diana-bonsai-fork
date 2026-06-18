@@ -21,13 +21,31 @@
         "clipboard": "Copy and paste energy logs"
       },
       "tags": [
-        "3D View", "Add Mesh", "Animation", "Camera", "Development",
-        "Import-Export", "Lighting", "Material", "Modeling", "Mesh",
-        "Node", "Object", "Pipeline", "Render", "Scene", "System",
-        "User Interface", "UV"
+        "3D View",
+        "Add Mesh",
+        "Animation",
+        "Camera",
+        "Development",
+        "Import-Export",
+        "Lighting",
+        "Material",
+        "Modeling",
+        "Mesh",
+        "Node",
+        "Object",
+        "Pipeline",
+        "Render",
+        "Scene",
+        "System",
+        "User Interface",
+        "UV"
       ],
-      "platforms": ["linux-x64"],
-      "python_versions": ["3.13"],
+      "platforms": [
+        "linux-x64"
+      ],
+      "python_versions": [
+        "3.13"
+      ],
       "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181400/bonsai_py313-0.8.6-alpha2606181400-linux-x64.zip",
       "archive_size": 161850621,
       "archive_hash": "sha256:7406d49a23661ab9704a9d14bc00ff0379e3b756e6a66ed544f3049c665d278f"
@@ -51,13 +69,31 @@
         "clipboard": "Copy and paste energy logs"
       },
       "tags": [
-        "3D View", "Add Mesh", "Animation", "Camera", "Development",
-        "Import-Export", "Lighting", "Material", "Modeling", "Mesh",
-        "Node", "Object", "Pipeline", "Render", "Scene", "System",
-        "User Interface", "UV"
+        "3D View",
+        "Add Mesh",
+        "Animation",
+        "Camera",
+        "Development",
+        "Import-Export",
+        "Lighting",
+        "Material",
+        "Modeling",
+        "Mesh",
+        "Node",
+        "Object",
+        "Pipeline",
+        "Render",
+        "Scene",
+        "System",
+        "User Interface",
+        "UV"
       ],
-      "platforms": ["macos-arm64"],
-      "python_versions": ["3.13"],
+      "platforms": [
+        "macos-arm64"
+      ],
+      "python_versions": [
+        "3.13"
+      ],
       "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181400/bonsai_py313-0.8.6-alpha2606181400-macos-arm64.zip",
       "archive_size": 146091837,
       "archive_hash": "sha256:3cd5f41e2df531632891c33ef4b30e33876f81bb779092a36b28ec624b0de0b9"
@@ -81,16 +117,34 @@
         "clipboard": "Copy and paste energy logs"
       },
       "tags": [
-        "3D View", "Add Mesh", "Animation", "Camera", "Development",
-        "Import-Export", "Lighting", "Material", "Modeling", "Mesh",
-        "Node", "Object", "Pipeline", "Render", "Scene", "System",
-        "User Interface", "UV"
+        "3D View",
+        "Add Mesh",
+        "Animation",
+        "Camera",
+        "Development",
+        "Import-Export",
+        "Lighting",
+        "Material",
+        "Modeling",
+        "Mesh",
+        "Node",
+        "Object",
+        "Pipeline",
+        "Render",
+        "Scene",
+        "System",
+        "User Interface",
+        "UV"
       ],
-      "platforms": ["windows-x64"],
-      "python_versions": ["3.13"],
+      "platforms": [
+        "windows-x64"
+      ],
+      "python_versions": [
+        "3.13"
+      ],
       "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181400/bonsai_py313-0.8.6-alpha2606181400-windows-x64.zip",
-      "archive_size": 123627060,
-      "archive_hash": "sha256:feecde71952484d325d2d051b28c73857c085ce757d8affb7229e750de2770e9"
+      "archive_size": 112479903,
+      "archive_hash": "sha256:867d4ac74e515c4b1fa08dc23269bd063d2ba336d737b40a898fdaa5d7c517a8"
     }
   ]
 }
