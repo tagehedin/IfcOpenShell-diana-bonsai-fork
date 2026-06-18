@@ -91,8 +91,7 @@ class BIM_PT_ifcclash(Panel):
         else:
             assert_never(clash_set.mode)
 
-        from bonsai.bim.module.clash.prop import ensure_group_colors, GROUP_NAMES
-        ensure_group_colors(props)
+        from bonsai.bim.module.clash.prop import GROUP_NAMES
         color_map = {item.name: item for item in props.group_highlight_colors}
 
         def draw_clash_set_group(group: tool.Clash.ClashSourceGroup) -> None:
@@ -195,10 +194,10 @@ class BIM_PT_ifcclash(Panel):
             layout.template_list("BIM_UL_clashes", "", props.active_clash_set, "clashes", props, "active_clash_index")
             row = layout.row()
             row.operator("bim.select_clash", text="Move to Clash", icon="CAMERA_DATA")
-            row.operator("bim.hide_clash", text="", icon="HIDE_ON")
             row = layout.row()
             op = row.operator("bim.select_clash", text="Activate Clash", icon="RESTRICT_SELECT_OFF")
             op.move_camera = False
+            row.operator("bim.hide_clash", text="Close Clash View")
 
             row = layout.row(align=True)
             icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
@@ -277,6 +276,7 @@ class BIM_PT_smart_clash_manager(Panel):
         row = layout.row(align=True)
         op = row.operator("bim.select_smart_group", text="Activate Smart Group", icon="RESTRICT_SELECT_OFF")
         op.move_camera = False
+        row.operator("bim.hide_clash", text="Close Clash View")
 
 
 class BIM_UL_clash_sets(bpy.types.UIList):

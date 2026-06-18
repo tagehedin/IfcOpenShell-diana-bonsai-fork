@@ -1720,6 +1720,9 @@ class UIData:
 
     @classmethod
     def load(cls):
+        import bonsai.bim as _bim
+        if not _bim.icons:
+            return
         cls.data = {
             "version": cls.version(),
             "menu_icon_color_mode": cls.icon_color_mode("user_interface.wcol_menu.text"),

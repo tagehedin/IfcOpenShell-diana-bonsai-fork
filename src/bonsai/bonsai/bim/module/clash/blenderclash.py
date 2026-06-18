@@ -427,10 +427,12 @@ class BlenderClasher:
     # ------------------------------------------------------------------
 
     def _process_clash_set(self, clash_set: dict) -> None:
+        import time
+        t0 = time.perf_counter()
         name = clash_set.get("name", "?")
-        self._log(f"Processing clash set: {name}")
-
         mode = clash_set.get("mode", "intersection")
+        self._log(f"BlenderClash: '{name}' ({mode})")
+
         clearance = float(clash_set.get("clearance", 0.0)) if mode == "clearance" else 0.0
 
         # Collect elements for all non-empty groups
@@ -444,7 +446,7 @@ class BlenderClasher:
                 elements.extend(self._collect_elements(src))
             if elements:
                 all_groups[group] = elements
-                self._log(f"  {len(elements)} {group.upper()} elements")
+                self._log(f"  Group {group.upper()}: {len(elements)} elements")
 
         # If only A has sources, self-clash A vs A
         group_list = list(all_groups.keys())
@@ -460,7 +462,8 @@ class BlenderClasher:
                 same = g1 == g2 or "_self" in (g1, g2)
                 elems1, elems2 = all_groups[g1], all_groups[g2]
                 candidates = self._bbox_filter(elems1, elems2, clearance, same)
-                self._log(f"  {len(candidates)} {g1.upper()}-{g2.upper()} candidates")
+                label = pair_name.upper().replace("_SELF", g1.upper())
+                self._log(f"  {label}: {len(candidates)} candidates → BVH check...")
                 for ai, bi in candidates:
                     a, b = elems1[ai], elems2[bi]
                     clash = self._check_pair(a, b, mode, clearance)
@@ -469,7 +472,8 @@ class BlenderClasher:
                         results[f"{a.guid}-{b.guid}"] = clash
 
         clash_set["clashes"] = results
-        self._log(f"  Found {len(results)} clashes total")
+        elapsed = time.perf_counter() - t0
+        self._log(f"  → {len(results)} clashes found in {elapsed:.1f}s")
 
     # ------------------------------------------------------------------
     # AABB pre-filter (vectorised)

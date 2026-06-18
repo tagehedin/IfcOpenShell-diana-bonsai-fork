@@ -441,7 +441,10 @@ class Blender(bonsai.core.tool.Blender):
         """Central gate every Bonsai gizmo poll / decorator draw checks before
         rendering. Centralises the read of
         ``gizmos.draw_gizmos_in_3d_viewport`` from addon preferences."""
-        return cls.get_addon_preferences().gizmos.draw_gizmos_in_3d_viewport
+        prefs = cls.get_addon_preferences()
+        if prefs is None:
+            return True
+        return prefs.gizmos.draw_gizmos_in_3d_viewport
 
     class DecoratorColors(NamedTuple):
         selected: tuple

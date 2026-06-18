@@ -132,9 +132,11 @@ class AddClashSet(bpy.types.Operator):
     bl_description = "Add a clash set"
 
     def execute(self, context):
+        from bonsai.bim.module.clash.prop import ensure_group_colors
         props = tool.Clash.get_clash_props()
         new = props.clash_sets.add()
         new.name = "New Clash Set"
+        ensure_group_colors(props)
         return {"FINISHED"}
 
 
@@ -711,6 +713,8 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
         settings.output = self.filepath
         settings.logger = logging.getLogger("BlenderClash")
         settings.logger.setLevel(logging.DEBUG)
+        if not settings.logger.handlers:
+            settings.logger.addHandler(logging.StreamHandler())
 
         clasher = BlenderClasher()
         clasher.settings = settings

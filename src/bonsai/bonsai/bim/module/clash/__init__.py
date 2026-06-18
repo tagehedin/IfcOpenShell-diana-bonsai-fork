@@ -17,8 +17,39 @@
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
+from bpy.app.handlers import persistent
 
 from . import operator, prop, ui
+
+
+@persistent
+def _init_group_colors(dummy=None):
+    from bonsai.bim.module.clash.prop import ensure_group_colors
+    try:
+        scenes = bpy.data.scenes
+    except AttributeError:
+        return  # restricted context during register(), skip
+    for scene in scenes:
+        if hasattr(scene, "BIMClashProperties"):
+            ensure_group_colors(scene.BIMClashProperties)
+
+
+@persistent
+def _reload_icons_if_needed(dummy=None):
+    import bonsai.bim as bim_mod
+    if bim_mod.icons is not None:
+        return
+    import os
+    icons_dir = os.path.join(os.path.dirname(bim_mod.__file__), "data", "icons")
+    if not os.path.exists(icons_dir):
+        return
+    ip = bpy.utils.previews.new()
+    for fn in os.listdir(icons_dir):
+        if fn.endswith(".png"):
+            ip.load(os.path.splitext(fn)[0], os.path.join(icons_dir, fn), "IMAGE")
+    bim_mod.icons = ip
+    if hasattr(bim_mod, "UIData"):
+        bim_mod.UIData.is_loaded = False
 
 classes = (
     operator.AddClashSet,
@@ -65,8 +96,16 @@ classes = (
 
 def register():
     bpy.types.Scene.BIMClashProperties = bpy.props.PointerProperty(type=prop.BIMClashProperties)
+    bpy.app.handlers.load_post.append(_init_group_colors)
+    bpy.app.handlers.load_post.append(_reload_icons_if_needed)
+    _init_group_colors()
+    _reload_icons_if_needed()
 
 
 def unregister():
     operator.free_preview_collections()
+    if _init_group_colors in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_init_group_colors)
+    if _reload_icons_if_needed in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_reload_icons_if_needed)
     del bpy.types.Scene.BIMClashProperties
