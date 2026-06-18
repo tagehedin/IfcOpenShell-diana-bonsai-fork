@@ -56,8 +56,8 @@ class Clash(bonsai.core.tool.Clash):
                         clash_source["selector"] = query
                         clash_source["mode"] = data.mode
                     groups[group].append(clash_source)
-            clash_set_data = ifcclash.ClashSet(name=clash_set.name, mode=clash_set.mode,
-                                               a=groups["a"], b=groups["b"])
+            clash_set_data: dict = {"name": clash_set.name, "mode": clash_set.mode,
+                                    "a": groups["a"], "b": groups["b"]}
             for g in ("c", "d", "e", "f", "g", "h"):
                 if groups[g]:
                     clash_set_data[g] = groups[g]
@@ -69,7 +69,7 @@ class Clash(bonsai.core.tool.Clash):
             elif clash_set.mode == "clearance":
                 clash_set_data["clearance"] = clash_set.clearance
                 clash_set_data["check_all"] = clash_set.check_all
-            clash_sets.append(ifcclash.ClashSet(**clash_set_data))
+            clash_sets.append(clash_set_data)
         return clash_sets
 
     @classmethod
