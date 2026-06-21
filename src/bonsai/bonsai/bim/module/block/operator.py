@@ -580,10 +580,11 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
         axis: str
 
     def _execute(self, context):
-        import math
+        import math, bmesh
         from mathutils import Matrix, Vector
 
         axis_idx = 0 if self.axis == "X" else 1
+        ifc = tool.Ifc.get()
 
         # Collect instance anchors from selected objects
         anchors: list[bpy.types.Object] = []
@@ -601,15 +602,16 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
         mirrored = 0
         for anchor in anchors:
             # Build Householder reflection matrix in world space.
-            # Mirror X → reflect across the anchor's YZ plane (normal = anchor local X = col[0]).
-            # Mirror Y → reflect across the anchor's XZ plane (normal = anchor local Y = col[1]).
-            # M = I − 2·(n⊗n)  where n is the unit normal of the mirror plane.
+            # Mirror X → normal = anchor local X (col[0]), plane through anchor position.
+            # Mirror Y → normal = anchor local Y (col[1]), plane through anchor position.
+            # M = I − 2·(n⊗n)
             n = Vector(anchor.matrix_world.col[axis_idx][:3]).normalized()
             mirror_3x3 = Matrix.Identity(3)
             for i in range(3):
                 for j in range(3):
                     mirror_3x3[i][j] -= 2.0 * n[i] * n[j]
 
+            anchor_pos = anchor.matrix_world.col[3].xyz
             context.view_layer.update()
             anchor_inv = anchor.matrix_world.inverted()
             anchor_world_rot_z = math.atan2(
@@ -620,17 +622,16 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
                 if member.parent != anchor or member.get("bim_block_role") != "member":
                     continue
 
-                # 1. Reflect the member's world position across the mirror plane.
+                # 1. Reflect world position through the anchor (not world origin).
                 world_pos = member.matrix_world.col[3].xyz
-                new_world_pos = mirror_3x3 @ world_pos
+                new_world_pos = mirror_3x3 @ (world_pos - anchor_pos) + anchor_pos
 
-                # 2. Reflect the member's facing direction (local X axis in world).
-                # The new world rotation Z angle comes from where the reflected X axis points.
+                # 2. Reflect facing direction (direction vector — no translation offset).
                 world_x = Vector(member.matrix_world.col[0][:3])
                 new_world_x = mirror_3x3 @ world_x
                 new_world_rot_z = math.atan2(new_world_x.y, new_world_x.x)
 
-                # 3. Convert reflected world values to anchor-local (Identity mpi parenting).
+                # 3. Convert to anchor-local (Identity mpi parenting).
                 new_local_4d = anchor_inv @ new_world_pos.to_4d()
                 new_local_pos = Vector(new_local_4d[:3])
                 new_local_rot_z = new_world_rot_z - anchor_world_rot_z
@@ -639,8 +640,28 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
                 member.rotation_euler.z = new_local_rot_z
                 member["bim_block_offset"] = list(new_local_pos)
 
-                # 4. Update IFC ObjectPlacement via Surveyor (correct unit scale).
                 element = tool.Ifc.get_entity(member)
+
+                # 4. Flip IFC body geometry Y coordinates and Blender mesh Y vertices.
+                #    The rotation reflection alone leaves the local Y axis pointing the
+                #    wrong way (interior/exterior swapped for walls, facing wrong way for
+                #    furniture). Negating Y in object-local space corrects this for all
+                #    element types.
+                if element:
+                    _mirror_ifc_body(element, 1, ifc)
+                if member.data and hasattr(member.data, "vertices"):
+                    if member.data.users > 1:
+                        member.data = member.data.copy()
+                    bm = bmesh.new()
+                    bm.from_mesh(member.data)
+                    for v in bm.verts:
+                        v.co.y *= -1
+                    bmesh.ops.reverse_faces(bm, faces=bm.faces)
+                    bm.to_mesh(member.data)
+                    bm.free()
+                    member.data.update()
+
+                # 5. Update IFC ObjectPlacement.
                 if element:
                     context.view_layer.update()
                     bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=member)
