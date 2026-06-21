@@ -197,6 +197,8 @@ class AggregateDecorator:
                 if index > 0:
                     aggregate = aggregates_list[index - 1]
             else:
+                if not aggregates_list:
+                    continue
                 aggregate = aggregates_list[-1]
             if aggregate:
                 aggregates.append(tool.Ifc.get_object(aggregate))

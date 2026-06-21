@@ -944,10 +944,18 @@ class GetWallLength(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _get_block_anchor_ifc_children(anchor_obj: bpy.types.Object) -> list[bpy.types.Object]:
+    """Return all direct IFC children of a block anchor empty."""
+    return [
+        child for child in bpy.data.objects
+        if child.parent == anchor_obj and tool.Ifc.get_entity(child)
+    ]
+
+
 class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.change_wall_storey"
     bl_label = "Change Wall Storey"
-    bl_description = "Move all selected walls to a different storey, preserving each wall's vertical offset from its current storey"
+    bl_description = "Move all selected walls (or block anchors) to a different storey, preserving vertical offset"
     bl_options = {"REGISTER", "UNDO"}
     storey_id: bpy.props.IntProperty()
 
@@ -963,23 +971,69 @@ class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
         import bonsai.core.spatial as spatial_core
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
         new_storey_z = ifcopenshell.util.placement.get_storey_elevation(new_storey) * unit_scale
-        for obj in tool.Model.get_selected_mesh_ifc_objects():
+
+        # Separate regular IFC objects from block anchors in selection
+        block_anchors: list[bpy.types.Object] = []
+        regular_objs: list[bpy.types.Object] = []
+        for obj in context.selected_objects:
+            if obj.get("bim_block_role") in ("instance", "definition_anchor"):
+                block_anchors.append(obj)
+            elif tool.Ifc.get_entity(obj):
+                regular_objs.append(obj)
+
+        # Process regular IFC objects (original behaviour)
+        for obj in regular_objs:
             element = tool.Ifc.get_entity(obj)
             if not element:
                 continue
             current_container = ifcopenshell.util.element.get_container(element)
             current_z = ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale \
                 if current_container and current_container.is_a("IfcBuildingStorey") else 0.0
-            offset = obj.location.z - current_z
+            world_z = obj.matrix_world.translation.z
+            offset = world_z - current_z
             spatial_core.assign_container(tool.Ifc, tool.Collector, tool.Spatial, container=new_storey, objs=[obj])
-            obj.location.z = new_storey_z + offset
+            desired_world_z = new_storey_z + offset
+            if obj.parent:
+                desired_world = obj.matrix_world.copy()
+                desired_world.translation.z = desired_world_z
+                new_local = (obj.parent.matrix_world @ obj.matrix_parent_inverse).inverted() @ desired_world
+                obj.location.z = new_local.translation.z
+            else:
+                obj.location.z = desired_world_z
             bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
+
+        # Process block anchors: move anchor Z, then update all IFC children
+        for anchor in block_anchors:
+            children = _get_block_anchor_ifc_children(anchor)
+            if not children:
+                continue
+
+            # Determine current storey elevation from first child's container
+            first_elem = tool.Ifc.get_entity(children[0])
+            current_container = ifcopenshell.util.element.get_container(first_elem) if first_elem else None
+            current_storey_z = ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale \
+                if current_container and current_container.is_a("IfcBuildingStorey") else 0.0
+
+            # Move anchor so it keeps its offset from the old storey
+            anchor_offset = anchor.matrix_world.translation.z - current_storey_z
+            anchor.location.z = new_storey_z + anchor_offset
+            context.view_layer.update()
+
+            # Update each IFC child: reassign container + update IFC placement
+            for child in children:
+                element = tool.Ifc.get_entity(child)
+                if not element:
+                    continue
+                spatial_core.assign_container(
+                    tool.Ifc, tool.Collector, tool.Spatial, container=new_storey, objs=[child]
+                )
+                bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=child)
 
 
 class GetElementStorey(bpy.types.Operator):
     bl_idname = "bim.get_element_storey"
     bl_label = "Get Value"
-    bl_description = "Read the storey of the active object, update the dropdown and set it as the default container"
+    bl_description = "Read the storey of the active object (or block anchor), update the dropdown"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -987,6 +1041,12 @@ class GetElementStorey(bpy.types.Operator):
         if not obj:
             return {"CANCELLED"}
         element = tool.Ifc.get_entity(obj)
+        # If active object is a block anchor, read storey from first IFC child
+        if not element and obj.get("bim_block_role") in ("instance", "definition_anchor"):
+            for child in _get_block_anchor_ifc_children(obj):
+                element = tool.Ifc.get_entity(child)
+                if element:
+                    break
         if not element:
             return {"CANCELLED"}
         container = ifcopenshell.util.element.get_container(element)
@@ -1015,7 +1075,9 @@ class GetWallOffset(bpy.types.Operator):
             return {"CANCELLED"}
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
         storey_z = ifcopenshell.util.placement.get_storey_elevation(container) * unit_scale
-        tool.Model.get_model_props().wall_offset_from_level = obj.location.z - storey_z
+        # Use world Z — obj.location.z is local for parented block members
+        world_z = obj.matrix_world.translation.z
+        tool.Model.get_model_props().wall_offset_from_level = world_z - storey_z
         return {"FINISHED"}
 
 
@@ -1037,7 +1099,16 @@ class ChangeWallOffset(bpy.types.Operator, tool.Ifc.Operator):
             if not container or not container.is_a("IfcBuildingStorey"):
                 continue
             storey_z = ifcopenshell.util.placement.get_storey_elevation(container) * unit_scale
-            obj.location.z = storey_z + new_offset
+            desired_world_z = storey_z + new_offset
+            if obj.parent:
+                # Compute the local Z that produces the desired world Z.
+                # Build a world matrix with only Z changed, then decompose to local.
+                desired_world = obj.matrix_world.copy()
+                desired_world.translation.z = desired_world_z
+                new_local = (obj.parent.matrix_world @ obj.matrix_parent_inverse).inverted() @ desired_world
+                obj.location.z = new_local.translation.z
+            else:
+                obj.location.z = desired_world_z
             bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=obj)
 
 

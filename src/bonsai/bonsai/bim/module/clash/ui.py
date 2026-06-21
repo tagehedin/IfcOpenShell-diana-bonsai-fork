@@ -316,11 +316,18 @@ class BIM_UL_smart_groups(bpy.types.UIList):
 class BIM_PT_saved_clash_views(Panel):
     bl_label = "Saved Views"
     bl_idname = "BIM_PT_saved_clash_views"
-    bl_parent_id = "BIM_PT_ifcclash"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
+    bl_order = 11
     bl_options = {"DEFAULT_CLOSED"}
+    bim_tab_name = "QUALITY"
+
+    @classmethod
+    def poll(cls, context):
+        import bonsai.tool as tool
+        if tool.Blender.should_show_panel(context, cls.bim_tab_name, cls.bl_idname):
+            return True
 
     def draw(self, context):
         from bonsai.bim.module.clash.operator import get_saved_view_icon_id

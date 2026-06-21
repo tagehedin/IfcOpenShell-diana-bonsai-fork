@@ -47,7 +47,9 @@ def copy_class(
     relating_type = root.get_element_type(new)
     if relating_type and root.does_type_have_representations(relating_type):
         ifc.run("type.map_type_representations", related_object=new, relating_type=relating_type)
-        root.link_object_data(ifc.get_object(relating_type), obj)
+        type_obj = ifc.get_object(relating_type)
+        if type_obj:
+            root.link_object_data(type_obj, obj)
     elif representation:
         copied_entities = root.copy_representation(element, new)
         data = geometry.duplicate_object_data(obj)

@@ -1102,6 +1102,7 @@ class BIM_PT_tab_collaboration(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
+    bl_order = 12
     bim_tab_name = "QUALITY"
 
     @classmethod
@@ -1349,6 +1350,7 @@ class BIM_PT_tab_clash_detection(Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
+    bl_order = 10
     bim_tab_name = "QUALITY"
 
     @classmethod

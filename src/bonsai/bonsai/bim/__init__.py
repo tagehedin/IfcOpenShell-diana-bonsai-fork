@@ -60,6 +60,7 @@ modules = {
     "cost": None,
     "sequence": None,
     "group": None,
+    "block": None,
     "system": None,
     "brick": None,
     "structural": None,
