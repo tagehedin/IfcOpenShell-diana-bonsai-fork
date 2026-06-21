@@ -3,148 +3,67 @@
   "blocklist": [],
   "data": [
     {
-      "schema_version": "1.0.0",
-      "id": "bonsai",
-      "name": "bonsai-diana-fork",
-      "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-2606181714",
+      "schema_version": "v1-stable",
+      "id": "tagehedin_github_io.bonsai",
+      "name": "Bonsai",
+      "tagline": "BIM for Blender (diana-bonsai-fork)",
+      "version": "0.8.6-diana-bonsai-fork-2606220010",
       "type": "add-on",
-      "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
-      "license": [
-        "SPDX:GPL-3.0-or-later"
-      ],
-      "blender_version_min": "5.1.0",
       "website": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork",
-      "permissions": {
-        "network": "Augin / Cove.Tool integration for VR and environmental analysis",
-        "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste energy logs"
-      },
-      "tags": [
-        "3D View",
-        "Add Mesh",
-        "Animation",
-        "Camera",
-        "Development",
-        "Import-Export",
-        "Lighting",
-        "Material",
-        "Modeling",
-        "Mesh",
-        "Node",
-        "Object",
-        "Pipeline",
-        "Render",
-        "Scene",
-        "System",
-        "User Interface",
-        "UV"
-      ],
       "platforms": [
-        "linux-x64"
+        "linux-x86_64"
       ],
-      "python_versions": [
-        "3.13"
-      ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181714/bonsai_py313-0.8.6-alpha2606181714-linux-x64.zip",
-      "archive_size": 162047817,
-      "archive_hash": "sha256:23b439fcf8d06b5ab9655cb762cd0869da9787f75ab78616fa1dd91f1e6aef58"
+      "blender_version_min": "4.2.0",
+      "archive_size": 162062465,
+      "archive_hash": "sha256:a1df6994d69e125b65e4f59b49eb2e1f5ac2acd2fb80cde331bf7e0ddaa007f0",
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606220010/bonsai_py313-0.8.6-alpha2606220010-linux-x64.zip",
+      "license": [
+        {
+          "spdx_id": "GPL-3.0-or-later"
+        }
+      ]
     },
     {
-      "schema_version": "1.0.0",
-      "id": "bonsai",
-      "name": "bonsai-diana-fork",
-      "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-2606181714",
+      "schema_version": "v1-stable",
+      "id": "tagehedin_github_io.bonsai",
+      "name": "Bonsai",
+      "tagline": "BIM for Blender (diana-bonsai-fork)",
+      "version": "0.8.6-diana-bonsai-fork-2606220010",
       "type": "add-on",
-      "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
-      "license": [
-        "SPDX:GPL-3.0-or-later"
-      ],
-      "blender_version_min": "5.1.0",
       "website": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork",
-      "permissions": {
-        "network": "Augin / Cove.Tool integration for VR and environmental analysis",
-        "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste energy logs"
-      },
-      "tags": [
-        "3D View",
-        "Add Mesh",
-        "Animation",
-        "Camera",
-        "Development",
-        "Import-Export",
-        "Lighting",
-        "Material",
-        "Modeling",
-        "Mesh",
-        "Node",
-        "Object",
-        "Pipeline",
-        "Render",
-        "Scene",
-        "System",
-        "User Interface",
-        "UV"
-      ],
       "platforms": [
-        "macos-arm64"
+        "darwin-arm64"
       ],
-      "python_versions": [
-        "3.13"
-      ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181714/bonsai_py313-0.8.6-alpha2606181714-macos-arm64.zip",
-      "archive_size": 146242374,
-      "archive_hash": "sha256:d017376c69aa6c59f3a8f5bfc48c056091df0c3902c264d518399d3ac1dfd226"
+      "blender_version_min": "4.2.0",
+      "archive_size": 146257022,
+      "archive_hash": "sha256:f0be163d960cc837a83d01649fb1ce9cbd3eb8425a37002199786966314e5c7c",
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606220010/bonsai_py313-0.8.6-alpha2606220010-macos-arm64.zip",
+      "license": [
+        {
+          "spdx_id": "GPL-3.0-or-later"
+        }
+      ]
     },
     {
-      "schema_version": "1.0.0",
-      "id": "bonsai",
-      "name": "bonsai-diana-fork",
-      "tagline": "A native Building Information Model authoring platform using IFC",
-      "version": "0.8.6-diana-bonsai-fork-2606181714",
+      "schema_version": "v1-stable",
+      "id": "tagehedin_github_io.bonsai",
+      "name": "Bonsai",
+      "tagline": "BIM for Blender (diana-bonsai-fork)",
+      "version": "0.8.6-diana-bonsai-fork-2606220010",
       "type": "add-on",
-      "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
-      "license": [
-        "SPDX:GPL-3.0-or-later"
-      ],
-      "blender_version_min": "5.1.0",
       "website": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork",
-      "permissions": {
-        "network": "Augin / Cove.Tool integration for VR and environmental advice",
-        "files": "Load and save IFCs, IDS, BCF, etc from disk",
-        "clipboard": "Copy and paste energy logs"
-      },
-      "tags": [
-        "3D View",
-        "Add Mesh",
-        "Animation",
-        "Camera",
-        "Development",
-        "Import-Export",
-        "Lighting",
-        "Material",
-        "Modeling",
-        "Mesh",
-        "Node",
-        "Object",
-        "Pipeline",
-        "Render",
-        "Scene",
-        "System",
-        "User Interface",
-        "UV"
-      ],
       "platforms": [
-        "windows-x64"
+        "windows-amd64"
       ],
-      "python_versions": [
-        "3.13"
-      ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606181714/bonsai_py313-0.8.6-alpha2606181714-windows-x64.zip",
-      "archive_size": 112575211,
-      "archive_hash": "sha256:105ef7a8482577201e7b9676e6756f6b98849619aa510e76d2f5324a04c8d40c"
+      "blender_version_min": "4.2.0",
+      "archive_size": 112589859,
+      "archive_hash": "sha256:0533b0a54b96472c88daff1ce89d5bf6e1ca637ed165b652eae8c4309c192c35",
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.8.6-alpha2606220010/bonsai_py313-0.8.6-alpha2606220010-windows-x64.zip",
+      "license": [
+        {
+          "spdx_id": "GPL-3.0-or-later"
+        }
+      ]
     }
   ]
 }
