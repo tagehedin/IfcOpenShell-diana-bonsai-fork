@@ -21,7 +21,8 @@
         {
           "spdx_id": "GPL-3.0-or-later"
         }
-      ]
+      ],
+      "maintainer": "Martin Hedin <tage.hedin@gmail.com>"
     },
     {
       "schema_version": "1.0.0",
@@ -42,7 +43,8 @@
         {
           "spdx_id": "GPL-3.0-or-later"
         }
-      ]
+      ],
+      "maintainer": "Martin Hedin <tage.hedin@gmail.com>"
     },
     {
       "schema_version": "1.0.0",
@@ -63,7 +65,8 @@
         {
           "spdx_id": "GPL-3.0-or-later"
         }
-      ]
+      ],
+      "maintainer": "Martin Hedin <tage.hedin@gmail.com>"
     }
   ]
 }
