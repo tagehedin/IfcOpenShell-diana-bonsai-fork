@@ -3,7 +3,7 @@
   "blocklist": [],
   "data": [
     {
-      "schema_version": "v1-stable",
+      "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
@@ -24,7 +24,7 @@
       ]
     },
     {
-      "schema_version": "v1-stable",
+      "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
@@ -45,7 +45,7 @@
       ]
     },
     {
-      "schema_version": "v1-stable",
+      "schema_version": "1.0.0",
       "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
