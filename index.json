@@ -5,8 +5,8 @@
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
-      "name": "Bonsai",
-      "tagline": "A native Building Information Model authoring platform using IFC",
+      "name": "Bonsai (diana-bonsai-fork)",
+      "tagline": "BIM for Blender \u2014 diana-bonsai-fork (Martin Hedin)",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -53,8 +53,8 @@
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
-      "name": "Bonsai",
-      "tagline": "A native Building Information Model authoring platform using IFC",
+      "name": "Bonsai (diana-bonsai-fork)",
+      "tagline": "BIM for Blender \u2014 diana-bonsai-fork (Martin Hedin)",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
@@ -101,8 +101,8 @@
     {
       "schema_version": "1.0.0",
       "id": "bonsai",
-      "name": "Bonsai",
-      "tagline": "A native Building Information Model authoring platform using IFC",
+      "name": "Bonsai (diana-bonsai-fork)",
+      "tagline": "BIM for Blender \u2014 diana-bonsai-fork (Martin Hedin)",
       "type": "add-on",
       "maintainer": "Martin Hedin <tage.hedin@gmail.com>",
       "license": [
