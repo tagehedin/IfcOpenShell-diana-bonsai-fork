@@ -4,7 +4,7 @@
   "data": [
     {
       "schema_version": "v1-stable",
-      "id": "tagehedin_github_io.bonsai",
+      "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
       "version": "0.8.6-diana-bonsai-fork-2606220010",
@@ -25,7 +25,7 @@
     },
     {
       "schema_version": "v1-stable",
-      "id": "tagehedin_github_io.bonsai",
+      "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
       "version": "0.8.6-diana-bonsai-fork-2606220010",
@@ -46,7 +46,7 @@
     },
     {
       "schema_version": "v1-stable",
-      "id": "tagehedin_github_io.bonsai",
+      "id": "bonsai",
       "name": "Bonsai",
       "tagline": "BIM for Blender (diana-bonsai-fork)",
       "version": "0.8.6-diana-bonsai-fork-2606220010",
