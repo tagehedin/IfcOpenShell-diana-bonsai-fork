@@ -210,36 +210,70 @@ class ClashDecorator:
         return positions, triangle_indices
 
     # ── GPU batch cache (Tier 2) ──────────────────────────────────────────────
+    # Batches are keyed by GROUP, not by individual highlight.
+    # All elements in one group share a single merged GPUBatch → one draw call
+    # per group per frame instead of one per element.  This is the key fix for
+    # color-picker drag lag: N elements → G groups (typically 2–8).
 
     @classmethod
-    def _get_batch(cls, highlight):
-        """Return a cached GPUBatch for the highlight, built from Tier 1 geometry."""
-        if highlight not in cls._batch_cache:
-            geom = cls._get_geom(highlight)
-            if geom:
+    def _get_group_batch(cls, group: str):
+        """Return a single combined GPUBatch for all highlights in *group*.
+
+        Merges all element geometries into one vertex buffer so the whole
+        group draws in a single GPU call.  Built once per clash switch,
+        reused every frame.
+        """
+        key = ("__group__", group)
+        if key not in cls._batch_cache:
+            all_pos: list = []
+            all_idx: list = []
+            offset = 0
+            for highlight in cls.group_highlights.get(group, []):
+                geom = cls._get_geom(highlight)
+                if not geom:
+                    continue
                 positions, indices = geom
-                cls._batch_cache[highlight] = batch_for_shader(
-                    cls._get_clip_shader(), "TRIS", {"pos": positions}, indices=indices
+                all_pos.extend(positions)
+                all_idx.extend((i[0] + offset, i[1] + offset, i[2] + offset)
+                               for i in indices)
+                offset += len(positions)
+            if all_pos:
+                cls._batch_cache[key] = batch_for_shader(
+                    cls._get_clip_shader(), "TRIS",
+                    {"pos": all_pos}, indices=all_idx,
                 )
             else:
-                cls._batch_cache[highlight] = None
-        return cls._batch_cache[highlight]
+                cls._batch_cache[key] = None
+        return cls._batch_cache[key]
 
     # ── Drawing ───────────────────────────────────────────────────────────────
 
-    def _draw_clipped(self, batch, color, clip_planes) -> None:
-        """Draw a GPUBatch with per-fragment GPU clip planes — no Python clipping."""
-        if batch is None:
-            return
+    def _bind_clip_shader(self, clip_planes) -> None:
+        """Bind the clip shader and upload per-frame uniforms (MVP + clip planes).
+
+        Call once before a batch of _draw_clipped calls.  The MVP and clip
+        plane uniforms are the same for every element in a frame, so uploading
+        them once and reusing across draw calls avoids redundant work.
+        """
         shader = self._get_clip_shader()
         shader.bind()
         mvp = gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix()
         shader.uniform_float("ModelViewProjectionMatrix", mvp)
-        shader.uniform_float("color", list(color))
         n = len(clip_planes) if clip_planes else 0
         shader.uniform_int("num_clip_planes", n)
         for i, name in enumerate(_PLANE_NAMES):
             shader.uniform_float(name, list(clip_planes[i]) if i < n else _ZERO_PLANE)
+
+    def _draw_clipped(self, batch, color, clip_planes) -> None:
+        """Draw a GPUBatch with per-fragment GPU clip planes — no Python clipping.
+
+        Assumes _bind_clip_shader() was called first for this frame so MVP and
+        clip plane uniforms are already set; only uploads the per-batch color.
+        """
+        if batch is None:
+            return
+        shader = self._get_clip_shader()
+        shader.uniform_float("color", list(color))
         batch.draw(shader)
 
     def _draw_batch(self, shader_type, content_pos, color, indices=None) -> None:
@@ -299,13 +333,14 @@ class ClashDecorator:
             self._draw_batch("LINES", pts, special_color, [[0, 1]])
 
         # ── Highlighted clash elements (A / B groups) ─────────────────────────
-        for group, highlights in self.group_highlights.items():
+        # Bind shader + upload MVP and clip planes ONCE for all groups.
+        # Each group is one merged GPUBatch → one draw call, only color changes.
+        self._bind_clip_shader(clip_planes)
+        for group in self.group_highlights:
             if not self.show_groups.get(group, True):
                 continue
             r, g, b = self.group_colors.get(group, (0.5, 0.5, 0.5))
-            color = (r, g, b, 0.15)
-            for highlight in highlights:
-                self._draw_clipped(self._get_batch(highlight), color, clip_planes)
+            self._draw_clipped(self._get_group_batch(group), (r, g, b, 0.15), clip_planes)
 
         # ── Boolean-intersection volume ───────────────────────────────────────
         if self.show_volume:
