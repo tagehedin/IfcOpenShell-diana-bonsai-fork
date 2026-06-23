@@ -1166,6 +1166,19 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
                                   "IfcBuildingStorey/", "IfcSpace/")
                     )
                 }
+                # Rescue clipping plane objects before removing IFC collections.
+                # Clip plane objects are plain Blender meshes (no ifc_definition_id)
+                # so they survive the object-delete loop, but they can be inside a
+                # storey collection that we're about to remove — which would orphan
+                # them and make them invisible. Re-link them to the scene root first.
+                scene_root = bpy.context.scene.collection
+                for cp in tool.Project.get_project_props().clipping_planes:
+                    if cp.obj and not cp.obj.library:
+                        try:
+                            scene_root.objects.link(cp.obj)
+                        except RuntimeError:
+                            pass  # already in scene root
+
                 bpy.ops.bim.convert_to_blender()
                 for name in ifc_obj_names:
                     if (obj := bpy.data.objects.get(name)) and not obj.library:
