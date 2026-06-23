@@ -27,14 +27,41 @@ from mathutils import Vector
 import bonsai.tool as tool
 
 
-# ── Custom GLSL shader ────────────────────────────────────────────────────────
+# ── Custom GLSL clip shader ───────────────────────────────────────────────────
 # Positions are world-space.  Up to 6 clip planes are tested in the fragment
 # shader with discard — zero Python-side clipping needed.
-# Falls back to Python clipping + built-in shader on platforms where
-# gpu.types.GPUShader cannot be created from raw GLSL strings (e.g. Blender
-# 5.1 on Windows with some GPU drivers).
+#
+# Creation order (first success wins):
+#   1. gpu.shader.create_from_info(GPUShaderCreateInfo) — modern Blender 4.0+ API,
+#      works on both Linux and Windows Blender 5.1.  Declarations (in/out/uniform)
+#      are set on the info object; GLSL source only contains the function body.
+#   2. gpu.types.GPUShader(vert, frag) — legacy raw-GLSL API, includes full
+#      declarations in the source.  Works on some platforms, fails on others.
+#   3. Python Sutherland-Hodgman clipping — final fallback with built-in shader.
 
-_CLIP_VERT = """
+# GLSL body for GPUShaderCreateInfo (no declarations needed — info provides them)
+_CLIP_VERT_BODY = """
+void main() {
+    world_pos = pos;
+    gl_Position = ModelViewProjectionMatrix * vec4(pos, 1.0);
+}
+"""
+
+_CLIP_FRAG_BODY = """
+void main() {
+    vec4 wp = vec4(world_pos, 1.0);
+    if (num_clip_planes > 0 && dot(wp, plane0) < 0.0) discard;
+    if (num_clip_planes > 1 && dot(wp, plane1) < 0.0) discard;
+    if (num_clip_planes > 2 && dot(wp, plane2) < 0.0) discard;
+    if (num_clip_planes > 3 && dot(wp, plane3) < 0.0) discard;
+    if (num_clip_planes > 4 && dot(wp, plane4) < 0.0) discard;
+    if (num_clip_planes > 5 && dot(wp, plane5) < 0.0) discard;
+    fragColor = color;
+}
+"""
+
+# Full GLSL for legacy gpu.types.GPUShader (declarations inline)
+_CLIP_VERT_LEGACY = """
 uniform mat4 ModelViewProjectionMatrix;
 in vec3 pos;
 out vec3 world_pos;
@@ -44,15 +71,11 @@ void main() {
 }
 """
 
-_CLIP_FRAG = """
+_CLIP_FRAG_LEGACY = """
 uniform vec4 color;
 uniform int  num_clip_planes;
-uniform vec4 plane0;
-uniform vec4 plane1;
-uniform vec4 plane2;
-uniform vec4 plane3;
-uniform vec4 plane4;
-uniform vec4 plane5;
+uniform vec4 plane0; uniform vec4 plane1; uniform vec4 plane2;
+uniform vec4 plane3; uniform vec4 plane4; uniform vec4 plane5;
 in  vec3 world_pos;
 out vec4 fragColor;
 void main() {
@@ -143,15 +166,42 @@ class ClashDecorator:
 
     @classmethod
     def _get_clip_shader(cls):
-        """Return the custom GPU clip shader, or None if unsupported."""
+        """Return the custom GPU clip shader, or None if unsupported.
+
+        Tries the modern GPUShaderCreateInfo API first (Blender 4.0+, works on
+        Linux and Windows 5.1), then the legacy raw-GLSL API, then gives up and
+        lets callers fall back to Python clipping.
+        """
         if cls._clip_shader is None:
+            # ── Attempt 1: GPUShaderCreateInfo (modern, cross-platform) ──────
             try:
-                cls._clip_shader = gpu.types.GPUShader(_CLIP_VERT, _CLIP_FRAG)
+                iface = gpu.types.GPUStageInterfaceInfo("clash_clip_iface")
+                iface.smooth("VEC3", "world_pos")
+                info = gpu.types.GPUShaderCreateInfo()
+                info.vertex_in(0, "VEC3", "pos")
+                info.vertex_out(iface)
+                info.push_constant("MAT4", "ModelViewProjectionMatrix")
+                info.push_constant("VEC4", "color")
+                info.push_constant("INT",  "num_clip_planes")
+                for i in range(6):
+                    info.push_constant("VEC4", f"plane{i}")
+                info.fragment_out(0, "VEC4", "fragColor")
+                info.vertex_source(_CLIP_VERT_BODY)
+                info.fragment_source(_CLIP_FRAG_BODY)
+                cls._clip_shader = gpu.shader.create_from_info(info)
+                del iface, info  # info/iface not needed after compilation
             except Exception:
-                # Raw GLSL GPUShader creation unsupported on this platform.
-                # Blender 5.1 on some Windows/GPU combinations requires the
-                # GPUShaderCreateInfo API instead. Fall back to Python clipping.
-                cls._clip_shader = False
+                cls._clip_shader = None  # reset so attempt 2 runs
+
+            # ── Attempt 2: legacy gpu.types.GPUShader (raw GLSL strings) ─────
+            if cls._clip_shader is None:
+                try:
+                    cls._clip_shader = gpu.types.GPUShader(
+                        _CLIP_VERT_LEGACY, _CLIP_FRAG_LEGACY
+                    )
+                except Exception:
+                    cls._clip_shader = False  # mark permanently unsupported
+
         return cls._clip_shader if cls._clip_shader else None
 
     @classmethod
