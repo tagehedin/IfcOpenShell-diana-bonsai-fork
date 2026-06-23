@@ -30,6 +30,9 @@ import bonsai.tool as tool
 # ── Custom GLSL shader ────────────────────────────────────────────────────────
 # Positions are world-space.  Up to 6 clip planes are tested in the fragment
 # shader with discard — zero Python-side clipping needed.
+# Falls back to Python clipping + built-in shader on platforms where
+# gpu.types.GPUShader cannot be created from raw GLSL strings (e.g. Blender
+# 5.1 on Windows with some GPU drivers).
 
 _CLIP_VERT = """
 uniform mat4 ModelViewProjectionMatrix;
@@ -68,6 +71,47 @@ _PLANE_NAMES = ("plane0", "plane1", "plane2", "plane3", "plane4", "plane5")
 _ZERO_PLANE   = [0.0, 0.0, 0.0, 0.0]
 
 
+def _clip_geometry(positions, triangle_indices, clip_planes):
+    """Clip triangles against half-spaces using Sutherland-Hodgman.
+
+    Fallback used when the custom GPU clip shader is unavailable.
+    Each clip plane is (nx, ny, nz, d); visible side is dot(pos, normal) + d >= 0.
+    """
+    def _clip_poly(poly, plane):
+        nx, ny, nz, d = plane
+        out = []
+        n = len(poly)
+        for i in range(n):
+            c, nxt = poly[i], poly[(i + 1) % n]
+            dc = nx * c[0] + ny * c[1] + nz * c[2] + d
+            dn = nx * nxt[0] + ny * nxt[1] + nz * nxt[2] + d
+            if dc >= 0:
+                out.append(c)
+            if (dc >= 0) != (dn >= 0):
+                t = dc / (dc - dn)
+                out.append((c[0] + t * (nxt[0] - c[0]),
+                             c[1] + t * (nxt[1] - c[1]),
+                             c[2] + t * (nxt[2] - c[2])))
+        return out
+
+    out_pos, out_idx, pos_index = [], [], 0
+    for tri in triangle_indices:
+        poly = [(positions[i].x, positions[i].y, positions[i].z) if hasattr(positions[i], 'x')
+                else tuple(positions[i]) for i in tri]
+        for plane in clip_planes:
+            poly = _clip_poly(poly, plane)
+            if not poly:
+                break
+        if len(poly) < 3:
+            continue
+        base = pos_index
+        out_pos.extend(poly)
+        for j in range(1, len(poly) - 1):
+            out_idx.append((base, base + j, base + j + 1))
+        pos_index += len(poly)
+    return out_pos, out_idx
+
+
 class ClashDecorator:
     is_installed = False
     handlers = []
@@ -81,23 +125,34 @@ class ClashDecorator:
     # Tier 1: geometry (world-space positions + triangle indices).
     #   Persists across clash switches — re-resolved only if missing.
     # Tier 2: GPU batches.
-    #   Cleared on clash switch (cheap to rebuild from tier 1) but NOT
-    #   on clip-plane movement (handled in-shader, no rebuild needed).
-    _geom_cache: dict = {}   # highlight -> (positions, tri_indices) | None
-    _batch_cache: dict = {}  # highlight -> GPUBatch | None
+    #   With GPU clip shader: keyed by group only — clip handled in shader.
+    #   Without GPU clip shader: keyed by (group, clip_key) — Python clipping.
+    _geom_cache: dict = {}
+    _batch_cache: dict = {}
 
-    # ── Cached shaders (created once, reused every frame) ─────────────────────
-    _clip_shader = None   # GPUShader — fills with GPU clip planes
-    _line_shader = None   # POLYLINE_UNIFORM_COLOR for the clash-point line
-    _plain_shader = None  # UNIFORM_COLOR for clash-point dots
+    # ── Cached shaders ─────────────────────────────────────────────────────────
+    # _clip_shader: GPUShader | None | False
+    #   None  = not yet attempted
+    #   False = attempted and failed (platform doesn't support it)
+    #   GPUShader = created successfully
+    _clip_shader = None
+    _line_shader = None
+    _plain_shader = None
 
     # ── Shader accessors ──────────────────────────────────────────────────────
 
     @classmethod
     def _get_clip_shader(cls):
+        """Return the custom GPU clip shader, or None if unsupported."""
         if cls._clip_shader is None:
-            cls._clip_shader = gpu.types.GPUShader(_CLIP_VERT, _CLIP_FRAG)
-        return cls._clip_shader
+            try:
+                cls._clip_shader = gpu.types.GPUShader(_CLIP_VERT, _CLIP_FRAG)
+            except Exception:
+                # Raw GLSL GPUShader creation unsupported on this platform.
+                # Blender 5.1 on some Windows/GPU combinations requires the
+                # GPUShaderCreateInfo API instead. Fall back to Python clipping.
+                cls._clip_shader = False
+        return cls._clip_shader if cls._clip_shader else None
 
     @classmethod
     def _get_line_shader(cls):
@@ -146,12 +201,6 @@ class ClashDecorator:
 
     @classmethod
     def set_clash_objects(cls, group_highlights_dict: dict, intersections=None) -> None:
-        """Set the objects to highlight for the current clash selection.
-
-        Clears the GPU batch cache (cheap to rebuild) but keeps the geometry
-        cache — re-reading mesh data on every clash switch is the expensive
-        part and is unnecessary since geometry is stable during clash review.
-        """
         cls._batch_cache.clear()
         cls.group_highlights = {
             g: [h for x in highlights if (h := cls._normalize_highlight(x)) is not None]
@@ -176,14 +225,12 @@ class ClashDecorator:
 
     @classmethod
     def _get_geom(cls, highlight) -> "tuple | None":
-        """Return cached world-space (positions, tri_indices), resolving on first access."""
         if highlight not in cls._geom_cache:
             cls._geom_cache[highlight] = cls.resolve_highlight_geometry(highlight)
         return cls._geom_cache[highlight]
 
     @staticmethod
     def resolve_highlight_geometry(highlight):
-        """Return (positions, triangle_indices) in world space, or None."""
         if not highlight:
             return None
         obj_key, guid = highlight
@@ -192,10 +239,8 @@ class ClashDecorator:
             return None
         if guid is None and not obj.visible_get():
             return None
-
         mesh         = obj.data
         matrix_world = obj.matrix_world
-
         if guid and tool.Project.Link.is_linked_element(obj):
             polygons  = mesh.polygons[tool.Project.Link.get_linked_element_geom_slice(obj, guid)]
             vertex_ids = sorted({vi for polygon in polygons for vi in polygon.vertices})
@@ -206,24 +251,20 @@ class ClashDecorator:
             positions = [matrix_world @ v.co for v in mesh.vertices]
             mesh.calc_loop_triangles()
             triangle_indices = [tuple(tri.vertices) for tri in mesh.loop_triangles]
-
         return positions, triangle_indices
 
     # ── GPU batch cache (Tier 2) ──────────────────────────────────────────────
-    # Batches are keyed by GROUP, not by individual highlight.
-    # All elements in one group share a single merged GPUBatch → one draw call
-    # per group per frame instead of one per element.  This is the key fix for
-    # color-picker drag lag: N elements → G groups (typically 2–8).
 
     @classmethod
-    def _get_group_batch(cls, group: str):
-        """Return a single combined GPUBatch for all highlights in *group*.
+    def _get_group_batch(cls, group: str, clip_planes=None, clip_key=()):
+        """Return a GPUBatch for all elements in *group*.
 
-        Merges all element geometries into one vertex buffer so the whole
-        group draws in a single GPU call.  Built once per clash switch,
-        reused every frame.
+        With the GPU clip shader: keyed by group only, clipping happens in GLSL.
+        Without it: keyed by (group, clip_key), Python-clips geometry first.
         """
-        key = ("__group__", group)
+        use_gpu_clip = cls._get_clip_shader() is not None
+        key = ("__group__", group) if use_gpu_clip else ("__group__", group, clip_key)
+
         if key not in cls._batch_cache:
             all_pos: list = []
             all_idx: list = []
@@ -233,28 +274,29 @@ class ClashDecorator:
                 if not geom:
                     continue
                 positions, indices = geom
+                if not use_gpu_clip and clip_planes:
+                    positions, indices = _clip_geometry(positions, indices, clip_planes)
+                    if not positions:
+                        continue
                 all_pos.extend(positions)
                 all_idx.extend((i[0] + offset, i[1] + offset, i[2] + offset)
                                for i in indices)
                 offset += len(positions)
+
             if all_pos:
+                shader = cls._get_clip_shader() or cls._get_plain_shader()
                 cls._batch_cache[key] = batch_for_shader(
-                    cls._get_clip_shader(), "TRIS",
-                    {"pos": all_pos}, indices=all_idx,
+                    shader, "TRIS", {"pos": all_pos}, indices=all_idx
                 )
             else:
                 cls._batch_cache[key] = None
+
         return cls._batch_cache[key]
 
     # ── Drawing ───────────────────────────────────────────────────────────────
 
     def _bind_clip_shader(self, clip_planes) -> None:
-        """Bind the clip shader and upload per-frame uniforms (MVP + clip planes).
-
-        Call once before a batch of _draw_clipped calls.  The MVP and clip
-        plane uniforms are the same for every element in a frame, so uploading
-        them once and reusing across draw calls avoids redundant work.
-        """
+        """Bind the GPU clip shader and upload per-frame uniforms once."""
         shader = self._get_clip_shader()
         shader.bind()
         mvp = gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix()
@@ -265,19 +307,20 @@ class ClashDecorator:
             shader.uniform_float(name, list(clip_planes[i]) if i < n else _ZERO_PLANE)
 
     def _draw_clipped(self, batch, color, clip_planes) -> None:
-        """Draw a GPUBatch with per-fragment GPU clip planes — no Python clipping.
-
-        Assumes _bind_clip_shader() was called first for this frame so MVP and
-        clip plane uniforms are already set; only uploads the per-batch color.
-        """
+        """Draw a GPUBatch — either via GPU clip shader or plain UNIFORM_COLOR."""
         if batch is None:
             return
-        shader = self._get_clip_shader()
-        shader.uniform_float("color", list(color))
-        batch.draw(shader)
+        clip_shader = self._get_clip_shader()
+        if clip_shader:
+            clip_shader.uniform_float("color", list(color))
+            batch.draw(clip_shader)
+        else:
+            shader = self._get_plain_shader()
+            shader.bind()
+            shader.uniform_float("color", list(color))
+            batch.draw(shader)
 
     def _draw_batch(self, shader_type, content_pos, color, indices=None) -> None:
-        """Draw points or lines using the cached built-in shaders."""
         if not tool.Blender.validate_shader_batch_data(content_pos, indices):
             return
         shader = self._get_line_shader() if shader_type == "LINES" else self._get_plain_shader()
@@ -290,7 +333,6 @@ class ClashDecorator:
         props       = tool.Clash.get_clash_props()
         text        = props.active_clash_text
         p           = props.p1.lerp(props.p2, 0.5)
-
         font_id = 0
         blf.size(font_id, 12)
         coords_2d = location_3d_to_region_2d(context.region, context.region_data, p)
@@ -318,12 +360,12 @@ class ClashDecorator:
                 if t not in seen:
                     seen.add(t)
                     clip_planes.append(tuple(p))
+        clip_key = tuple(v for plane in clip_planes for v in plane) if clip_planes else ()
 
-        # ── Clash-point marker (two dots + connecting line) ───────────────────
+        # ── Clash-point marker ────────────────────────────────────────────────
         props    = tool.Clash.get_clash_props()
         p1, p2   = props.p1, props.p2
         pts      = [p1, p2]
-        # Bind line shader and set viewport size before drawing
         line_shader = self._get_line_shader()
         line_shader.bind()
         line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
@@ -333,25 +375,34 @@ class ClashDecorator:
             self._draw_batch("LINES", pts, special_color, [[0, 1]])
 
         # ── Highlighted clash elements (A / B groups) ─────────────────────────
-        # Bind shader + upload MVP and clip planes ONCE for all groups.
-        # Each group is one merged GPUBatch → one draw call, only color changes.
-        self._bind_clip_shader(clip_planes)
+        # Bind clip shader once before the group loop (if GPU clipping available).
+        use_gpu_clip = self._get_clip_shader() is not None
+        if use_gpu_clip:
+            self._bind_clip_shader(clip_planes)
+
         for group in self.group_highlights:
             if not self.show_groups.get(group, True):
                 continue
             r, g, b = self.group_colors.get(group, (0.5, 0.5, 0.5))
-            self._draw_clipped(self._get_group_batch(group), (r, g, b, 0.15), clip_planes)
+            batch = self._get_group_batch(group, clip_planes, clip_key)
+            self._draw_clipped(batch, (r, g, b, 0.15), clip_planes)
 
         # ── Boolean-intersection volume ───────────────────────────────────────
         if self.show_volume:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
             for i, raw_geom in enumerate(self.c_highlights):
-                key = ("__c__", i)
+                key = ("__c__", i) if use_gpu_clip else ("__c__", i, clip_key)
                 if key not in ClashDecorator._batch_cache:
                     positions, indices = raw_geom
-                    ClashDecorator._batch_cache[key] = batch_for_shader(
-                        self._get_clip_shader(), "TRIS", {"pos": positions}, indices=indices
-                    )
+                    if not use_gpu_clip and clip_planes:
+                        positions, indices = _clip_geometry(positions, indices, clip_planes)
+                    if positions:
+                        shader = self._get_clip_shader() or self._get_plain_shader()
+                        ClashDecorator._batch_cache[key] = batch_for_shader(
+                            shader, "TRIS", {"pos": positions}, indices=indices
+                        )
+                    else:
+                        ClashDecorator._batch_cache[key] = None
                 self._draw_clipped(ClashDecorator._batch_cache[key], (1.0, 0.1, 0.1, 0.4), clip_planes)
             gpu.state.depth_test_set(previous_depth_test)
