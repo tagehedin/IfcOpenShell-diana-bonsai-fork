@@ -125,7 +125,9 @@ class Project(bonsai.core.tool.Project):
             (
                 c
                 for c in bpy.data.collections
-                if "IfcProject" in c.name and c.library and Path(c.library.filepath) == library_filepath
+                if "IfcProject" in c.name
+                and c.library
+                and Path(bpy.path.abspath(c.library.filepath)) == library_filepath
             ),
             None,
         )

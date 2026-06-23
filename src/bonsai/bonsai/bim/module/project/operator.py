@@ -1146,7 +1146,27 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
             # To be safe from any accidental IFC data in the previous session.
             if not self.is_advanced and not self.should_start_fresh_session:
                 shader_assignments = self._save_shader_assignments()
+                # Record names before converting so we can remove the leftover Blender
+                # objects/collections after — prevents .001 duplicates when reloading.
+                ifc_obj_names = {
+                    obj.name for obj in bpy.data.objects
+                    if not obj.library and tool.Blender.get_object_bim_props(obj).ifc_definition_id
+                }
+                ifc_col_names = {
+                    col.name for col in bpy.data.collections
+                    if not col.library and any(
+                        col.name.startswith(p)
+                        for p in ("IfcProject/", "IfcSite/", "IfcBuilding/",
+                                  "IfcBuildingStorey/", "IfcSpace/")
+                    )
+                }
                 bpy.ops.bim.convert_to_blender()
+                for name in ifc_obj_names:
+                    if (obj := bpy.data.objects.get(name)) and not obj.library:
+                        bpy.data.objects.remove(obj)
+                for name in ifc_col_names:
+                    if (col := bpy.data.collections.get(name)) and not col.library:
+                        bpy.data.collections.remove(col)
 
             tool.Ifc.set_path(filepath)
             if not tool.Ifc.get():
@@ -1589,9 +1609,18 @@ class UnloadLink(bpy.types.Operator, tool.Ifc.Operator):
             library = collection.library
             tool.Ifc.unlink(obj=obj)
             bpy.data.objects.remove(obj)
-            if collection.users == 0:
-                bpy.data.collections.remove(collection)
-            if not len([c for c in bpy.data.collections if c.library == library]):
+            if library:
+                # Remove ALL data blocks from this library so nothing lingers in the outliner.
+                # Order matters: objects first (they reference meshes/materials), then
+                # collections, then meshes and materials.
+                for o in [b for b in bpy.data.objects if b.library == library]:
+                    bpy.data.objects.remove(o)
+                for col in [b for b in bpy.data.collections if b.library == library]:
+                    bpy.data.collections.remove(col)
+                for mesh in [b for b in bpy.data.meshes if b.library == library]:
+                    bpy.data.meshes.remove(mesh)
+                for mat in [b for b in bpy.data.materials if b.library == library]:
+                    bpy.data.materials.remove(mat)
                 bpy.data.libraries.remove(library)
         link.is_loaded = False
         ProjectDecorator.uninstall()
@@ -1628,7 +1657,9 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
 
         # Find the linked root collection (sub-collections are implicit dependencies and also appear in bpy.data.collections)
         for collection in bpy.data.collections:
-            if not collection.library or Path(collection.library.filepath) != filepath:
+            if not collection.library:
+                continue
+            if Path(bpy.path.abspath(collection.library.filepath)) != filepath:
                 continue
             if "IfcProject" not in collection.name:
                 continue
@@ -1667,7 +1698,7 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
             query = data.get("query", "")
             return query != self.query
 
-        if should_clear_cache():
+        if should_clear_cache() and blend_filepath.exists():
             os.remove(blend_filepath)
 
         if not blend_filepath.exists():
@@ -1826,7 +1857,8 @@ class ToggleLinkSelectability(bpy.types.Operator):
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library and Path(c.library.filepath) == self.library_filepath
+            if "IfcProject" in c.name and c.library
+            and Path(bpy.path.abspath(c.library.filepath)) == self.library_filepath
         ]
 
 
@@ -1887,7 +1919,8 @@ class ToggleLinkVisibility(bpy.types.Operator):
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library and Path(c.library.filepath) == self.library_filepath
+            if "IfcProject" in c.name and c.library
+            and Path(bpy.path.abspath(c.library.filepath)) == self.library_filepath
         ]
 
 
@@ -1919,7 +1952,7 @@ class ToggleLinkStoreyVisibility(bpy.types.Operator):
                 for c in bpy.data.collections
                 if c.name == self.storey_collection_name
                 and c.library
-                and Path(c.library.filepath) == library_filepath
+                and Path(bpy.path.abspath(c.library.filepath)) == library_filepath
             ),
             None,
         )
