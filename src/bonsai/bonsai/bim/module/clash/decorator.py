@@ -27,49 +27,45 @@ from mathutils import Vector
 import bonsai.tool as tool
 
 
-def _clip_geometry(positions, triangle_indices, clip_planes):
-    """Clip triangles against half-spaces using Sutherland-Hodgman.
+# ── Custom GLSL shader ────────────────────────────────────────────────────────
+# Positions are world-space.  Up to 6 clip planes are tested in the fragment
+# shader with discard — zero Python-side clipping needed.
 
-    Each clip plane is (nx, ny, nz, d); the visible side is dot(pos, normal) + d >= 0.
-    Returns a new (positions, triangle_indices) pair where positions are plain tuples.
-    """
-    def _clip_poly(poly, plane):
-        nx, ny, nz, d = plane
-        out = []
-        n = len(poly)
-        for i in range(n):
-            c, nxt = poly[i], poly[(i + 1) % n]
-            dc = nx * c[0] + ny * c[1] + nz * c[2] + d
-            dn = nx * nxt[0] + ny * nxt[1] + nz * nxt[2] + d
-            if dc >= 0:
-                out.append(c)
-            if (dc >= 0) != (dn >= 0):
-                t = dc / (dc - dn)
-                out.append((c[0] + t * (nxt[0] - c[0]),
-                             c[1] + t * (nxt[1] - c[1]),
-                             c[2] + t * (nxt[2] - c[2])))
-        return out
+_CLIP_VERT = """
+uniform mat4 ModelViewProjectionMatrix;
+in vec3 pos;
+out vec3 world_pos;
+void main() {
+    world_pos = pos;
+    gl_Position = ModelViewProjectionMatrix * vec4(pos, 1.0);
+}
+"""
 
-    out_pos = []
-    out_idx = []
-    pos_index = 0
+_CLIP_FRAG = """
+uniform vec4 color;
+uniform int  num_clip_planes;
+uniform vec4 plane0;
+uniform vec4 plane1;
+uniform vec4 plane2;
+uniform vec4 plane3;
+uniform vec4 plane4;
+uniform vec4 plane5;
+in  vec3 world_pos;
+out vec4 fragColor;
+void main() {
+    vec4 wp = vec4(world_pos, 1.0);
+    if (num_clip_planes > 0 && dot(wp, plane0) < 0.0) discard;
+    if (num_clip_planes > 1 && dot(wp, plane1) < 0.0) discard;
+    if (num_clip_planes > 2 && dot(wp, plane2) < 0.0) discard;
+    if (num_clip_planes > 3 && dot(wp, plane3) < 0.0) discard;
+    if (num_clip_planes > 4 && dot(wp, plane4) < 0.0) discard;
+    if (num_clip_planes > 5 && dot(wp, plane5) < 0.0) discard;
+    fragColor = color;
+}
+"""
 
-    for tri in triangle_indices:
-        poly = [(positions[i].x, positions[i].y, positions[i].z) if hasattr(positions[i], 'x')
-                else tuple(positions[i]) for i in tri]
-        for plane in clip_planes:
-            poly = _clip_poly(poly, plane)
-            if not poly:
-                break
-        if len(poly) < 3:
-            continue
-        base = pos_index
-        out_pos.extend(poly)
-        for j in range(1, len(poly) - 1):
-            out_idx.append((base, base + j, base + j + 1))
-        pos_index += len(poly)
-
-    return out_pos, out_idx
+_PLANE_NAMES = ("plane0", "plane1", "plane2", "plane3", "plane4", "plane5")
+_ZERO_PLANE   = [0.0, 0.0, 0.0, 0.0]
 
 
 class ClashDecorator:
@@ -80,7 +76,42 @@ class ClashDecorator:
     show_groups: dict = {}        # {"a": True, ...}
     c_highlights: list = []       # boolean intersection volumes
     show_volume = True
-    _batch_cache: dict = {}
+
+    # ── Two-tier cache ────────────────────────────────────────────────────────
+    # Tier 1: geometry (world-space positions + triangle indices).
+    #   Persists across clash switches — re-resolved only if missing.
+    # Tier 2: GPU batches.
+    #   Cleared on clash switch (cheap to rebuild from tier 1) but NOT
+    #   on clip-plane movement (handled in-shader, no rebuild needed).
+    _geom_cache: dict = {}   # highlight -> (positions, tri_indices) | None
+    _batch_cache: dict = {}  # highlight -> GPUBatch | None
+
+    # ── Cached shaders (created once, reused every frame) ─────────────────────
+    _clip_shader = None   # GPUShader — fills with GPU clip planes
+    _line_shader = None   # POLYLINE_UNIFORM_COLOR for the clash-point line
+    _plain_shader = None  # UNIFORM_COLOR for clash-point dots
+
+    # ── Shader accessors ──────────────────────────────────────────────────────
+
+    @classmethod
+    def _get_clip_shader(cls):
+        if cls._clip_shader is None:
+            cls._clip_shader = gpu.types.GPUShader(_CLIP_VERT, _CLIP_FRAG)
+        return cls._clip_shader
+
+    @classmethod
+    def _get_line_shader(cls):
+        if cls._line_shader is None:
+            cls._line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        return cls._line_shader
+
+    @classmethod
+    def _get_plain_shader(cls):
+        if cls._plain_shader is None:
+            cls._plain_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        return cls._plain_shader
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @classmethod
     def install(cls, context):
@@ -90,10 +121,10 @@ class ClashDecorator:
         from bonsai.bim.module.clash.prop import ensure_group_colors
         ensure_group_colors(props)
         cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
-        cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
-        cls.show_volume = props.show_volume_highlight
+        cls.show_groups  = {item.name: item.show_highlight for item in props.group_highlight_colors}
+        cls.show_volume  = props.show_volume_highlight
         handler = cls()
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text,     (context,), "WINDOW", "POST_PIXEL"))
         cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
         cls.is_installed = True
 
@@ -104,23 +135,22 @@ class ClashDecorator:
                 SpaceView3D.draw_handler_remove(handler, "WINDOW")
             except ValueError:
                 pass
+        cls.handlers = []
         cls.is_installed = False
         cls.group_highlights = {}
-        cls.c_highlights = []
-        cls._batch_cache = {}
+        cls.c_highlights     = []
+        cls._geom_cache.clear()
+        cls._batch_cache.clear()
+
+    # ── Clash data ────────────────────────────────────────────────────────────
 
     @classmethod
     def set_clash_objects(cls, group_highlights_dict: dict, intersections=None) -> None:
-        """Set the objects (or linked-element references) to highlight for one or more clashes.
+        """Set the objects to highlight for the current clash selection.
 
-        Each entry in ``a_list``/``b_list`` may be ``None``, a ``bpy.types.Object``
-        (the whole object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
-        tuple identifying a single element's geometry within a linked model's
-        chunked mesh.
-
-        ``intersections``, if given, is a list of static
-        ``(positions, triangle_indices)`` tuples in world space describing each
-        clash's overlapping volume.
+        Clears the GPU batch cache (cheap to rebuild) but keeps the geometry
+        cache — re-reading mesh data on every clash switch is the expensive
+        part and is unnecessary since geometry is stable during clash review.
         """
         cls._batch_cache.clear()
         cls.group_highlights = {
@@ -142,41 +172,35 @@ class ClashDecorator:
     def _obj_key(obj: "bpy.types.Object") -> "tuple[str, str | None]":
         return (obj.name, obj.library.filepath if obj.library else None)
 
-    def draw_batch(self, shader_type, content_pos, color, indices=None):
-        if not tool.Blender.validate_shader_batch_data(content_pos, indices):
-            return
-        shader = self.line_shader if shader_type == "LINES" else self.shader
-        batch = batch_for_shader(shader, shader_type, {"pos": content_pos}, indices=indices)
-        shader.uniform_float("color", color)
-        batch.draw(shader)
+    # ── Geometry cache (Tier 1) ───────────────────────────────────────────────
+
+    @classmethod
+    def _get_geom(cls, highlight) -> "tuple | None":
+        """Return cached world-space (positions, tri_indices), resolving on first access."""
+        if highlight not in cls._geom_cache:
+            cls._geom_cache[highlight] = cls.resolve_highlight_geometry(highlight)
+        return cls._geom_cache[highlight]
 
     @staticmethod
     def resolve_highlight_geometry(highlight):
-        """Return ``(positions, triangle_indices)`` in world space for a
-        highlight tuple, or ``None`` if it can't be resolved / shouldn't be
-        drawn right now."""
+        """Return (positions, triangle_indices) in world space, or None."""
         if not highlight:
             return None
         obj_key, guid = highlight
         obj = bpy.data.objects.get(obj_key)
         if not obj or obj.type != "MESH" or obj.hide_viewport:
             return None
-        # Linked-model chunk objects live in an instance collection and are
-        # never part of the active view layer, so `visible_get()` is only
-        # meaningful for whole-object highlights of active-file elements.
         if guid is None and not obj.visible_get():
             return None
 
-        mesh = obj.data
+        mesh         = obj.data
         matrix_world = obj.matrix_world
 
         if guid and tool.Project.Link.is_linked_element(obj):
-            # `obj` is a chunk of a linked model's mesh containing many
-            # elements. Only highlight the polygons belonging to `guid`.
-            polygons = mesh.polygons[tool.Project.Link.get_linked_element_geom_slice(obj, guid)]
+            polygons  = mesh.polygons[tool.Project.Link.get_linked_element_geom_slice(obj, guid)]
             vertex_ids = sorted({vi for polygon in polygons for vi in polygon.vertices})
-            vert_map = {vi: i for i, vi in enumerate(vertex_ids)}
-            positions = [matrix_world @ mesh.vertices[vi].co for vi in vertex_ids]
+            vert_map   = {vi: i for i, vi in enumerate(vertex_ids)}
+            positions  = [matrix_world @ mesh.vertices[vi].co for vi in vertex_ids]
             triangle_indices = [tuple(vert_map[vi] for vi in polygon.vertices) for polygon in polygons]
         else:
             positions = [matrix_world @ v.co for v in mesh.vertices]
@@ -185,120 +209,114 @@ class ClashDecorator:
 
         return positions, triangle_indices
 
-    def _draw_tris_direct(self, positions, triangle_indices, color):
-        """Draw filled triangles without caching (used when geometry is pre-clipped)."""
-        if not positions or not triangle_indices:
+    # ── GPU batch cache (Tier 2) ──────────────────────────────────────────────
+
+    @classmethod
+    def _get_batch(cls, highlight):
+        """Return a cached GPUBatch for the highlight, built from Tier 1 geometry."""
+        if highlight not in cls._batch_cache:
+            geom = cls._get_geom(highlight)
+            if geom:
+                positions, indices = geom
+                cls._batch_cache[highlight] = batch_for_shader(
+                    cls._get_clip_shader(), "TRIS", {"pos": positions}, indices=indices
+                )
+            else:
+                cls._batch_cache[highlight] = None
+        return cls._batch_cache[highlight]
+
+    # ── Drawing ───────────────────────────────────────────────────────────────
+
+    def _draw_clipped(self, batch, color, clip_planes) -> None:
+        """Draw a GPUBatch with per-fragment GPU clip planes — no Python clipping."""
+        if batch is None:
             return
-        batch = batch_for_shader(self.shader, "TRIS", {"pos": positions}, indices=triangle_indices)
-        self.shader.uniform_float("color", color)
-        batch.draw(self.shader)
+        shader = self._get_clip_shader()
+        shader.bind()
+        mvp = gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix()
+        shader.uniform_float("ModelViewProjectionMatrix", mvp)
+        shader.uniform_float("color", list(color))
+        n = len(clip_planes) if clip_planes else 0
+        shader.uniform_int("num_clip_planes", n)
+        for i, name in enumerate(_PLANE_NAMES):
+            shader.uniform_float(name, list(clip_planes[i]) if i < n else _ZERO_PLANE)
+        batch.draw(shader)
 
-    def _draw_tris_cached(self, key, geometry, color):
-        """Draw filled triangles for key, building and caching the GPUBatch on first call."""
-        if key not in ClashDecorator._batch_cache:
-            if not geometry:
-                ClashDecorator._batch_cache[key] = None
-                return
-            positions, triangle_indices = geometry
-            if not positions or not triangle_indices:
-                ClashDecorator._batch_cache[key] = None
-                return
-            ClashDecorator._batch_cache[key] = batch_for_shader(
-                self.shader, "TRIS", {"pos": positions}, indices=triangle_indices
-            )
-        batch = ClashDecorator._batch_cache[key]
-        if batch:
-            self.shader.uniform_float("color", color)
-            batch.draw(self.shader)
-
-    def draw_highlighted_object(self, highlight, color, clip_planes=None, clip_key=()):
-        key = (highlight, clip_key)
-        if key not in ClashDecorator._batch_cache:
-            geometry = self.resolve_highlight_geometry(highlight)
-            if clip_planes and geometry:
-                positions, triangle_indices = _clip_geometry(geometry[0], geometry[1], clip_planes)
-                geometry = (positions, triangle_indices) if positions else None
-        else:
-            geometry = None
-        self._draw_tris_cached(key, geometry, [*color[:3], 0.15])
+    def _draw_batch(self, shader_type, content_pos, color, indices=None) -> None:
+        """Draw points or lines using the cached built-in shaders."""
+        if not tool.Blender.validate_shader_batch_data(content_pos, indices):
+            return
+        shader = self._get_line_shader() if shader_type == "LINES" else self._get_plain_shader()
+        batch  = batch_for_shader(shader, shader_type, {"pos": content_pos}, indices=indices)
+        shader.uniform_float("color", color)
+        batch.draw(shader)
 
     def draw_text(self, context):
-        self.addon_prefs = tool.Blender.get_addon_preferences()
-        selected_elements_color = self.addon_prefs.decorator_color_selected
-        unselected_elements_color = self.addon_prefs.decorator_color_unselected
-        special_elements_color = self.addon_prefs.decorator_color_special
-
-        props = tool.Clash.get_clash_props()
-        text = props.active_clash_text
-        p = props.p1.lerp(props.p2, 0.5)
+        addon_prefs = tool.Blender.get_addon_preferences()
+        props       = tool.Clash.get_clash_props()
+        text        = props.active_clash_text
+        p           = props.p1.lerp(props.p2, 0.5)
 
         font_id = 0
         blf.size(font_id, 12)
         coords_2d = location_3d_to_region_2d(context.region, context.region_data, p)
-        color = self.addon_prefs.decorations_colour
-        blf.color(font_id, *color)
+        blf.color(font_id, *addon_prefs.decorations_colour)
         if coords_2d:
             w, h = blf.dimensions(font_id, text)
             coords_2d -= Vector((w * 0.5, 0))
             blf.position(font_id, coords_2d[0], coords_2d[1], 0)
-            blf.draw(font_id, text)  # Set your text here
+            blf.draw(font_id, text)
 
     def draw_geometry(self, context):
-        self.addon_prefs = tool.Blender.get_addon_preferences()
-        selected_elements_color = self.addon_prefs.decorator_color_selected
-        unselected_elements_color = self.addon_prefs.decorator_color_unselected
-        special_elements_color = self.addon_prefs.decorator_color_special
+        addon_prefs = tool.Blender.get_addon_preferences()
+        special_color = addon_prefs.decorator_color_special
 
         gpu.state.point_size_set(6)
         gpu.state.blend_set("ALPHA")
 
-        region_data = context.region_data
+        # ── Collect active clip planes ────────────────────────────────────────
         clip_planes = None
+        region_data = context.region_data
         if region_data and region_data.use_clip_planes:
-            # Deduplicate: Bonsai cycles one plane into all 6 slots
             seen, clip_planes = set(), []
             for p in region_data.clip_planes:
                 t = tuple(round(v, 6) for v in p)
                 if t not in seen:
                     seen.add(t)
                     clip_planes.append(tuple(p))
-        clip_key = tuple(v for plane in clip_planes for v in plane) if clip_planes else ()
 
-        self.line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-        self.line_shader.bind()  # required to be able to change uniforms of the shader
-        # POLYLINE_UNIFORM_COLOR specific uniforms
-        self.line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
-        self.line_shader.uniform_float("lineWidth", 2.0)
+        # ── Clash-point marker (two dots + connecting line) ───────────────────
+        props    = tool.Clash.get_clash_props()
+        p1, p2   = props.p1, props.p2
+        pts      = [p1, p2]
+        # Bind line shader and set viewport size before drawing
+        line_shader = self._get_line_shader()
+        line_shader.bind()
+        line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
+        line_shader.uniform_float("lineWidth", 2.0)
+        self._draw_batch("POINTS", pts, special_color)
+        if p1 != p2:
+            self._draw_batch("LINES", pts, special_color, [[0, 1]])
 
-        # general shader
-        self.shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-
-        props = tool.Clash.get_clash_props()
-        selected_vertices = [props.p1, props.p2]
-        selected_edges = []
-        if selected_vertices[0] != selected_vertices[1]:
-            selected_edges = [[0, 1]]
-
-        self.draw_batch("POINTS", selected_vertices, special_elements_color)
-        if selected_edges:
-            self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
-
+        # ── Highlighted clash elements (A / B groups) ─────────────────────────
         for group, highlights in self.group_highlights.items():
             if not self.show_groups.get(group, True):
                 continue
-            rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
-            color = (*rgb, 0.15)
+            r, g, b = self.group_colors.get(group, (0.5, 0.5, 0.5))
+            color = (r, g, b, 0.15)
             for highlight in highlights:
-                self.draw_highlighted_object(highlight, color, clip_planes, clip_key)
+                self._draw_clipped(self._get_batch(highlight), color, clip_planes)
+
+        # ── Boolean-intersection volume ───────────────────────────────────────
         if self.show_volume:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
-            for i, raw_geometry in enumerate(self.c_highlights):
-                key = (("__c__", i), clip_key)
+            for i, raw_geom in enumerate(self.c_highlights):
+                key = ("__c__", i)
                 if key not in ClashDecorator._batch_cache:
-                    draw_geom = (_clip_geometry(raw_geometry[0], raw_geometry[1], clip_planes)
-                                 if clip_planes else raw_geometry)
-                    self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
-                else:
-                    self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
+                    positions, indices = raw_geom
+                    ClashDecorator._batch_cache[key] = batch_for_shader(
+                        self._get_clip_shader(), "TRIS", {"pos": positions}, indices=indices
+                    )
+                self._draw_clipped(ClashDecorator._batch_cache[key], (1.0, 0.1, 0.1, 0.4), clip_planes)
             gpu.state.depth_test_set(previous_depth_test)
