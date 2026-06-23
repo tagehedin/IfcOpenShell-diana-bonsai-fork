@@ -517,6 +517,15 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         size=4,
         description="Color of not selected verts/edges (used in profile editing mode)",
     )
+    clip_box_cap_color: bpy.props.FloatVectorProperty(
+        name="Clip Box Caps Color",
+        subtype="COLOR",
+        default=(0.0, 0.0, 0.0, 1.0),
+        min=0.0,
+        max=1.0,
+        size=4,
+        description="Fill color of clip-box cross-section caps",
+    )
     decorator_color_special: bpy.props.FloatVectorProperty(
         name="Special Elements Color",
         subtype="COLOR",
@@ -806,6 +815,15 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         layout.row().prop(self, "decorator_color_special")
         layout.row().prop(self, "decorator_color_error")
         layout.row().prop(self, "decorator_color_background")
+        bonsai.bim.helper.draw_expandable_panel(
+            layout,
+            context,
+            "Clip Box",
+            self.draw_clip_box_colors,
+        )
+
+    def draw_clip_box_colors(self, layout: bpy.types.UILayout, context: bpy.types.Context) -> None:
+        layout.row().prop(self, "clip_box_cap_color")
 
     def draw_default_parameters(self, layout: bpy.types.UILayout, context: bpy.types.Context) -> None:
         box = layout.box()
@@ -1915,6 +1933,7 @@ class BIM_PT_decorators_overlay(Panel):
         aggregate_props = tool.Aggregate.get_aggregate_props()
         nest_props = tool.Nest.get_nest_props()
         model_props = tool.Model.get_model_props()
+        system_props = tool.System.get_system_props()
         display_all = overlay.show_overlays
 
         col = layout.column()
@@ -1932,10 +1951,20 @@ class BIM_PT_decorators_overlay(Panel):
         row = col.row(align=True)
         row.prop(model_props, "show_slab_direction", text="Slab Direction")
         row = col.row(align=True)
+        row.prop(model_props, "show_paths", text="Element Paths")
+        row.prop(system_props, "should_draw_decorations", text="System Decorations")
+        row = col.row(align=True)
         row.prop(model_props, "show_bounding_box", text="Bounding Box Dimensions")
         row = col.row(align=True)
         row.prop(model_props, "show_cut_decorator", text="Cut Decorator")
         row.prop(model_props, "show_cut_decorator_fill", text="Fill Cut Decorator")
+        clip_box_props = tool.ClipBox.get_scene_props(context.scene)
+        row = col.row(align=True)
+        # Grey out the toggles when there is no clip box to act on, so the
+        # user can see the controls but can't flip a switch that does nothing.
+        row.enabled = bool(clip_box_props.clip_boxes)
+        row.prop(clip_box_props, "enabled", text="Enable Clipping")
+        row.prop(clip_box_props, "show_caps", text="Show Caps")
 
 
 class BIM_PT_snappping(Panel):

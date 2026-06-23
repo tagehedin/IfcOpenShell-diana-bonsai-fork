@@ -53,9 +53,11 @@ from bonsai.bim.module.model.decorator import (
     BoundingBoxDecorator,
     DoorSwingReadonlyDecorator,
     MEPSegmentExtendPreviewDecorator,
+    MEPSystemPathDecorator,
     SlabDirectionDecorator,
     WallAxisDecorator,
     WallFilletPreviewDecorator,
+    WallSystemPathDecorator,
 )
 from bonsai.bim.module.model.wall import WallGizmoPreviewDecorator
 from bonsai.bim.module.nest.decorator import NestDecorator
@@ -532,6 +534,8 @@ def _install_viewport_overlays() -> None:
     NestDecorator.uninstall()
     WallAxisDecorator.uninstall()
     SlabDirectionDecorator.uninstall()
+    MEPSystemPathDecorator.uninstall()
+    WallSystemPathDecorator.uninstall()
     WallFilletPreviewDecorator.uninstall()
     BendPreviewDecorator.uninstall()
     MEPSegmentExtendPreviewDecorator.uninstall()
@@ -551,6 +555,9 @@ def _install_viewport_overlays() -> None:
             WallAxisDecorator.install(bpy.context)
         if model_props.show_slab_direction:
             SlabDirectionDecorator.install(bpy.context)
+        if model_props.show_paths:
+            MEPSystemPathDecorator.install(bpy.context)
+            WallSystemPathDecorator.install(bpy.context)
         if model_props.show_bounding_box:
             BoundingBoxDecorator.install(bpy.context)
         # Always-installed: draw() self-polls on Scene.BIMPreviewProperties.

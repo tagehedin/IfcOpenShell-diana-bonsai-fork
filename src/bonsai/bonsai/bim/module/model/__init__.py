@@ -117,6 +117,9 @@ classes = (
     wall.GizmoWallFilletPreview,
     wall.GizmoWallFilletReedit,
     wall.GizmoWallFilletToggleOpenings,
+    wall.GizmoPairDisconnect,
+    wall.GizmoSlabEdition,
+    wall.GizmoSlabUnjoinWalls,
     wall.GizmoWallJoinIntersection,
     wall.GizmoWallLinkToggle,
     wall.GizmoWallUnjoinSingle,
@@ -127,7 +130,7 @@ classes = (
     wall.RotateWall90,
     wall.SplitWall,
     wall.SplitWallAtCursor,
-    wall.UnjoinWallPathConnection,
+    wall.DisconnectElements,
     wall.UnjoinWalls,
     wall.EnableWallFilletPreview,
     wall.FinishWallFilletPreview,
@@ -162,11 +165,14 @@ classes = (
     slab.DisableEditingExtrusionProfile,
     slab.DisableEditingSketchExtrusionProfile,
     slab.AddSlabFromWall,
+    slab.CancelEditingSlab,
     slab.DrawPolylineSlab,
     slab.EditExtrusionProfile,
     slab.EditSketchExtrusionProfile,
     slab.EnableEditingExtrusionProfile,
     slab.EnableEditingSketchExtrusionProfile,
+    slab.EnableEditingSlab,
+    slab.FinishEditingSlab,
     slab.RecalculateSlab,
     slab.ResetVertex,
     slab.SetArcIndex,
@@ -193,6 +199,7 @@ classes = (
     prop.BIMDoorProperties,
     prop.BIMRailingProperties,
     prop.BIMRoofProperties,
+    prop.BIMSlabProperties,
     prop.BIMWallProperties,
     prop.BIMPipeSegmentProperties,
     prop.BIMDuctSegmentProperties,
@@ -254,9 +261,13 @@ classes = (
     railing.CopyRailingParameters,
     railing.AddRailing,
     railing.CancelEditingRailing,
+    railing.CycleRailingType,
     railing.FinishEditingRailing,
+    railing.PickRailingTerminalType,
     railing.FlipRailingPathOrder,
     railing.EnableEditingRailing,
+    railing.GizmoRailingSchematic,
+    railing.ToggleRailingUseManualSupports,
     railing.CancelEditingRailingPath,
     railing.FinishEditingRailingPath,
     railing.EnableEditingRailingPath,
@@ -277,9 +288,7 @@ classes = (
     mep.MEPAddObstruction,
     mep.MEPAddTransition,
     mep.MEPAddBend,
-    mep.MEPUnjoinAtPort,
     mep.MEPRemoveTerminalFitting,
-    mep.MEPUnjoinPair,
     mep.SelectMEPPathMembers,
     mep.MEPJoinSegments,
     mep_bend_preview.EnableBendPreview,
@@ -387,6 +396,11 @@ def unregister():
     # before the rest of unregister so those handlers can't fire against
     # half-unloaded module state.
     opening.DecorationsHandler.uninstall()
+
+    # Network path overlays attach SpaceView3D draw handlers on toggle;
+    # uninstall here so addon disable / Blender shutdown doesn't leak them.
+    decorator.MEPSystemPathDecorator.uninstall()
+    decorator.WallSystemPathDecorator.uninstall()
 
     if not bpy.app.background:
         for tool_data in reversed(tools):

@@ -98,7 +98,8 @@ def is_editing_project_library_update(self: "BIMProjectProperties", context: bpy
         project_library = library_file.by_id(int(self.selected_project_library))
         self.project_library_attributes.clear()
         bonsai.bim.helper.import_attributes(project_library, self.project_library_attributes)
-        self.parent_library = str(tool.Project.get_parent_library(project_library).id())
+        if parent_library := tool.Project.get_parent_library(project_library):
+            self.parent_library = str(parent_library.id())
         ProjectLibraryData.load()  # Show edit icon in enum.
         return
 
@@ -306,6 +307,17 @@ class PendingOpeningRecut(PropertyGroup):
         ifc_definition_id: int
 
 
+class PendingArrayRepair(PropertyGroup):
+    """One array parent whose ``BBIM_Array.Data`` references at least one
+    child GUID that does not resolve in the current IFC file. The user can
+    select these parents from the Project panel banner to inspect them."""
+
+    ifc_definition_id: IntProperty(name="IFC Definition ID")
+
+    if TYPE_CHECKING:
+        ifc_definition_id: int
+
+
 class BIMProjectProperties(PropertyGroup):
     is_editing: BoolProperty(name="Is Editing", default=False)
     is_loading: BoolProperty(name="Is Loading", default=False)
@@ -372,6 +384,7 @@ class BIMProjectProperties(PropertyGroup):
         description="Maxium number of openings that object can have. If object has more openings, it will be loaded without openings",
     )
     pending_opening_recut: CollectionProperty(name="Pending Opening Recut", type=PendingOpeningRecut)
+    pending_array_repair: CollectionProperty(name="Pending Array Repair", type=PendingArrayRepair)
     style_limit: IntProperty(
         name="Style Limit",
         default=300,
@@ -538,6 +551,7 @@ class BIMProjectProperties(PropertyGroup):
         angular_tolerance: float
         void_limit: int
         pending_opening_recut: bpy.types.bpy_prop_collection_idprop[PendingOpeningRecut]
+        pending_array_repair: bpy.types.bpy_prop_collection_idprop[PendingArrayRepair]
         style_limit: int
         distance_limit: float
         false_origin_mode: Literal["AUTOMATIC", "MANUAL", "DISABLED"]
