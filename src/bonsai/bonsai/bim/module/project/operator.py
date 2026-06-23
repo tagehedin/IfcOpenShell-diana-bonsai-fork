@@ -1210,6 +1210,14 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
                     bpy.ops.bim.convert_to_blender()
                 elif not self.should_start_fresh_session:
                     self._restore_shader_assignments(shader_assignments)
+                    # Recompute clip planes — plane objects may have been deleted
+                    # during the reload, leaving the viewport clipping with no
+                    # object to reference. refresh_clipping_planes disables clip
+                    # planes automatically when the planes list becomes empty.
+                    try:
+                        bpy.ops.bim.refresh_clipping_planes("INVOKE_DEFAULT")
+                    except Exception:
+                        pass
         except:
             bonsai.last_error = traceback.format_exc()
             raise
