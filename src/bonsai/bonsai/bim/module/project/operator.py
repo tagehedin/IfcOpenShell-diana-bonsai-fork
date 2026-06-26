@@ -1981,11 +1981,13 @@ class ReloadAllLinks(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
+        count = len(props.links)
         for i, link in enumerate(props.links):
             if link.is_loaded:
                 bpy.ops.bim.unload_link(link_index=i)
             bpy.ops.bim.load_link(link_index=i, use_cache=False)
         scan_outdated_links()
+        self.report({"INFO"}, f"Reloaded {count} link(s)")
         return {"FINISHED"}
 
 
