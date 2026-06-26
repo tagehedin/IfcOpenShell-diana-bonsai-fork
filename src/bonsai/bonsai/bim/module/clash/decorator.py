@@ -19,6 +19,7 @@
 import bpy
 import blf
 import gpu
+import time
 from bpy.types import SpaceView3D
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
@@ -80,7 +81,12 @@ class ClashDecorator:
     show_groups: dict = {}        # {"a": True, ...}
     c_highlights: list = []       # boolean intersection volumes
     show_volume = True
-    _batch_cache: dict = {}
+    _geom_cache: dict = {}        # highlight -> (positions, triangle_indices) world-space, unclipped
+    _batch_cache: dict = {}       # (highlight, clip_key) -> GPUBatch
+    _last_clip_key: tuple = ()    # clip_key from the previous frame
+    _clip_stable_since: float = 0.0  # time.time() when clip_key last changed
+    _stable_clip_key: tuple = ()  # last clip_key that was stable (batches already built)
+    _CLIP_IDLE_S: float = 0.15   # seconds of stable clip_key before updating highlights
 
     @classmethod
     def install(cls, context):
@@ -108,6 +114,11 @@ class ClashDecorator:
         cls.group_highlights = {}
         cls.c_highlights = []
         cls._batch_cache = {}
+        cls._last_clip_key = ()
+        cls._clip_stable_since = 0.0
+        cls._stable_clip_key = ()
+        # _geom_cache intentionally kept — world-space geometry is static and
+        # survives uninstall so re-activation skips mesh resolution.
 
     @classmethod
     def set_clash_objects(cls, group_highlights_dict: dict, intersections=None) -> None:
@@ -122,7 +133,9 @@ class ClashDecorator:
         ``(positions, triangle_indices)`` tuples in world space describing each
         clash's overlapping volume.
         """
+        cls._geom_cache.clear()
         cls._batch_cache.clear()
+        cls._stable_clip_key = ()
         cls.group_highlights = {
             g: [h for x in highlights if (h := cls._normalize_highlight(x)) is not None]
             for g, highlights in group_highlights_dict.items()
@@ -212,9 +225,13 @@ class ClashDecorator:
             batch.draw(self.shader)
 
     def draw_highlighted_object(self, highlight, color, clip_planes=None, clip_key=()):
+        # Geometry cache: world-space mesh resolved once, survives clip plane movement.
+        if highlight not in ClashDecorator._geom_cache:
+            ClashDecorator._geom_cache[highlight] = self.resolve_highlight_geometry(highlight)
+
         key = (highlight, clip_key)
         if key not in ClashDecorator._batch_cache:
-            geometry = self.resolve_highlight_geometry(highlight)
+            geometry = ClashDecorator._geom_cache[highlight]
             if clip_planes and geometry:
                 positions, triangle_indices = _clip_geometry(geometry[0], geometry[1], clip_planes)
                 geometry = (positions, triangle_indices) if positions else None
@@ -262,7 +279,21 @@ class ClashDecorator:
                 if t not in seen:
                     seen.add(t)
                     clip_planes.append(tuple(p))
-        clip_key = tuple(v for plane in clip_planes for v in plane) if clip_planes else ()
+        clip_key = tuple(round(v, 3) for plane in clip_planes for v in plane) if clip_planes else ()
+
+        now = time.time()
+        if clip_key != ClashDecorator._last_clip_key:
+            ClashDecorator._last_clip_key = clip_key
+            ClashDecorator._clip_stable_since = now
+        clip_moving = clip_planes is not None and (now - ClashDecorator._clip_stable_since < ClashDecorator._CLIP_IDLE_S)
+        if not clip_moving:
+            ClashDecorator._stable_clip_key = clip_key
+            draw_key = clip_key
+            draw_planes = clip_planes
+        else:
+            # Dragging: keep showing last stable visualization without recomputing.
+            draw_key = ClashDecorator._stable_clip_key
+            draw_planes = None  # batches for stable key are already in _batch_cache
 
         self.line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
         self.line_shader.bind()  # required to be able to change uniforms of the shader
@@ -289,15 +320,15 @@ class ClashDecorator:
             rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
             color = (*rgb, 0.15)
             for highlight in highlights:
-                self.draw_highlighted_object(highlight, color, clip_planes, clip_key)
+                self.draw_highlighted_object(highlight, color, draw_planes, draw_key)
         if self.show_volume:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
             for i, raw_geometry in enumerate(self.c_highlights):
-                key = (("__c__", i), clip_key)
+                key = (("__c__", i), draw_key)
                 if key not in ClashDecorator._batch_cache:
-                    draw_geom = (_clip_geometry(raw_geometry[0], raw_geometry[1], clip_planes)
-                                 if clip_planes else raw_geometry)
+                    draw_geom = (_clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes)
+                                 if draw_planes else raw_geometry)
                     self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
                 else:
                     self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
