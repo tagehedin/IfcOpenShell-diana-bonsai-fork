@@ -846,24 +846,49 @@ class SelectClash(bpy.types.Operator):
         return None, None
 
     @staticmethod
+    @staticmethod
+    def _preclose_mesh(pos, tris):
+        """Build a bmesh from raw positions/triangles, merge near-coincident
+        vertices, fill open boundary loops, and return a new bpy.data.Mesh.
+        Gives the boolean solver a better chance on non-manifold IFC geometry."""
+        import bmesh
+        bm = bmesh.new()
+        verts = [bm.verts.new(p) for p in pos]
+        bm.verts.ensure_lookup_table()
+        for tri in tris:
+            try:
+                bm.faces.new([verts[i] for i in tri])
+            except ValueError:
+                pass  # duplicate face — skip
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.001)
+        bm.edges.ensure_lookup_table()
+        boundary = [e for e in bm.edges if e.is_boundary]
+        if boundary:
+            bmesh.ops.holes_fill(bm, edges=boundary, sides=0)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+        me = bpy.data.meshes.new("_ClashPre")
+        bm.to_mesh(me)
+        bm.free()
+        return me
+
+    @staticmethod
     def compute_intersection_geometry(geometry_a, geometry_b):
         """Compute the boolean intersection volume of two world-space meshes,
         each given as ``(positions, triangle_indices)``. Returns the
-        intersection in the same form, or ``None`` if there's no overlap."""
+        intersection in the same form, or ``None`` if there's no overlap or
+        if the boolean fails (detected by result vertex count matching an input)."""
         pos_a, tris_a = geometry_a
         pos_b, tris_b = geometry_b
         if not pos_a or not tris_a or not pos_b or not tris_b:
             return None
 
-        mesh_a = bpy.data.meshes.new("ClashIntersectA")
-        mesh_a.from_pydata(pos_a, [], tris_a)
-        mesh_a.update()
-        obj_a = bpy.data.objects.new("ClashIntersectA", mesh_a)
+        mesh_a = SelectClash._preclose_mesh(pos_a, tris_a)
+        mesh_b = SelectClash._preclose_mesh(pos_b, tris_b)
+        clean_a_vcount = len(mesh_a.vertices)
+        clean_b_vcount = len(mesh_b.vertices)
 
-        mesh_b = bpy.data.meshes.new("ClashIntersectB")
-        mesh_b.from_pydata(pos_b, [], tris_b)
-        mesh_b.update()
-        obj_b = bpy.data.objects.new("ClashIntersectB", mesh_b)
+        obj_a = bpy.data.objects.new("_ClashIsectA", mesh_a)
+        obj_b = bpy.data.objects.new("_ClashIsectB", mesh_b)
 
         bpy.context.scene.collection.objects.link(obj_a)
         bpy.context.scene.collection.objects.link(obj_b)
@@ -888,6 +913,9 @@ class SelectClash(bpy.types.Operator):
         bpy.data.meshes.remove(result_mesh)
 
         if not positions or not triangle_indices:
+            return None
+        # Detect silent failure: boolean returned one of the cleaned inputs unchanged
+        if len(positions) in (clean_a_vcount, clean_b_vcount):
             return None
         return positions, triangle_indices
 
