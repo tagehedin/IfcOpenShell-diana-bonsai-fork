@@ -31,6 +31,36 @@ from bonsai.bim.module.model.decorator import PolylineDecorator
 
 
 @persistent
+def check_outdated_links_on_load(*args):
+    from bonsai.bim.module.project.operator import scan_outdated_links
+
+    stale = scan_outdated_links()
+    if not stale:
+        return
+
+    print(f"\n[Bonsai] WARNING: {len(stale)} IFC link(s) have updated source files:")
+    for fp in stale:
+        print(f"  - {fp}")
+    print("[Bonsai] Open Project Setup > Links and use 'Reload Latest' to update.\n")
+
+    def _show_popup():
+        def draw(self, context):
+            for fp in stale:
+                self.layout.label(text=fp, icon="ERROR")
+            self.layout.separator()
+            self.layout.label(text="Use 'Reload Latest' in Project Setup > Links.")
+
+        bpy.context.window_manager.popup_menu(
+            draw,
+            title=f"{len(stale)} IFC Link(s) Have Updated Source Files",
+            icon="FILE_REFRESH",
+        )
+        return None  # don't repeat timer
+
+    bpy.app.timers.register(_show_popup, first_interval=1.0)
+
+
+@persistent
 def toggle_decorations_on_load(*args):
     from bonsai.bim.module.project.operator import RefreshClippingPlanes
 

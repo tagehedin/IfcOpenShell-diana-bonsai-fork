@@ -1872,6 +1872,123 @@ class ReloadLink(bpy.types.Operator):
         return bpy.ops.bim.load_link(link_index=self.link_index, use_cache=False) or {"FINISHED"}
 
 
+_stale_link_paths: set[str] = set()
+
+
+def _is_link_outdated(link) -> bool:
+    """Return True if the IFC source file is newer than the cached .blend."""
+    try:
+        ifc_path = Path(tool.Ifc.resolve_uri(link.filepath))
+        # resolve_uri returns the raw relative path when no IFC is open;
+        # fall back to the blend file directory in that case.
+        if not ifc_path.is_absolute() and bpy.data.filepath:
+            ifc_path = Path(bpy.data.filepath).parent / link.filepath
+        cache_path = ifc_path.with_suffix(".ifc.cache.blend")
+        if not ifc_path.exists() or not cache_path.exists():
+            return False
+        return ifc_path.stat().st_mtime > cache_path.stat().st_mtime
+    except Exception:
+        return False
+
+
+def scan_outdated_links() -> list[str]:
+    """Check all links for staleness, cache results in _stale_link_paths.
+
+    Returns list of stale filepaths.
+    """
+    global _stale_link_paths
+    props = tool.Project.get_project_props()
+    _stale_link_paths = {link.filepath for link in props.links if _is_link_outdated(link)}
+    return list(_stale_link_paths)
+
+
+class RelinkIfc(bpy.types.Operator, ImportHelper):
+    bl_idname = "bim.reload_link_from"
+    bl_label = "Reload From..."
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Choose a new source IFC file for the selected link (use when project has moved)"
+
+    filter_glob: bpy.props.StringProperty(default="*.ifc", options={"HIDDEN"})
+    link_index: bpy.props.IntProperty(name="Link Index", default=0)
+    use_relative_path: bpy.props.BoolProperty(
+        name="Use Relative Path",
+        description="Store new path relative to the current IFC file",
+        default=True,
+    )
+    filename_ext = ".ifc"
+
+    if TYPE_CHECKING:
+        filepath: str
+        link_index: int
+        use_relative_path: bool
+
+    def invoke(self, context, event):
+        props = tool.Project.get_project_props()
+        if 0 <= self.link_index < len(props.links):
+            self.filepath = bpy.path.abspath(props.links[self.link_index].filepath)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        if self.link_index >= len(props.links):
+            self.report({"ERROR"}, "Invalid link index")
+            return {"CANCELLED"}
+        link = props.links[self.link_index]
+        new_filepath = self.filepath
+        if tool.Ifc.get():
+            new_filepath = tool.Ifc.get_uri(Path(new_filepath), use_relative_path=self.use_relative_path)
+        link.filepath = new_filepath
+        link.name = new_filepath
+        if tool.Ifc.get() and link.ifc_definition_id:
+            reference = tool.Ifc.get().by_id(link.ifc_definition_id)
+            reference.Location = new_filepath.replace("\\", "/")
+        if link.is_loaded:
+            bpy.ops.bim.unload_link(link_index=self.link_index)
+        result = bpy.ops.bim.load_link(link_index=self.link_index, use_cache=False) or {"FINISHED"}
+        scan_outdated_links()
+        return result
+
+
+class ReloadLatestLinks(bpy.types.Operator):
+    bl_idname = "bim.reload_latest_links"
+    bl_label = "Reload Latest"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Reload all links where the IFC file is newer than the cached version (shown in red)"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        reloaded = 0
+        for i, link in enumerate(props.links):
+            if _is_link_outdated(link):
+                if link.is_loaded:
+                    bpy.ops.bim.unload_link(link_index=i)
+                bpy.ops.bim.load_link(link_index=i, use_cache=False)
+                reloaded += 1
+        scan_outdated_links()
+        if reloaded:
+            self.report({"INFO"}, f"Reloaded {reloaded} outdated link(s)")
+        else:
+            self.report({"INFO"}, "All links are up to date")
+        return {"FINISHED"}
+
+
+class ReloadAllLinks(bpy.types.Operator):
+    bl_idname = "bim.reload_all_links"
+    bl_label = "Reload All"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Reload all links from their IFC source files"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        for i, link in enumerate(props.links):
+            if link.is_loaded:
+                bpy.ops.bim.unload_link(link_index=i)
+            bpy.ops.bim.load_link(link_index=i, use_cache=False)
+        scan_outdated_links()
+        return {"FINISHED"}
+
+
 class ToggleLinkSelectability(bpy.types.Operator):
     bl_idname = "bim.toggle_link_selectability"
     bl_label = "Toggle Link Selectability"

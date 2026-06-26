@@ -541,6 +541,19 @@ class BIM_PT_links(Panel):
         row = self.layout.row(align=True)
         row.operator("bim.link_ifc")
         if self.props.links:
+            from bonsai.bim.module.project.operator import _stale_link_paths
+            if _stale_link_paths:
+                row_warn = self.layout.row()
+                row_warn.alert = True
+                row_warn.label(
+                    text=f"{len(_stale_link_paths)} link(s) have updated source files — use Reload Latest",
+                    icon="ERROR",
+                )
+            row2 = self.layout.row(align=True)
+            op = row2.operator("bim.reload_link_from", icon="FILEBROWSER")
+            op.link_index = self.props.active_link_index
+            row2.operator("bim.reload_latest_links", icon="FILE_REFRESH")
+            row2.operator("bim.reload_all_links", icon="LOOP_FORWARDS")
             if self.props.active_link:
                 row = self.layout.row(align=True)
                 row.alignment = "RIGHT"
@@ -703,7 +716,11 @@ class BIM_UL_links(UIList):
         active_propname,
         index,
     ):
+        from bonsai.bim.module.project.operator import _stale_link_paths
+
         row = layout.row(align=True)
+        if item.filepath in _stale_link_paths:
+            row.alert = True
         if item.is_loaded:
             from bonsai.bim.module.project.prop import Link
 
