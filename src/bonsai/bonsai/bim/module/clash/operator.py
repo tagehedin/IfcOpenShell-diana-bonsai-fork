@@ -19,6 +19,7 @@
 import json
 import logging
 import tempfile
+import time
 from math import radians
 from pathlib import Path
 from typing import TYPE_CHECKING, Union
@@ -907,19 +908,27 @@ class SelectClash(bpy.types.Operator):
         intersections: list = []
         first_clash = None
 
-        for clash_prop in clash_props:
+        total = len(clash_props)
+        print(f"\n[Bonsai Clash] Activating {total} clash(es) in set '{active_clash_set.name}'...")
+        _t0 = time.time()
+
+        for ci, clash_prop in enumerate(clash_props):
             clash = tool.Clash.get_clash(clash_set, clash_prop.a_global_id, clash_prop.b_global_id)
             if not clash:
                 continue
             if first_clash is None:
                 first_clash = clash
 
+            print(f"[Bonsai Clash]   [{ci + 1}/{total}] {clash_prop.a_global_id} vs {clash_prop.b_global_id}")
+
             highlights: list = [None, None]
             for i, global_id in enumerate((clash["a_global_id"], clash["b_global_id"])):
+                side = "A" if i == 0 else "B"
                 try:
                     product = tool.Ifc.get().by_guid(global_id)
                     products.append(product)
                     highlights[i] = tool.Ifc.get_object(product)
+                    print(f"[Bonsai Clash]     {side}: found in active IFC ({global_id})")
                     continue
                 except:
                     pass
@@ -931,7 +940,10 @@ class SelectClash(bpy.types.Operator):
                         continue
                     if link_obj := self.find_linked_obj_by_guid(col, global_id):
                         highlights[i] = (link_obj, global_id)
+                        print(f"[Bonsai Clash]     {side}: found in link '{link.filepath}' ({global_id})")
                         break
+                else:
+                    print(f"[Bonsai Clash]     {side}: not found ({global_id})")
 
             pair = clash.get("pair", "ab")
             g1 = pair[0] if len(pair) >= 1 else "a"
@@ -939,15 +951,26 @@ class SelectClash(bpy.types.Operator):
             group_highlights[g1].append(highlights[0])
             group_highlights[g2].append(highlights[1])
 
+            print(f"[Bonsai Clash]     Resolving geometry...")
+            _tg = time.time()
             geometries = [
                 ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
             ]
+            print(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
+
             if geometries[0] and geometries[1]:
+                print(f"[Bonsai Clash]     Computing intersection volume...")
+                _ti = time.time()
                 intersections.append(self.compute_intersection_geometry(geometries[0], geometries[1]))
+                print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+            else:
+                print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
         if first_clash is None:
+            print(f"[Bonsai Clash] No clashes resolved — nothing to display.")
             return {"FINISHED"}
 
+        print(f"[Bonsai Clash]   Installing decorator...")
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
@@ -959,6 +982,7 @@ class SelectClash(bpy.types.Operator):
         self.props.active_clash_text = (
             first_clash["type"].title() + " " + str(round(first_clash["distance"] * 1000)) + "mm"
         )
+        print(f"[Bonsai Clash] Done in {time.time() - _t0:.2f}s\n")
         return {"FINISHED"}
 
 
