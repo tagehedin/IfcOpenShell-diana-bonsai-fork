@@ -541,6 +541,8 @@ class BIM_PT_links(Panel):
         row = self.layout.row(align=True)
         row.operator("bim.link_ifc")
         if self.props.links:
+            if any(not link.is_loaded for link in self.props.links):
+                self.layout.operator("bim.load_all_links", icon="LINKED")
             from bonsai.bim.module.project.operator import _stale_link_paths
             if _stale_link_paths:
                 row_warn = self.layout.row()

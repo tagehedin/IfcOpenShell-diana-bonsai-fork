@@ -1991,6 +1991,23 @@ class ReloadAllLinks(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class LoadAllLinks(bpy.types.Operator):
+    bl_idname = "bim.load_all_links"
+    bl_label = "Load All Links"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Load all unloaded links from cache"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        count = 0
+        for i, link in enumerate(props.links):
+            if not link.is_loaded:
+                bpy.ops.bim.load_link(link_index=i, use_cache=True)
+                count += 1
+        self.report({"INFO"}, f"Loaded {count} link(s)")
+        return {"FINISHED"}
+
+
 class ToggleLinkSelectability(bpy.types.Operator):
     bl_idname = "bim.toggle_link_selectability"
     bl_label = "Toggle Link Selectability"

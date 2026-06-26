@@ -67,6 +67,7 @@ classes = (
     operator.QueryLinkedElement,
     operator.RefreshClippingPlanes,
     operator.RefreshLibrary,
+    operator.LoadAllLinks,
     operator.ReloadAllLinks,
     operator.ReloadLatestLinks,
     operator.ReloadLink,
