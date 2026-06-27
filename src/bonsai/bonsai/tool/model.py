@@ -3061,6 +3061,8 @@ class Model(bonsai.core.tool.Model):
         x_values = [v[0] for v in obj.bound_box]
         current_length = max(max(x_values) - min(x_values), 0.001)
         rep = ifcopenshell.api.geometry.regenerate_wall_representation(tool.Ifc.get(), element, length=current_length)
+        if rep is None:
+            return
         bonsai.core.geometry.switch_representation(
             tool.Ifc,
             tool.Geometry,
