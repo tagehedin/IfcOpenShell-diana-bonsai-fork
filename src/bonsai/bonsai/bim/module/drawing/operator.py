@@ -626,7 +626,7 @@ class CreateDrawing(bpy.types.Operator):
         result: dict[str, bpy.types.Object] = {}
         for obj in bpy.data.objects:
             if obj.library == target_lib:
-                for guid in (obj.get("guids") or []):
+                for guid in obj.get("guids") or []:
                     result[guid] = obj
 
         self._draw_log_msg(f"[LINKMAP] {len(result)} GlobalIds mapped across chunk objects")
@@ -1005,7 +1005,8 @@ class CreateDrawing(bpy.types.Operator):
                 # Tekla-style MappedRepresentation placement (use-world-coords on the
                 # triangulated iterator does NOT resolve these; Blender objects do).
                 drawing_elements = {
-                    e for e in drawing_elements
+                    e
+                    for e in drawing_elements
                     if (obj := obj_map.get(getattr(e, "GlobalId", None))) is None
                     or tool.Drawing.is_in_camera_view(obj, cam_inv, x, y, clip_start, clip_end)
                 }
@@ -1018,7 +1019,8 @@ class CreateDrawing(bpy.types.Operator):
             else:
                 before = len(drawing_elements)
                 drawing_elements = {
-                    e for e in drawing_elements
+                    e
+                    for e in drawing_elements
                     if (obj := tool.Ifc.get_object(e)) is None
                     or tool.Drawing.is_in_camera_view(obj, cam_inv, x, y, clip_start, clip_end)
                 }
@@ -1119,7 +1121,7 @@ class CreateDrawing(bpy.types.Operator):
                 if element.is_a("IfcAnnotation"):
                     continue
                 obj = tool.Ifc.get_object(element)
-                if obj and obj.type == "MESH" and len(obj.data.polygons):
+                if obj and isinstance(obj, bpy.types.Object) and obj.type == "MESH" and len(obj.data.polygons):
                     elements_with_faces.add(element.GlobalId)
                     raycast_objs.add(obj)
 
@@ -1523,7 +1525,7 @@ class CreateDrawing(bpy.types.Operator):
                 # Multi-segment: sum actual lengths, then deduplicate by exact d string
                 coords = [(float(x), float(y)) for x, y in pts]
                 length = sum(
-                    math.sqrt((coords[i][0] - coords[i-1][0]) ** 2 + (coords[i][1] - coords[i-1][1]) ** 2)
+                    math.sqrt((coords[i][0] - coords[i - 1][0]) ** 2 + (coords[i][1] - coords[i - 1][1]) ** 2)
                     for i in range(1, len(coords))
                 )
                 if length < min_mm:
@@ -1538,7 +1540,9 @@ class CreateDrawing(bpy.types.Operator):
                 parent.remove(child)
             removed += len(to_drop)
 
-        self._draw_log_msg(f"[SHORTPATH] removed {removed - deduped} paths shorter than {min_mm}mm, {deduped} duplicates")
+        self._draw_log_msg(
+            f"[SHORTPATH] removed {removed - deduped} paths shorter than {min_mm}mm, {deduped} duplicates"
+        )
 
     def filter_material_layer_overlaps(self, root: "etree._Element") -> None:
         """Remove IfcMaterialLayer paths that coincide with wall outline paths.
@@ -1671,6 +1675,7 @@ class CreateDrawing(bpy.types.Operator):
 
     def _draw_log_msg(self, msg: str) -> None:
         from datetime import datetime
+
         stamped = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
         print(stamped)
         if not hasattr(self, "_draw_log"):
@@ -4448,9 +4453,7 @@ class ConvertSheetSVGToPDF(bpy.types.Operator):
     def execute(self, context):
         props = tool.Drawing.get_document_props()
         if self.convert_all:
-            sheets = [
-                tool.Ifc.get().by_id(s.ifc_definition_id) for s in props.sheets if s.is_sheet and s.is_selected
-            ]
+            sheets = [tool.Ifc.get().by_id(s.ifc_definition_id) for s in props.sheets if s.is_sheet and s.is_selected]
         else:
             sheet_item = tool.Drawing.get_active_sheet_item()
             assert sheet_item
@@ -4528,7 +4531,7 @@ class ExcludeHiddenFromDrawing(bpy.types.Operator, tool.Ifc.Operator):
         hidden_elements = set()
         for element in drawing_elements:
             obj = tool.Ifc.get_object(element)
-            if obj and obj.hide_get():
+            if obj and isinstance(obj, bpy.types.Object) and obj.hide_get():
                 hidden_elements.add(element)
 
         if not hidden_elements:
@@ -4538,6 +4541,7 @@ class ExcludeHiddenFromDrawing(bpy.types.Operator, tool.Ifc.Operator):
         # Group by IFC class — if ALL instances of a class are hidden use the class name,
         # otherwise fall back to individual GlobalIds
         from collections import defaultdict
+
         by_class: dict[str, list] = defaultdict(list)
         class_totals: dict[str, int] = defaultdict(int)
         for element in drawing_elements:
@@ -4817,18 +4821,18 @@ _CUT_ONLY_LAYERS = {"IfcMaterialLayer", "IfcOpeningElement"}
 # Default styles — suffix keys apply to all layers of that type,
 # full layer-name keys override for specific layers.
 _LAYER_DEFAULTS: dict[str, dict] = {
-    "-cut":        {"dxf_color": 3, "line_weight": 0.30, "svg_color": "#000000"},
+    "-cut": {"dxf_color": 3, "line_weight": 0.30, "svg_color": "#000000"},
     "-projection": {"dxf_color": 1, "line_weight": 0.13, "svg_color": "#888888"},
     # ── Exceptions ────────────────────────────────────────────────────────
-    "IfcWall-cut":                        {"dxf_color": 1, "line_weight": 0.13, "svg_color": "#000000"},
-    "IfcWallExternal-cut":                {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
-    "IfcWallExternalLoadBearing-cut":     {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
-    "IfcSlab-projection":                 {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
-    "IfcFlowSegment-projection":          {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
-    "IfcFlowFitting-projection":          {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
-    "IfcFlowTerminal-projection":         {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
-    "IfcFlowController-projection":       {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
-    "IfcFlowTreatmentDevice-projection":  {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcWall-cut": {"dxf_color": 1, "line_weight": 0.13, "svg_color": "#000000"},
+    "IfcWallExternal-cut": {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
+    "IfcWallExternalLoadBearing-cut": {"dxf_color": 7, "line_weight": 0.50, "svg_color": "#000000"},
+    "IfcSlab-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowSegment-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowFitting-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowTerminal-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowController-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
+    "IfcFlowTreatmentDevice-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
     "IfcEnergyConversionDevice-projection": {"dxf_color": 4, "line_weight": 0.13, "svg_color": "#aaaaaa"},
 }
 
