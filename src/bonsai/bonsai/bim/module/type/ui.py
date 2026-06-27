@@ -105,6 +105,7 @@ class BIM_PT_type(Panel):
                 op.assign_selected_objects = True
                 row.operator("bim.enable_editing_type", icon="GREASEPENCIL", text="")
                 row.operator("bim.unassign_type", icon="X", text="")
+                row.operator("bim.recreate_type_from_element", icon="FILE_REFRESH", text="")
             else:
                 row.label(text="No Relating Type")
                 row.operator("bim.enable_editing_type", icon="GREASEPENCIL", text="")

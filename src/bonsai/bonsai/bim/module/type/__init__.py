@@ -36,6 +36,7 @@ classes = (
     operator.SelectSimilarType,
     operator.SelectType,
     operator.SelectTypeObjects,
+    operator.RecreateTypeFromElement,
     operator.UnassignType,
     prop.BIMTypeProperties,
     ui.BIM_PT_type,

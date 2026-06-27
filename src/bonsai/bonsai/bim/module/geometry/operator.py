@@ -2597,6 +2597,7 @@ class OverridePasteBuffer(bpy.types.Operator):
 
         self._reconstruct_relationships(ifc, clipboard_ifc, clipboard_to_target)
         self._deduplicate_contexts(ifc, pre_paste_context_ids)
+        self._copy_missing_type_styles(ifc, clipboard_ifc, reuse_identities, clipboard_to_target)
 
         # Read the container name map stored by the copy operator.
         import json
@@ -2643,6 +2644,19 @@ class OverridePasteBuffer(bpy.types.Operator):
                 del clipboard_to_target[el.id()]
                 continue
             target_elements.add(target_el)
+
+        # If a freshly-pasted type was retroactively merged into a pre-existing type entity
+        # by append_asset's deduplication, that type won't be in clipboard_to_target and
+        # therefore won't be in target_elements. Ensure every pasted element's type gets a
+        # Blender object, even if the type itself wasn't directly pasted.
+        for target_el in list(target_elements):
+            if not hasattr(target_el, "IsTypedBy"):
+                continue
+            for rel in target_el.IsTypedBy:
+                t = rel.RelatingType
+                if t not in target_elements and tool.Ifc.get_object(t) is None:
+                    target_elements.add(t)
+
         self._load_batch_into_blender(ifc_import_settings, target_elements)
 
         pasted_objs = []
@@ -2685,6 +2699,107 @@ class OverridePasteBuffer(bpy.types.Operator):
             tool.Root.unlink_object(obj)
         self.report({"INFO"}, f"{len(pasted_objects)} object(s) pasted and unlinked from IFC.")
         return {"FINISHED"}
+
+    def _copy_missing_type_styles(
+        self,
+        ifc: ifcopenshell.file,
+        clipboard_ifc: ifcopenshell.file,
+        reuse_identities: dict,
+        clipboard_to_target: dict[int, ifcopenshell.entity_instance],
+    ) -> None:
+        """Ensure pasted type RepresentationMap geometry items carry IfcSurfaceStyles.
+
+        Two scenarios handled:
+        1. Clipboard type RM HAS styled items but append_asset lost the links — re-create them.
+        2. Source type RM has no styles; styles only exist on the element's own element-level
+           representation. Propagate those styles to the type RM by positional matching so
+           future instances of the type also inherit the correct appearance."""
+        added = 0
+
+        # Track which destination types came from this paste.
+        # Two sources: (a) types directly pasted via reuse_identities, (b) types that pasted
+        # elements are linked to (handles cases where a pre-existing type was reused by name).
+        pasted_dest_type_ids: set[int] = set()
+        for clip_type in clipboard_ifc.by_type("IfcElementType"):
+            dest_type = reuse_identities.get(clip_type.id())
+            if dest_type is not None:
+                pasted_dest_type_ids.add(dest_type.id())
+        for dest_el in clipboard_to_target.values():
+            if not hasattr(dest_el, "IsTypedBy"):
+                continue
+            for rel in dest_el.IsTypedBy:
+                pasted_dest_type_ids.add(rel.RelatingType.id())
+
+        # Step 1: clipboard type RM already has styled items — re-link any that got lost.
+        for clip_type in clipboard_ifc.by_type("IfcElementType"):
+            if not clip_type.RepresentationMaps:
+                continue
+            for rm in clip_type.RepresentationMaps:
+                for clip_item in rm.MappedRepresentation.Items:
+                    clip_styled_list = list(clip_item.StyledByItem)
+                    if not clip_styled_list:
+                        continue
+                    dest_item = reuse_identities.get(clip_item.id())
+                    if dest_item is None or list(dest_item.StyledByItem):
+                        continue
+                    for clip_styled in clip_styled_list:
+                        dest_styles = []
+                        for clip_style in clip_styled.Styles:
+                            dest_style = reuse_identities.get(clip_style.id())
+                            if dest_style is None:
+                                name = getattr(clip_style, "Name", None)
+                                if name:
+                                    dest_style = next(
+                                        (s for s in ifc.by_type(clip_style.is_a()) if getattr(s, "Name", None) == name),
+                                        None,
+                                    )
+                            if dest_style is not None:
+                                dest_styles.append(dest_style)
+                        if dest_styles:
+                            ifc.create_entity("IfcStyledItem", Item=dest_item, Styles=dest_styles)
+                            added += 1
+
+        # Step 2: type RM has no styles at all (source type was undecorated, styles only on
+        # element-level reps). Propagate from a pasted instance's own styled rep to the type RM
+        # by positional matching (same source geometry, same item count, same order).
+        for dest_type in ifc.by_type("IfcElementType"):
+            if dest_type.id() not in pasted_dest_type_ids:
+                continue
+            if not dest_type.RepresentationMaps:
+                continue
+            instances = list(ifcopenshell.util.element.get_types(dest_type))
+            for instance in instances:
+                if not instance.Representation:
+                    continue
+                for inst_rep in instance.Representation.Representations:
+                    # Collect styled geometry items: direct, or via IfcMappedItem → MappingSource
+                    inst_items = []
+                    for i in inst_rep.Items:
+                        if i.is_a("IfcMappedItem"):
+                            inst_items.extend(
+                                s for s in i.MappingSource.MappedRepresentation.Items
+                                if list(s.StyledByItem)
+                            )
+                        elif list(i.StyledByItem):
+                            inst_items.append(i)
+                    if not inst_items:
+                        continue
+                    for rm in dest_type.RepresentationMaps:
+                        type_items = list(rm.MappedRepresentation.Items)
+                        if len(type_items) != len(inst_items):
+                            continue
+                        for type_item, src_item in zip(type_items, inst_items):
+                            if list(type_item.StyledByItem):
+                                continue
+                            for src_styled in src_item.StyledByItem:
+                                ifc.create_entity(
+                                    "IfcStyledItem", Item=type_item, Styles=list(src_styled.Styles)
+                                )
+                                added += 1
+                    break  # One styled instance is enough as style source
+
+        if added:
+            print(f"Paste: added {added} missing IfcStyledItem link(s) to type representations.")
 
     def _reconstruct_relationships(
         self,
@@ -2781,7 +2896,12 @@ class OverridePasteBuffer(bpy.types.Operator):
                     ifc_importer.create_style(style)
         ifc_importer.material_creator.load_existing_materials()
         print(f"Paste: loading {len(elements)} elements into Blender ...")
-        ifc_importer.create_generic_elements(elements)
+        type_elements = {e for e in elements if e.is_a("IfcTypeProduct")}
+        product_elements = elements - type_elements
+        if product_elements:
+            ifc_importer.create_generic_elements(product_elements)
+        for element_type in type_elements:
+            ifc_importer.create_element_type(element_type)
         print("Paste: placing objects in collections ...")
         ifc_importer.place_objects_in_collections()
         print("Paste: done loading.")

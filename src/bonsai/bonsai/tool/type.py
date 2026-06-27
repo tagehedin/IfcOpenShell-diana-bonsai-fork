@@ -79,7 +79,7 @@ class Type(bonsai.core.tool.Type):
 
     @classmethod
     def get_object_data(cls, obj: bpy.types.Object) -> Union[bpy.types.ID, None]:
-        return obj.data
+        return obj.data if obj else None
 
     @classmethod
     def get_profile_set_usage(cls, element: ifcopenshell.entity_instance) -> Union[ifcopenshell.entity_instance, None]:

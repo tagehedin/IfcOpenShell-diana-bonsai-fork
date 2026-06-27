@@ -1082,6 +1082,8 @@ class ProductDecorator:
         else:
             return
 
+        if not hasattr(self, "preview_mode"):
+            return
         if self.preview_mode == "LAYER2":
             data = self.get_wall_preview_data()
         elif self.preview_mode == "LAYER3":

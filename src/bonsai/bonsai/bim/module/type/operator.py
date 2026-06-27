@@ -624,3 +624,78 @@ class EditTypeAttributes(bpy.types.Operator, tool.Ifc.Operator):
         bpy.ops.bim.disable_editing_type_attributes()
 
         return {"FINISHED"}
+
+
+class RecreateTypeFromElement(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.recreate_type_from_element"
+    bl_label = "Recreate Type from Element"
+    bl_description = (
+        "Copy geometry and surface styles from this element's own representation "
+        "into its type's RepresentationMaps, so all instances of the type share "
+        "the correct appearance."
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _execute(self, context):
+        import logging
+        import bonsai.bim.import_ifc as import_ifc
+
+        ifc = tool.Ifc.get()
+        obj = context.active_object
+        element = tool.Ifc.get_entity(obj)
+        if not element or not element.is_a("IfcObject"):
+            self.report({"WARNING"}, "No IFC element selected.")
+            return {"CANCELLED"}
+
+        typed_by = list(element.IsTypedBy)
+        if not typed_by:
+            self.report({"WARNING"}, "Element has no type assigned.")
+            return {"CANCELLED"}
+
+        type_entity = typed_by[0].RelatingType
+
+        # Collect unique RMs from element's own mapped representations
+        element_rms = []
+        seen_rm_ids: set[int] = set()
+        if element.Representation:
+            for rep in element.Representation.Representations:
+                for item in rep.Items:
+                    if item.is_a("IfcMappedItem"):
+                        rm = item.MappingSource
+                        if rm.id() not in seen_rm_ids:
+                            element_rms.append(rm)
+                            seen_rm_ids.add(rm.id())
+
+        if not element_rms:
+            self.report({"WARNING"}, "Element has no mapped geometry to transfer to the type.")
+            return {"CANCELLED"}
+
+        # Assign element's RMs to the type
+        type_entity.RepresentationMaps = element_rms
+
+        # Remove stale type Blender object so the importer creates a fresh one
+        type_obj = tool.Ifc.get_object(type_entity)
+        if type_obj:
+            old_mesh = type_obj.data
+            tool.Ifc.unlink(element=type_entity)
+            bpy.data.objects.remove(type_obj)
+            if old_mesh and old_mesh.users == 0:
+                bpy.data.meshes.remove(old_mesh)
+
+        # Recreate the type Blender object with correct geometry and materials
+        logger = logging.getLogger("ImportIFC")
+        ifc_import_settings = import_ifc.IfcImportSettings.factory(context, tool.Ifc.get_path(), logger)
+        ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
+        ifc_importer.file = ifc
+        ifc_importer.has_existing_project = True
+        ifc_importer.process_context_filter()
+        ifc_importer.material_creator.load_existing_materials()
+        for style in ifcopenshell.util.element.get_styles(type_entity):
+            if not tool.Ifc.get_object(style):
+                ifc_importer.create_style(style)
+        ifc_importer.material_creator.load_existing_materials()
+        ifc_importer.create_element_type(type_entity)
+        ifc_importer.place_objects_in_collections()
+
+        self.report({"INFO"}, f"Type '{type_entity.Name}' recreated from element geometry.")
+        return {"FINISHED"}
