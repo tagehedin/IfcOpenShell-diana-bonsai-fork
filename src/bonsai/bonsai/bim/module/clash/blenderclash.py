@@ -42,21 +42,26 @@ from mathutils.bvhtree import BVHTree
 
 import bonsai.tool as tool
 
-
 # ---------------------------------------------------------------------------
 # Per-element geometry wrapper
 # ---------------------------------------------------------------------------
+
 
 class _ElementGeom:
     """Lazy BVH + cached AABB for one IFC element inside a Blender mesh object."""
 
     __slots__ = (
-        "obj", "guid", "ifc_filepath", "ifc_class", "ifc_name",
-        "poly_slice",         # slice into obj.data.polygons, or None = whole object
+        "obj",
+        "guid",
+        "ifc_filepath",
+        "ifc_class",
+        "ifc_name",
+        "poly_slice",  # slice into obj.data.polygons, or None = whole object
         "matrix_world",
-        "bbox_min", "bbox_max",
-        "_ws_verts",          # (V, 3) float32 world-space verts for this element (shared ref from cache)
-        "_loop_verts",        # (P, 3) int32 triangle indices into _ws_verts (relative to element)
+        "bbox_min",
+        "bbox_max",
+        "_ws_verts",  # (V, 3) float32 world-space verts for this element (shared ref from cache)
+        "_loop_verts",  # (P, 3) int32 triangle indices into _ws_verts (relative to element)
         "_bvh",
     )
 
@@ -81,7 +86,7 @@ class _ElementGeom:
         self.matrix_world = matrix_world
         self.bbox_min: Optional[Vector] = None
         self.bbox_max: Optional[Vector] = None
-        self._ws_verts = ws_verts    # may be None if not pre-computed
+        self._ws_verts = ws_verts  # may be None if not pre-computed
         self._loop_verts = loop_verts  # may be None if not pre-computed
         self._bvh: Optional[BVHTree] = None
 
@@ -121,7 +126,9 @@ class _ElementGeom:
         xs, ys, zs = [], [], []
         for vi in vert_ids:
             co = mat @ verts_data[vi].co
-            xs.append(co.x); ys.append(co.y); zs.append(co.z)
+            xs.append(co.x)
+            ys.append(co.y)
+            zs.append(co.z)
         self.bbox_min = Vector((min(xs), min(ys), min(zs)))
         self.bbox_max = Vector((max(xs), max(ys), max(zs)))
 
@@ -167,6 +174,7 @@ class _ElementGeom:
 # Per-object numpy cache (shared across all elements of the same chunk)
 # ---------------------------------------------------------------------------
 
+
 class _ObjCache:
     """Pre-computed world-space data for one Blender mesh object."""
 
@@ -203,6 +211,7 @@ class _ObjCache:
 # Core clasher
 # ---------------------------------------------------------------------------
 
+
 class BlenderClasher:
     """
     Clash detector that operates on Blender mesh objects already loaded from
@@ -234,10 +243,7 @@ class BlenderClasher:
 
     def export(self) -> None:
         """Write clash results to settings.output as JSON (same format as ifcclash)."""
-        out = [
-            {k: v for k, v in cs.items() if k != "ifc"}
-            for cs in self.clash_sets
-        ]
+        out = [{k: v for k, v in cs.items() if k != "ifc"} for cs in self.clash_sets]
         with open(self.settings.output, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=4)
 
@@ -344,8 +350,7 @@ class BlenderClasher:
                     ifc_class, ifc_name = meta.get(guid, ("Unknown", guid))
                     ws = cache.ws_verts
                     lv = cache.tri_verts
-                    eg = _ElementGeom(obj, guid, obj_ifc_raw, ifc_class, ifc_name,
-                                      None, mat, ws, lv)
+                    eg = _ElementGeom(obj, guid, obj_ifc_raw, ifc_class, ifc_name, None, mat, ws, lv)
                     eg.compute_bbox_fast()
                     elements.append(eg)
                 else:
@@ -380,8 +385,9 @@ class BlenderClasher:
                 poly_slice = tool.Project.Link.get_linked_element_geom_slice(obj, guid)
                 if poly_slice is None or poly_slice.start >= poly_slice.stop:
                     continue
-                self._append_element_slice(obj, guid, meta, obj_ifc_raw, mat, cache,
-                                           poly_slice.start, poly_slice.stop, elements)
+                self._append_element_slice(
+                    obj, guid, meta, obj_ifc_raw, mat, cache, poly_slice.start, poly_slice.stop, elements
+                )
             return
 
         starts = np.concatenate([[0], guid_ids[:-1]])  # start polygon index for each element
@@ -407,11 +413,10 @@ class BlenderClasher:
     ) -> None:
         tri_sub = cache.tri_verts[s:t]  # (t-s, 3) global vertex IDs
         unique_vids, inverse = np.unique(tri_sub.ravel(), return_inverse=True)
-        ws_sub = cache.ws_verts[unique_vids]                      # (U, 3)
+        ws_sub = cache.ws_verts[unique_vids]  # (U, 3)
         tri_local = inverse.reshape(tri_sub.shape).astype(np.int32)  # (t-s, 3)
         ifc_class, ifc_name = meta.get(guid, ("Unknown", guid))
-        eg = _ElementGeom(obj, guid, obj_ifc_raw, ifc_class, ifc_name,
-                          slice(s, t), mat, ws_sub, tri_local)
+        eg = _ElementGeom(obj, guid, obj_ifc_raw, ifc_class, ifc_name, slice(s, t), mat, ws_sub, tri_local)
         eg.compute_bbox_fast()
         elements.append(eg)
 
@@ -428,6 +433,7 @@ class BlenderClasher:
 
     def _process_clash_set(self, clash_set: dict) -> None:
         import time
+
         t0 = time.perf_counter()
         name = clash_set.get("name", "?")
         mode = clash_set.get("mode", "intersection")
@@ -457,7 +463,7 @@ class BlenderClasher:
 
         results: dict = {}
         for i, g1 in enumerate(group_list):
-            for g2 in group_list[i + 1:]:
+            for g2 in group_list[i + 1 :]:
                 pair_name = (g1 + g2).replace("_self", g1)
                 same = g1 == g2 or "_self" in (g1, g2)
                 elems1, elems2 = all_groups[g1], all_groups[g2]
@@ -490,9 +496,10 @@ class BlenderClasher:
             return []
 
         c = float(clearance)
-        b_arr = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z,
-                           e.bbox_max.x, e.bbox_max.y, e.bbox_max.z]
-                          for e in b_list], dtype=np.float32)
+        b_arr = np.array(
+            [[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z, e.bbox_max.x, e.bbox_max.y, e.bbox_max.z] for e in b_list],
+            dtype=np.float32,
+        )
         b_min_x, b_min_y, b_min_z = b_arr[:, 0], b_arr[:, 1], b_arr[:, 2]
         b_max_x, b_max_y, b_max_z = b_arr[:, 3], b_arr[:, 4], b_arr[:, 5]
 
@@ -501,22 +508,23 @@ class BlenderClasher:
         chunk = self._BBOX_CHUNK
 
         for i0 in range(0, len(a_list), chunk):
-            a_slice = a_list[i0: i0 + chunk]
-            a_arr = np.array([[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z,
-                               e.bbox_max.x, e.bbox_max.y, e.bbox_max.z]
-                              for e in a_slice], dtype=np.float32)
+            a_slice = a_list[i0 : i0 + chunk]
+            a_arr = np.array(
+                [[e.bbox_min.x, e.bbox_min.y, e.bbox_min.z, e.bbox_max.x, e.bbox_max.y, e.bbox_max.z] for e in a_slice],
+                dtype=np.float32,
+            )
             a_min_x, a_min_y, a_min_z = a_arr[:, 0], a_arr[:, 1], a_arr[:, 2]
             a_max_x, a_max_y, a_max_z = a_arr[:, 3], a_arr[:, 4], a_arr[:, 5]
 
             # Axis-separated comparison: 6 × (C, B) bool arrays, much less peak memory
             # than the (C, B, 3) broadcast approach.
             overlap = (
-                (a_min_x[:, np.newaxis] - c <= b_max_x[np.newaxis, :]) &
-                (a_max_x[:, np.newaxis] + c >= b_min_x[np.newaxis, :]) &
-                (a_min_y[:, np.newaxis] - c <= b_max_y[np.newaxis, :]) &
-                (a_max_y[:, np.newaxis] + c >= b_min_y[np.newaxis, :]) &
-                (a_min_z[:, np.newaxis] - c <= b_max_z[np.newaxis, :]) &
-                (a_max_z[:, np.newaxis] + c >= b_min_z[np.newaxis, :])
+                (a_min_x[:, np.newaxis] - c <= b_max_x[np.newaxis, :])
+                & (a_max_x[:, np.newaxis] + c >= b_min_x[np.newaxis, :])
+                & (a_min_y[:, np.newaxis] - c <= b_max_y[np.newaxis, :])
+                & (a_max_y[:, np.newaxis] + c >= b_min_y[np.newaxis, :])
+                & (a_min_z[:, np.newaxis] - c <= b_max_z[np.newaxis, :])
+                & (a_max_z[:, np.newaxis] + c >= b_min_z[np.newaxis, :])
             )
 
             for ci, bj in np.argwhere(overlap):

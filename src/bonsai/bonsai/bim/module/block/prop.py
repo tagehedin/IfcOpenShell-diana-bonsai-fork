@@ -25,7 +25,6 @@ from bpy.types import PropertyGroup
 import bonsai.tool as tool
 
 
-
 class BIMBlockDefinition(PropertyGroup):
     name: StringProperty(name="Name")
 

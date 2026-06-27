@@ -92,11 +92,12 @@ class BIM_PT_ifcclash(Panel):
             assert_never(clash_set.mode)
 
         from bonsai.bim.module.clash.prop import GROUP_NAMES
+
         color_map = {item.name: item for item in props.group_highlight_colors}
 
         def draw_clash_set_group(group: tool.Clash.ClashSourceGroup) -> None:
             row = layout.row(align=True)
-            if (color_item := color_map.get(group)):
+            if color_item := color_map.get(group):
                 icon = "HIDE_OFF" if color_item.show_highlight else "HIDE_ON"
                 row.prop(color_item, "show_highlight", text="", icon=icon, toggle=True)
                 row.prop(color_item, "color", text="")
@@ -326,11 +327,13 @@ class BIM_PT_saved_clash_views(Panel):
     @classmethod
     def poll(cls, context):
         import bonsai.tool as tool
+
         if tool.Blender.should_show_panel(context, cls.bim_tab_name, cls.bl_idname):
             return True
 
     def draw(self, context):
         from bonsai.bim.module.clash.operator import get_saved_view_icon_id
+
         layout = self.layout
         props = tool.Clash.get_clash_props()
 

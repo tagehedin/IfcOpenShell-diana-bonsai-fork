@@ -25,6 +25,7 @@ from . import operator, prop, ui
 @persistent
 def _init_group_colors(dummy=None):
     from bonsai.bim.module.clash.prop import ensure_group_colors
+
     try:
         scenes = bpy.data.scenes
     except AttributeError:
@@ -37,9 +38,11 @@ def _init_group_colors(dummy=None):
 @persistent
 def _reload_icons_if_needed(dummy=None):
     import bonsai.bim as bim_mod
+
     if bim_mod.icons is not None:
         return
     import os
+
     icons_dir = os.path.join(os.path.dirname(bim_mod.__file__), "data", "icons")
     if not os.path.exists(icons_dir):
         return
@@ -50,6 +53,7 @@ def _reload_icons_if_needed(dummy=None):
     bim_mod.icons = ip
     if hasattr(bim_mod, "UIData"):
         bim_mod.UIData.is_loaded = False
+
 
 classes = (
     operator.AddClashSet,

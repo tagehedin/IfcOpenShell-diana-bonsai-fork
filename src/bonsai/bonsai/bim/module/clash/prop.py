@@ -35,7 +35,6 @@ from mathutils import Vector
 import bonsai.tool as tool
 from bonsai.bim.prop import BIMFilterGroup, StrProperty
 
-
 GROUP_NAMES = ("a", "b", "c", "d", "e", "f", "g", "h")
 _GROUP_DEFAULT_COLORS: dict[str, tuple] = {
     "a": (0.2, 0.9, 0.2),
@@ -51,18 +50,21 @@ _GROUP_DEFAULT_COLORS: dict[str, tuple] = {
 
 def group_color_update(self: "BIMGroupColor", context: bpy.types.Context) -> None:
     from bonsai.bim.module.clash.decorator import ClashDecorator
+
     ClashDecorator.group_colors[self.name] = tuple(self.color)
     tool.Blender.update_all_viewports(context)
 
 
 def group_show_update(self: "BIMGroupColor", context: bpy.types.Context) -> None:
     from bonsai.bim.module.clash.decorator import ClashDecorator
+
     ClashDecorator.show_groups[self.name] = self.show_highlight
     tool.Blender.update_all_viewports(context)
 
 
 def volume_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
     from bonsai.bim.module.clash.decorator import ClashDecorator
+
     ClashDecorator.show_volume = self.show_volume_highlight
     tool.Blender.update_all_viewports(context)
 
@@ -117,8 +119,13 @@ class BIMSavedView(PropertyGroup):
 
 class BIMGroupColor(PropertyGroup):
     color: FloatVectorProperty(
-        name="Color", subtype="COLOR", size=3, min=0.0, max=1.0,
-        default=(1.0, 1.0, 1.0), update=group_color_update,
+        name="Color",
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0),
+        update=group_color_update,
     )
     show_highlight: BoolProperty(name="Show", default=True, update=group_show_update)
 

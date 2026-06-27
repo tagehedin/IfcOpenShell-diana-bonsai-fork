@@ -208,9 +208,7 @@ class PickTypeByObject(bpy.types.Operator):
             self.report({"WARNING"}, f"'{obj.name}' has no IfcElementType assigned")
             return {"CANCELLED"}
 
-        applicable_classes = ifcopenshell.util.type.get_applicable_entities(
-            element_type.is_a(), tool.Ifc.get().schema
-        )
+        applicable_classes = ifcopenshell.util.type.get_applicable_entities(element_type.is_a(), tool.Ifc.get().schema)
 
         assigned = 0
         for target_obj in tool.Blender.get_selected_objects():

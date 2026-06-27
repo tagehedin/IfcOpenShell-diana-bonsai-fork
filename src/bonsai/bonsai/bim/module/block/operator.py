@@ -86,6 +86,7 @@ def _mirror_ifc_item(
         users = [e for e in ifc_file.get_inverse(rep_map) if e.is_a("IfcMappedItem")]
         if len(users) > 1:
             from ifcopenshell.util.element import copy_deep
+
             rep_map = copy_deep(ifc_file, rep_map, exclude=["IfcGeometricRepresentationContext"])
             item.MappingSource = rep_map
         for sub in rep_map.MappedRepresentation.Items:
@@ -208,12 +209,16 @@ def _sync_element_properties(
 
     # 3. Direct material — skip usage types; those come from type assignment
     def_material = ifcopenshell.util.element.get_material(def_element, should_inherit=False)
-    if def_material and not def_material.is_a("IfcMaterialLayerSetUsage") \
-            and not def_material.is_a("IfcMaterialProfileSetUsage"):
+    if (
+        def_material
+        and not def_material.is_a("IfcMaterialLayerSetUsage")
+        and not def_material.is_a("IfcMaterialProfileSetUsage")
+    ):
         inst_material = ifcopenshell.util.element.get_material(inst_element, should_inherit=False)
         if def_material != inst_material:
             ifcopenshell.api.run(
-                "material.assign_material", ifc,
+                "material.assign_material",
+                ifc,
                 products=[inst_element],
                 type=def_material.is_a(),
                 material=def_material,
@@ -231,14 +236,13 @@ def _sync_element_properties(
     for rel in getattr(inst_element, "HasAssociations", None) or []:
         if rel.is_a("IfcRelAssociatesClassification"):
             ref = rel.RelatingClassification
-            inst_class_keys.add(
-                getattr(ref, "Identification", None) or getattr(ref, "ItemReference", None) or ref.id()
-            )
+            inst_class_keys.add(getattr(ref, "Identification", None) or getattr(ref, "ItemReference", None) or ref.id())
 
     for key, ref in def_class_refs.items():
         if key not in inst_class_keys:
             ifcopenshell.api.run(
-                "classification.add_reference", ifc,
+                "classification.add_reference",
+                ifc,
                 products=[inst_element],
                 reference=ref,
                 classification=getattr(ref, "ReferencedSource", None),
@@ -283,8 +287,10 @@ def _consolidate_styles(ifc: "ifcopenshell.file") -> None:
     but not their presentation.  We group by name, keep the lowest-id original, redirect
     all references to duplicates, then remove the duplicates.
     """
+
     def _merge_by_name(entities):
         from collections import defaultdict
+
         by_name: dict[str, list] = defaultdict(list)
         for e in entities:
             name = getattr(e, "Name", None)
@@ -306,8 +312,7 @@ def _consolidate_styles(ifc: "ifcopenshell.file") -> None:
         dup_ids = set(replacements)
         for entity in ifc.by_type("IfcStyledItem"):
             if any(s.id() in dup_ids for s in entity.Styles):
-                entity.Styles = [replacements[s.id()][1] if s.id() in dup_ids else s
-                                 for s in entity.Styles]
+                entity.Styles = [replacements[s.id()][1] if s.id() in dup_ids else s for s in entity.Styles]
         # Also update IfcRelAssociatesMaterial and IfcMaterialLayer
         for entity in ifc.by_type("IfcMaterialLayer"):
             mat = getattr(entity, "Material", None)
@@ -376,6 +381,7 @@ class CreateBlock(bpy.types.Operator):
         # Identity mpi: world = anchor.matrix_world @ Translation(local_offset)
         # This correctly handles rotated anchors — local_offset stays in anchor-local space
         from mathutils import Matrix
+
         for obj in ifc_objects:
             offset = obj.matrix_world.translation - centroid
             obj["bim_block"] = self.block_name
@@ -427,6 +433,7 @@ class PlaceBlock(bpy.types.Operator, tool.Ifc.Operator):
         context.view_layer.update()
 
         from mathutils import Matrix
+
         for def_obj in def_objects:
             offset = Vector(def_obj.get("bim_block_offset", [0.0, 0.0, 0.0]))
 
@@ -438,9 +445,7 @@ class PlaceBlock(bpy.types.Operator, tool.Ifc.Operator):
 
             element = tool.Ifc.get_entity(def_obj)
             if element:
-                bonsai.core.root.copy_class(
-                    tool.Ifc, tool.Collector, tool.Geometry, tool.Root, obj=new_obj
-                )
+                bonsai.core.root.copy_class(tool.Ifc, tool.Collector, tool.Geometry, tool.Root, obj=new_obj)
 
             # Ensure the new object has its own private mesh data.
             # copy_class does not always separate the Blender mesh — the new object
@@ -614,9 +619,7 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
             anchor_pos = anchor.matrix_world.col[3].xyz
             context.view_layer.update()
             anchor_inv = anchor.matrix_world.inverted()
-            anchor_world_rot_z = math.atan2(
-                anchor.matrix_world.col[0].y, anchor.matrix_world.col[0].x
-            )
+            anchor_world_rot_z = math.atan2(anchor.matrix_world.col[0].y, anchor.matrix_world.col[0].x)
 
             for member in bpy.data.objects:
                 if member.parent != anchor or member.get("bim_block_role") != "member":
@@ -738,8 +741,9 @@ class EnterBlockEdit(bpy.types.Operator):
             return {"CANCELLED"}
 
         # Unparent all members (keep world positions) and unlock transforms
-        members = [o for o in bpy.data.objects if o.get("bim_block_id") == instance_id
-                   and o.get("bim_block_role") == "member"]
+        members = [
+            o for o in bpy.data.objects if o.get("bim_block_id") == instance_id and o.get("bim_block_role") == "member"
+        ]
         for m in members:
             world = m.matrix_world.copy()
             m.parent = None
@@ -773,8 +777,7 @@ class ExitBlockEdit(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self, width=350)
 
     def draw(self, context):
-        self.layout.prop(self, "sync_others",
-                         text="Propagate changes to all other instances")
+        self.layout.prop(self, "sync_others", text="Propagate changes to all other instances")
 
     def execute(self, context):
         from mathutils import Matrix
@@ -787,9 +790,12 @@ class ExitBlockEdit(bpy.types.Operator):
 
         # Find the instance anchor
         anchor = next(
-            (o for o in bpy.data.objects
-             if o.get("bim_block_id") == instance_id and o.get("bim_block_role") == "instance"),
-            None
+            (
+                o
+                for o in bpy.data.objects
+                if o.get("bim_block_id") == instance_id and o.get("bim_block_role") == "instance"
+            ),
+            None,
         )
         if not anchor:
             props.editing_instance_id = ""
@@ -800,8 +806,9 @@ class ExitBlockEdit(bpy.types.Operator):
         anchor_inv = anchor.matrix_world.inverted()
 
         # Re-parent members and update stored offsets
-        members = [o for o in bpy.data.objects
-                   if o.get("bim_block_id") == instance_id and o.get("bim_block_role") == "member"]
+        members = [
+            o for o in bpy.data.objects if o.get("bim_block_id") == instance_id and o.get("bim_block_role") == "member"
+        ]
         for m in members:
             world = m.matrix_world.copy()
             m.parent = anchor
@@ -845,8 +852,7 @@ class SyncBlock(bpy.types.Operator, tool.Ifc.Operator):
         block_name = active_block.name
         def_anchor = _get_definition_anchor(block_name)
         all_inst_anchors = [
-            o for o in bpy.data.objects
-            if o.get("bim_block") == block_name and o.get("bim_block_role") == "instance"
+            o for o in bpy.data.objects if o.get("bim_block") == block_name and o.get("bim_block_role") == "instance"
         ]
 
         if not def_anchor:
@@ -959,9 +965,7 @@ class SyncBlock(bpy.types.Operator, tool.Ifc.Operator):
                             if new_data:
                                 tool.Geometry.copy_data_links(new_data, copied)
                                 tgt_obj.data = new_data
-                                new_data.name = tool.Geometry.get_representation_name(
-                                    tool.Ifc.get_entity(new_data)
-                                )
+                                new_data.name = tool.Geometry.get_representation_name(tool.Ifc.get_entity(new_data))
                                 # Restore Blender materials from source — duplicate_object_data
                                 # may reset material slots. Share, don't copy.
                                 new_data.materials.clear()

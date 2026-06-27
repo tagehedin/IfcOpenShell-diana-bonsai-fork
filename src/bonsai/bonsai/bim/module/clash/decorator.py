@@ -34,6 +34,7 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
     Each clip plane is (nx, ny, nz, d); the visible side is dot(pos, normal) + d >= 0.
     Returns a new (positions, triangle_indices) pair where positions are plain tuples.
     """
+
     def _clip_poly(poly, plane):
         nx, ny, nz, d = plane
         out = []
@@ -46,9 +47,7 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
                 out.append(c)
             if (dc >= 0) != (dn >= 0):
                 t = dc / (dc - dn)
-                out.append((c[0] + t * (nxt[0] - c[0]),
-                             c[1] + t * (nxt[1] - c[1]),
-                             c[2] + t * (nxt[2] - c[2])))
+                out.append((c[0] + t * (nxt[0] - c[0]), c[1] + t * (nxt[1] - c[1]), c[2] + t * (nxt[2] - c[2])))
         return out
 
     out_pos = []
@@ -56,8 +55,10 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
     pos_index = 0
 
     for tri in triangle_indices:
-        poly = [(positions[i].x, positions[i].y, positions[i].z) if hasattr(positions[i], 'x')
-                else tuple(positions[i]) for i in tri]
+        poly = [
+            (positions[i].x, positions[i].y, positions[i].z) if hasattr(positions[i], "x") else tuple(positions[i])
+            for i in tri
+        ]
         for plane in clip_planes:
             poly = _clip_poly(poly, plane)
             if not poly:
@@ -76,17 +77,17 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
 class ClashDecorator:
     is_installed = False
     handlers = []
-    group_highlights: dict = {}   # {"a": [highlight, ...], "b": [...], ...}
-    group_colors: dict = {}       # {"a": (r,g,b), ...}
-    show_groups: dict = {}        # {"a": True, ...}
-    c_highlights: list = []       # boolean intersection volumes
+    group_highlights: dict = {}  # {"a": [highlight, ...], "b": [...], ...}
+    group_colors: dict = {}  # {"a": (r,g,b), ...}
+    show_groups: dict = {}  # {"a": True, ...}
+    c_highlights: list = []  # boolean intersection volumes
     show_volume = True
-    _geom_cache: dict = {}        # highlight -> (positions, triangle_indices) world-space, unclipped
-    _batch_cache: dict = {}       # (highlight, clip_key) -> GPUBatch
-    _last_clip_key: tuple = ()    # clip_key from the previous frame
+    _geom_cache: dict = {}  # highlight -> (positions, triangle_indices) world-space, unclipped
+    _batch_cache: dict = {}  # (highlight, clip_key) -> GPUBatch
+    _last_clip_key: tuple = ()  # clip_key from the previous frame
     _clip_stable_since: float = 0.0  # time.time() when clip_key last changed
     _stable_clip_key: tuple = ()  # last clip_key that was stable (batches already built)
-    _CLIP_IDLE_S: float = 0.15   # seconds of stable clip_key before updating highlights
+    _CLIP_IDLE_S: float = 0.15  # seconds of stable clip_key before updating highlights
 
     @classmethod
     def install(cls, context):
@@ -94,6 +95,7 @@ class ClashDecorator:
             cls.uninstall()
         props = tool.Clash.get_clash_props()
         from bonsai.bim.module.clash.prop import ensure_group_colors
+
         ensure_group_colors(props)
         cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
         cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
@@ -285,7 +287,9 @@ class ClashDecorator:
         if clip_key != ClashDecorator._last_clip_key:
             ClashDecorator._last_clip_key = clip_key
             ClashDecorator._clip_stable_since = now
-        clip_moving = clip_planes is not None and (now - ClashDecorator._clip_stable_since < ClashDecorator._CLIP_IDLE_S)
+        clip_moving = clip_planes is not None and (
+            now - ClashDecorator._clip_stable_since < ClashDecorator._CLIP_IDLE_S
+        )
         if not clip_moving:
             ClashDecorator._stable_clip_key = clip_key
             draw_key = clip_key
@@ -327,8 +331,9 @@ class ClashDecorator:
             for i, raw_geometry in enumerate(self.c_highlights):
                 key = (("__c__", i), draw_key)
                 if key not in ClashDecorator._batch_cache:
-                    draw_geom = (_clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes)
-                                 if draw_planes else raw_geometry)
+                    draw_geom = (
+                        _clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes) if draw_planes else raw_geometry
+                    )
                     self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
                 else:
                     self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))

@@ -134,6 +134,7 @@ class AddClashSet(bpy.types.Operator):
 
     def execute(self, context):
         from bonsai.bim.module.clash.prop import ensure_group_colors
+
         props = tool.Clash.get_clash_props()
         new = props.clash_sets.add()
         new.name = "New Clash Set"
@@ -408,6 +409,7 @@ class SaveClashView(bpy.types.Operator):
 
     def _write_snapshot(self, context, view):
         import datetime
+
         blend_dir = Path(bpy.path.abspath("//"))
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = blend_dir / "saved views" / f"view_{ts}.jpg"
@@ -435,6 +437,7 @@ class ReloadClashView(bpy.types.Operator):
         _save_view_state(view, context)
         # Overwrite snapshot file
         import datetime
+
         old_path = bpy.path.abspath(view.image_path) if view.image_path else ""
         if old_path and Path(old_path).exists():
             img_path = Path(old_path)
@@ -852,6 +855,7 @@ class SelectClash(bpy.types.Operator):
         vertices, fill open boundary loops, and return a new bpy.data.Mesh.
         Gives the boolean solver a better chance on non-manifold IFC geometry."""
         import bmesh
+
         bm = bmesh.new()
         verts = [bm.verts.new(p) for p in pos]
         bm.verts.ensure_lookup_table()
@@ -931,6 +935,7 @@ class SelectClash(bpy.types.Operator):
             clash_props = [active_clash]
 
         from collections import defaultdict
+
         products: list[ifcopenshell.entity_instance] = []
         group_highlights: dict = defaultdict(list)
         intersections: list = []
@@ -1199,6 +1204,7 @@ class SelectSmartGroup(bpy.types.Operator):
         assert selected_smart_group
 
         from collections import defaultdict
+
         products: list[ifcopenshell.entity_instance] = []
         group_highlights: dict = defaultdict(list)
         intersections: list = []

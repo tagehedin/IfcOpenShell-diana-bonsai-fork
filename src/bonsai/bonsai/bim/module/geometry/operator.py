@@ -2439,6 +2439,7 @@ class OverrideCopyBuffer(bpy.types.Operator):
                     container_map[str(clipboard_el.id())] = name
                     break
         import json
+
         clipboard.by_type("IfcProject")[0].Description = json.dumps(container_map)
 
         clipboard.write(str(_CLIPBOARD_PATH))
@@ -2496,13 +2497,17 @@ class OverrideCopyBuffer(bpy.types.Operator):
                 continue
             new_parts = [old_to_new[p.id()] for p in rel.RelatedObjects if p.id() in old_to_new]
             if new_parts:
-                ifcopenshell.api.run("aggregate.assign_object", clipboard, products=new_parts, relating_object=new_parent)
+                ifcopenshell.api.run(
+                    "aggregate.assign_object", clipboard, products=new_parts, relating_object=new_parent
+                )
 
 
 class OverridePasteBuffer(bpy.types.Operator):
     bl_idname = "bim.override_paste_buffer"
     bl_label = "IFC Paste in Place"
-    bl_description = "Paste IFC elements at their original coordinates. Use Ctrl+Shift+V to paste at the 3D cursor instead"
+    bl_description = (
+        "Paste IFC elements at their original coordinates. Use Ctrl+Shift+V to paste at the 3D cursor instead"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     at_cursor: bpy.props.BoolProperty(name="At Cursor", default=False)
@@ -2601,6 +2606,7 @@ class OverridePasteBuffer(bpy.types.Operator):
 
         # Read the container name map stored by the copy operator.
         import json
+
         try:
             container_map: dict[str, str] = json.loads(
                 getattr(clipboard_ifc.by_type("IfcProject")[0], "Description", None) or "{}"
@@ -2626,8 +2632,10 @@ class OverridePasteBuffer(bpy.types.Operator):
             preferred_name = container_map.get(str(element.id()))
             resolved = spatial_by_name.get(preferred_name) if preferred_name else None
             ifcopenshell.api.run(
-                "spatial.assign_container", ifc,
-                products=[target_el], relating_structure=resolved or container,
+                "spatial.assign_container",
+                ifc,
+                products=[target_el],
+                relating_structure=resolved or container,
             )
 
         # _reconstruct_relationships and _deduplicate_contexts can themselves
@@ -2777,8 +2785,7 @@ class OverridePasteBuffer(bpy.types.Operator):
                     for i in inst_rep.Items:
                         if i.is_a("IfcMappedItem"):
                             inst_items.extend(
-                                s for s in i.MappingSource.MappedRepresentation.Items
-                                if list(s.StyledByItem)
+                                s for s in i.MappingSource.MappedRepresentation.Items if list(s.StyledByItem)
                             )
                         elif list(i.StyledByItem):
                             inst_items.append(i)
@@ -2792,9 +2799,7 @@ class OverridePasteBuffer(bpy.types.Operator):
                             if list(type_item.StyledByItem):
                                 continue
                             for src_styled in src_item.StyledByItem:
-                                ifc.create_entity(
-                                    "IfcStyledItem", Item=type_item, Styles=list(src_styled.Styles)
-                                )
+                                ifc.create_entity("IfcStyledItem", Item=type_item, Styles=list(src_styled.Styles))
                                 added += 1
                     break  # One styled instance is enough as style source
 
@@ -2828,7 +2833,9 @@ class OverridePasteBuffer(bpy.types.Operator):
                 continue
             target_parts = [clipboard_to_target[p.id()] for p in rel.RelatedObjects if p.id() in clipboard_to_target]
             if target_parts:
-                ifcopenshell.api.run("aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent)
+                ifcopenshell.api.run(
+                    "aggregate.assign_object", ifc, products=target_parts, relating_object=target_parent
+                )
 
     def _deduplicate_contexts(self, ifc: ifcopenshell.file, pre_paste_ids: set[int]) -> None:
         """Remap references away from duplicate IfcGeometricRepresentationContext entities

@@ -62,9 +62,7 @@ class BIM_PT_blocks(Panel):
         if not props.block_definitions:
             return
 
-        layout.template_list(
-            "BIM_UL_blocks", "", props, "block_definitions", props, "active_block_index"
-        )
+        layout.template_list("BIM_UL_blocks", "", props, "block_definitions", props, "active_block_index")
 
         active = props.active_block
         if not active:
