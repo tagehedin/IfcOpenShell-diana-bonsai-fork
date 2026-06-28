@@ -119,9 +119,18 @@ class BIM_PT_camera(Panel):
                 if links:
                     for link in links:
                         row = panel.row(align=True)
-                        split = row.split(factor=0.9)
+                        split = row.split(factor=0.8)
                         split.label(text=link.filepath, icon="FILE")
-                        split.prop(link, "include_in_drawings", text="")
+                        right = split.row(align=True)
+                        right.prop(link, "include_in_drawings", text="", icon="HIDE_OFF")
+                        sub = right.row(align=True)
+                        sub.enabled = link.include_in_drawings
+                        sub.prop(link, "use_obb_simplification", text="", icon="MESH_CUBE")
+                        sub.prop(link, "use_trace_silhouette", text="", icon="MOD_WIREFRAME")
+                        sub.prop(link, "use_projection_union", text="", icon="SNAP_FACE")
+                        if link.use_projection_union:
+                            tol_row = panel.row(align=True)
+                            tol_row.prop(link, "simplification_tolerance_mm", text="Simplify (mm)")
                 else:
                     panel.label(text="No IFC projects linked and loaded.")
 
@@ -399,9 +408,7 @@ class BIM_PT_layer_properties(Panel):
         row.operator("bim.save_layer_styles_to_json", icon="EXPORT", text="")
         row.operator("bim.load_layer_styles_from_json", icon="IMPORT", text="")
 
-        layout.template_list(
-            "BIM_UL_layer_styles", "", props, "layer_styles", props, "active_layer_style_index"
-        )
+        layout.template_list("BIM_UL_layer_styles", "", props, "layer_styles", props, "active_layer_style_index")
 
         if props.layer_styles and 0 <= props.active_layer_style_index < len(props.layer_styles):
             ls = props.layer_styles[props.active_layer_style_index]

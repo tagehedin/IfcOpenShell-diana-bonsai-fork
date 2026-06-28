@@ -250,6 +250,33 @@ class Link(PropertyGroup):
     is_wireframe: BoolProperty(name="Is Wireframe", default=False)
     is_hidden: BoolProperty(name="Is Hidden", default=False)
     include_in_drawings: BoolProperty(name="Include in Drawings", default=True, options=set())
+    use_obb_simplification: BoolProperty(
+        name="OBB Simplification",
+        description="Draw elements from this link as oriented bounding boxes — faster and cleaner for MEP coordination",
+        default=False,
+        options=set(),
+    )
+    use_trace_silhouette: BoolProperty(
+        name="Trace Silhouette",
+        description="Draw visible silhouette edges from this link's mesh geometry — accurate pipe outlines for MEP plans",
+        default=False,
+        options=set(),
+    )
+    use_projection_union: BoolProperty(
+        name="Projection Union",
+        description="Project front-facing mesh faces onto the drawing plane and union them — true 2D silhouette outline without interior lines",
+        default=False,
+        options=set(),
+    )
+    simplification_tolerance_mm: FloatProperty(
+        name="Simplification Tolerance",
+        description="Douglas-Peucker tolerance in paper mm — removes outline vertices within this distance of the simplified curve. 0 = off, 1.0 = good for pipes, 3.0+ = abstract",
+        default=1.0,
+        min=0.0,
+        soft_max=5.0,
+        precision=2,
+        options=set(),
+    )
     empty_handle: PointerProperty(
         name="Empty Object Handle",
         description="Storage for empty handle. Used in non-IFC scenarios or temporarily during link creation",
@@ -273,6 +300,10 @@ class Link(PropertyGroup):
         is_wireframe: bool
         is_hidden: bool
         include_in_drawings: bool
+        use_obb_simplification: bool
+        use_trace_silhouette: bool
+        use_projection_union: bool
+        simplification_tolerance_mm: float
         empty_handle: Union[bpy.types.Object, None]
         ifc_definition_id: int
 

@@ -970,11 +970,20 @@ class CreateDrawing(bpy.types.Operator):
         self._draw_log: list[str] = []
 
         props = tool.Project.get_project_props()
+        obb_link_paths: set[str] = set()
+        silhouette_link_paths: set[str] = set()
+        projection_union_link_paths: dict[str, float] = {}  # path → simplification_tolerance_mm
         for link in props.get_loaded_links_for_drawings():
             resolved = tool.Ifc.resolve_uri(link.filepath)
             files[link.filepath] = self.get_linked_file(link)
             obj_map = self.build_linked_obj_map(resolved)
             link_obj_maps[link.filepath] = obj_map
+            if getattr(link, "use_obb_simplification", False):
+                obb_link_paths.add(link.filepath)
+            elif getattr(link, "use_trace_silhouette", False):
+                silhouette_link_paths.add(link.filepath)
+            elif getattr(link, "use_projection_union", False):
+                projection_union_link_paths[link.filepath] = getattr(link, "simplification_tolerance_mm", 1.0)
 
         target_view = ifcopenshell.util.element.get_psets(self.camera_element)["EPset_Drawing"]["TargetView"]
         self.setup_serialiser(target_view)
@@ -982,7 +991,17 @@ class CreateDrawing(bpy.types.Operator):
         tree = ifcopenshell.geom.tree()
         tree.enable_face_styles(True)
 
+        # (element, blender_obj) pairs for OBB-simplified links — filled during the loop below
+        obb_elements: list[tuple[ifcopenshell.entity_instance, bpy.types.Object]] = []
+        # Per-chunk (K, 2, 3) edge arrays for silhouette links
+        silhouette_chunks: list["np.ndarray"] = []
+        # Per-chunk (tris, tolerance_mm) for projection-union links
+        projection_union_chunks: list[tuple["np.ndarray", float]] = []
+
         cam_inv = self.camera.matrix_world.inverted()
+        # World-space unit vector pointing FROM scene TOWARD camera (its local +Z).
+        # Used for silhouette face-visibility tests.
+        cam_up_np = np.array(self.camera.matrix_world.col[2][:3], dtype=np.float64)
         x = self.cprops.width
         y = self.cprops.height
         clip_start = self.camera.data.clip_start
@@ -1015,7 +1034,70 @@ class CreateDrawing(bpy.types.Operator):
                 # full HLR so their outlines are visible. Elements with >100 edges (radiators,
                 # complex fittings) use profile/silhouette mode, bypassing the O(n²) HLR cost.
                 # IfcWall and IfcSlab are hardcoded HLR exceptions in C++ regardless of this setting.
-                self.serialiser.setProfileThreshold(0)
+                self.serialiser.setProfileThreshold(100)
+
+                if ifc_path in obb_link_paths:
+                    # Extract per-element vertex arrays from already-loaded chunk meshes.
+                    # Chunk objects batch many elements; guid_ids gives cumulative face boundaries.
+                    # Cache per chunk object so each chunk mesh is only read once.
+                    chunk_vert_cache: dict[int, dict[str, "np.ndarray"]] = {}
+                    for element in drawing_elements:
+                        guid = getattr(element, "GlobalId", None)
+                        if not guid:
+                            continue
+                        obj = obj_map.get(guid)
+                        if not obj or not isinstance(obj, bpy.types.Object):
+                            continue
+                        cid = id(obj)
+                        if cid not in chunk_vert_cache:
+                            chunk_vert_cache[cid] = self._get_chunk_element_verts(obj)
+                        pts = chunk_vert_cache[cid].get(guid)
+                        if pts is not None and len(pts) >= 2:
+                            obb_elements.append((element, pts))
+                    continue
+
+                if ifc_path in silhouette_link_paths:
+                    # Compute silhouette on each chunk mesh as a whole — not per element.
+                    # Interior edges between adjacent elements are treated as interior,
+                    # so connections between pipes don't produce spurious double lines.
+                    seen_chunks: set[int] = set()
+                    for element in drawing_elements:
+                        guid = getattr(element, "GlobalId", None)
+                        if not guid:
+                            continue
+                        obj = obj_map.get(guid)
+                        if not obj or not isinstance(obj, bpy.types.Object):
+                            continue
+                        cid = id(obj)
+                        if cid in seen_chunks:
+                            continue
+                        seen_chunks.add(cid)
+                        edges = self._get_chunk_silhouette(obj, cam_up_np)
+                        if len(edges) > 0:
+                            silhouette_chunks.append(edges)
+                    continue
+
+                if ifc_path in projection_union_link_paths:
+                    # Project front-facing faces to 2D per chunk, union with Shapely.
+                    # Works per-chunk (not per-element) so adjacent element faces are
+                    # merged before union — no seams at pipe connections.
+                    pu_tolerance = projection_union_link_paths[ifc_path]
+                    seen_chunks_pu: set[int] = set()
+                    for element in drawing_elements:
+                        guid = getattr(element, "GlobalId", None)
+                        if not guid:
+                            continue
+                        obj = obj_map.get(guid)
+                        if not obj or not isinstance(obj, bpy.types.Object):
+                            continue
+                        cid = id(obj)
+                        if cid in seen_chunks_pu:
+                            continue
+                        seen_chunks_pu.add(cid)
+                        tris = self._get_chunk_projection_tris(obj, cam_up_np)
+                        if len(tris) > 0:
+                            projection_union_chunks.append((tris, pu_tolerance))
+                    continue
             else:
                 before = len(drawing_elements)
                 drawing_elements = {
@@ -1057,9 +1139,39 @@ class CreateDrawing(bpy.types.Operator):
         results = self.svg_buffer.get_value()
         self._draw_log_msg(f"[PHASE] SVG buffer {len(results)//1024}KB, parsing XML...")
         root = etree.fromstring(results)
+        min_mm_raw = ifcopenshell.util.element.get_pset(self.camera_element, "EPset_Drawing", "MinLineLengthMm")
+        min_mm = float(min_mm_raw) if min_mm_raw is not None else 0.1
+        # Collect Blender object IDs of the MEP chunks so they are excluded from
+        # the occluder BVH — we don't want MEP to occlude itself.
+        mep_link_paths = obb_link_paths | silhouette_link_paths | set(projection_union_link_paths)
+        mep_obj_ids: set[int] = set()
+        for link_path in mep_link_paths:
+            for obj in link_obj_maps.get(link_path, {}).values():
+                if isinstance(obj, bpy.types.Object):
+                    mep_obj_ids.add(id(obj))
+
+        # Collect non-MEP link chunk objects (e.g. structural IFC links).  Their
+        # collections may be hidden/excluded from the view layer so visible_get()
+        # returns False and _build_scene_occluder_bvh would miss them.  Pass them
+        # explicitly so they are always included in the occluder BVH.
+        extra_occluder_objs: list["bpy.types.Object"] = []
+        for link_path, obj_map in link_obj_maps.items():
+            if link_path in mep_link_paths:
+                continue
+            for obj in obj_map.values():
+                if isinstance(obj, bpy.types.Object) and obj.type == "MESH":
+                    extra_occluder_objs.append(obj)
+
+        scene_bvh = None
+        # TODO: re-enable once occlusion culling is tuned (currently erratic on radiators etc.)
+        # if obb_elements or silhouette_chunks or projection_union_chunks:
+        #     scene_bvh = self._build_scene_occluder_bvh(mep_obj_ids, extra_occluder_objs)
+
+        self._inject_obb_groups(root, obb_elements, occluder_bvh=scene_bvh)
+        self._inject_silhouette_groups(root, silhouette_chunks, min_edge_mm=min_mm, occluder_bvh=scene_bvh)
+        self._inject_projection_union_groups(root, projection_union_chunks, min_edge_mm=min_mm)
         self._draw_log_msg("[PHASE] XML parsed, filtering short paths...")
-        min_mm = ifcopenshell.util.element.get_pset(self.camera_element, "EPset_Drawing", "MinLineLengthMm")
-        self.filter_short_svg_paths(root, min_mm=float(min_mm) if min_mm is not None else 0.1)
+        self.filter_short_svg_paths(root, min_mm=min_mm)
         self.filter_material_layer_overlaps(root)
         self.filter_cut_projection_overlaps(root)
         self.apply_layer_styles_to_svg(root)
@@ -1131,8 +1243,8 @@ class CreateDrawing(bpy.types.Operator):
 
             boundary_lines = []
             for projection in projections:
-                global_id = projection.attrib["{http://www.ifcopenshell.org/ns}guid"]
-                if global_id not in elements_with_faces:
+                global_id = projection.attrib.get("{http://www.ifcopenshell.org/ns}guid")
+                if not global_id or global_id not in elements_with_faces:
                     continue
                 for path in projection.findall("./{http://www.w3.org/2000/svg}path"):
                     start, end = [[float(o) for o in co[1:].split(",")] for co in path.attrib["d"].split()]
@@ -1393,7 +1505,7 @@ class CreateDrawing(bpy.types.Operator):
         self.serialiser.setPolygonal(True)
         self.serialiser.setUseHlrPoly(True)
         # Objects with more than these edges are rendered as wireframe instead of HLR for optimisation
-        self.serialiser.setProfileThreshold(0)
+        self.serialiser.setProfileThreshold(500)
         self.serialiser.setUseNamespace(True)
         self.serialiser.setAlwaysProject(True)
         self.serialiser.setAutoElevation(False)
@@ -1481,6 +1593,548 @@ class CreateDrawing(bpy.types.Operator):
                 return False
         self.is_manifold_cache[obj.data.name] = True
         return True
+
+    def _get_chunk_element_verts(self, obj: bpy.types.Object) -> "dict[str, np.ndarray]":
+        """Extract per-element world-space vertex arrays from a chunk object.
+
+        Chunk objects batch multiple IFC elements into one Blender mesh, with vertices
+        already transformed to Blender world space during cache creation.  obj["guids"]
+        lists GlobalIds in insertion order; obj["guid_ids"] stores cumulative triangle
+        counts so we can slice per-element faces and extract the unique vertex positions.
+        """
+        guids = list(obj.get("guids") or [])
+        guid_ids = list(obj.get("guid_ids") or [])
+        if not guids or not guid_ids or not obj.data:
+            return {}
+
+        mesh = obj.data
+        n_verts = len(mesh.vertices)
+        if not n_verts:
+            return {}
+
+        verts_flat = np.empty(n_verts * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", verts_flat)
+        verts = verts_flat.reshape(-1, 3)
+
+        mat = np.array(obj.matrix_world)
+        if not np.allclose(mat, np.eye(4), atol=1e-6):
+            verts = (mat[:3, :3] @ verts.T).T + mat[:3, 3]
+
+        # Chunk polygons are always triangles; read loop vertex indices directly.
+        n_loops = len(mesh.loops)
+        if not n_loops:
+            return {}
+        loop_verts_flat = np.empty(n_loops, dtype=np.int32)
+        mesh.loops.foreach_get("vertex_index", loop_verts_flat)
+        n_tris = n_loops // 3
+        faces = loop_verts_flat[: n_tris * 3].reshape(-1, 3)
+
+        result: dict[str, np.ndarray] = {}
+        face_start = 0
+        for i, guid in enumerate(guids):
+            face_end = guid_ids[i]
+            if face_start < face_end <= n_tris:
+                vert_idx = np.unique(faces[face_start:face_end].ravel())
+                result[guid] = verts[vert_idx]
+            face_start = face_end
+
+        return result
+
+    def _get_chunk_silhouette(self, obj: bpy.types.Object, cam_up: "np.ndarray") -> "np.ndarray":
+        """Extract silhouette edges from a whole chunk mesh object.
+
+        Treats the entire chunk as one mesh so edges shared between adjacent IFC
+        elements are interior edges — they only become silhouette edges if visibility
+        actually changes across them.  This avoids spurious double lines at pipe
+        connections that appear when each element sub-mesh is processed independently.
+
+        Returns (K, 2, 3) float64 array of world-space edge endpoint pairs.
+        """
+        empty = np.empty((0, 2, 3), dtype=np.float64)
+        if not obj.data:
+            return empty
+
+        mesh = obj.data
+        n_verts = len(mesh.vertices)
+        n_loops = len(mesh.loops)
+        if not n_verts or not n_loops:
+            return empty
+
+        verts_flat = np.empty(n_verts * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", verts_flat)
+        verts = verts_flat.reshape(-1, 3)
+        mat = np.array(obj.matrix_world)
+        if not np.allclose(mat, np.eye(4), atol=1e-6):
+            verts = (mat[:3, :3] @ verts.T).T + mat[:3, 3]
+
+        loop_flat = np.empty(n_loops, dtype=np.int32)
+        mesh.loops.foreach_get("vertex_index", loop_flat)
+        n_tris = n_loops // 3
+        faces = loop_flat[: n_tris * 3].reshape(-1, 3)
+
+        # Weld coincident vertices so adjacent IFC elements share indices at
+        # connection points.  Without this, pipe-fitting boundaries are boundary
+        # edges (count==1) and appear as silhouette lines even when both sides
+        # face the camera.  0.1 mm tolerance is tight enough to avoid welding
+        # genuinely separate pipes that happen to run close together.
+        WELD_TOL = 1e-4  # metres
+        rounded = np.round(verts / WELD_TOL).astype(np.int64)
+        _, first_idx, weld_inv = np.unique(rounded, axis=0, return_index=True, return_inverse=True)
+        verts = verts[first_idx]
+        faces = weld_inv[faces]
+
+        # Face normals (unnormalized; sign determines front/back)
+        v0 = verts[faces[:, 0]]
+        v1 = verts[faces[:, 1]]
+        v2 = verts[faces[:, 2]]
+        normals = np.cross(v1 - v0, v2 - v0)
+        face_vis = (normals @ cam_up) > 0  # (M,) True = facing camera
+
+        # Build canonical half-edge table: all 3*M half-edges as sorted (a, b) pairs
+        fa = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        fb = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+        fi = np.tile(np.arange(n_tris), 3)
+        ea = np.minimum(fa, fb)
+        eb = np.maximum(fa, fb)
+
+        order = np.lexsort((eb, ea))
+        sea, seb = ea[order], eb[order]
+        svis = face_vis[fi[order]]
+
+        # Group consecutive rows with the same (ea, eb) key
+        diff = np.ones(len(sea), dtype=bool)
+        diff[1:] = (sea[1:] != sea[:-1]) | (seb[1:] != seb[:-1])
+        group_id = np.cumsum(diff) - 1
+        n_groups = int(group_id[-1]) + 1
+
+        group_count = np.bincount(group_id, minlength=n_groups)
+        group_vis_sum = np.bincount(group_id, weights=svis.astype(np.float64), minlength=n_groups)
+        first_occ = np.where(diff)[0]
+
+        # Silhouette: boundary edge with visible face OR shared edge with mixed visibility
+        sil_mask = ((group_count == 1) | (group_count == 2)) & (group_vis_sum == 1)
+        sil_first = first_occ[sil_mask]
+        if len(sil_first) == 0:
+            return empty
+
+        sil_a = sea[sil_first]
+        sil_b = seb[sil_first]
+        return np.stack([verts[sil_a], verts[sil_b]], axis=1)  # (K, 2, 3)
+
+    def _get_chunk_projection_tris(self, obj: "bpy.types.Object", cam_up: "np.ndarray") -> "np.ndarray":
+        """Extract front-facing triangles from a chunk mesh in world space.
+
+        Returns (K, 3, 3): K front-facing triangles, each with 3 world-space vertices.
+        Used by _inject_projection_union_groups to project and union in 2D.
+        """
+        empty = np.empty((0, 3, 3), dtype=np.float64)
+        mesh = obj.data
+        if not mesh:
+            return empty
+
+        mesh.calc_loop_triangles()
+        if not mesh.loop_triangles:
+            return empty
+
+        n_verts = len(mesh.vertices)
+        n_tris = len(mesh.loop_triangles)
+
+        verts_raw = np.empty(n_verts * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", verts_raw)
+        verts = verts_raw.reshape(-1, 3)
+
+        mat = np.array(obj.matrix_world, dtype=np.float64)
+        R = mat[:3, :3]
+        t = mat[:3, 3]
+        verts = (R @ verts.T).T + t
+
+        tris_raw = np.empty(n_tris * 3, dtype=np.int32)
+        mesh.loop_triangles.foreach_get("vertices", tris_raw)
+        tris = tris_raw.reshape(-1, 3)
+
+        v0 = verts[tris[:, 0]]
+        v1 = verts[tris[:, 1]]
+        v2 = verts[tris[:, 2]]
+        normals = np.cross(v1 - v0, v2 - v0)
+        front = (normals @ cam_up) > 0
+
+        front_tris = tris[front]
+        if len(front_tris) == 0:
+            return empty
+
+        return np.stack([verts[front_tris[:, 0]], verts[front_tris[:, 1]], verts[front_tris[:, 2]]], axis=1)
+
+    def _build_scene_occluder_bvh(
+        self,
+        exclude_obj_ids: "set[int]",
+        extra_occluder_objs: "Optional[list[bpy.types.Object]]" = None,
+    ) -> "Optional[Any]":
+        """Build a BVH from scene mesh objects for per-edge occlusion testing.
+
+        Includes all visible viewport objects (structural, walls, slabs in the
+        current scene) plus any objects in extra_occluder_objs (non-MEP linked
+        IFC chunk objects whose collections may be hidden/excluded from the view
+        layer, so visible_get() would miss them).  MEP link chunks are excluded
+        via exclude_obj_ids so they don't occlude themselves.
+        """
+        from mathutils.bvhtree import BVHTree
+
+        all_verts: list = []
+        all_polys: list = []
+        vert_offset = 0
+        obj_count = 0
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+
+        def _add_obj(obj: "bpy.types.Object") -> None:
+            nonlocal vert_offset, obj_count
+            try:
+                eval_obj = obj.evaluated_get(depsgraph)
+                mesh = eval_obj.to_mesh()
+                if mesh is None:
+                    return
+                mat = obj.matrix_world
+                verts = [mat @ v.co for v in mesh.vertices]
+                polys = [list(p.vertices) for p in mesh.polygons]
+                eval_obj.to_mesh_clear()
+            except Exception:
+                return
+            if not verts or not polys:
+                return
+            all_verts.extend(verts)
+            all_polys.extend([[i + vert_offset for i in p] for p in polys])
+            vert_offset += len(verts)
+            obj_count += 1
+
+        # Viewport-visible scene objects (local scene, structural elements, etc.)
+        for obj in bpy.context.scene.objects:
+            if id(obj) in exclude_obj_ids:
+                continue
+            if obj.type != "MESH" or not obj.visible_get():
+                continue
+            _add_obj(obj)
+
+        # Non-MEP linked IFC chunks: always include regardless of visibility.
+        seen_ids: set[int] = set()
+        for obj in extra_occluder_objs or []:
+            if id(obj) in exclude_obj_ids or id(obj) in seen_ids:
+                continue
+            seen_ids.add(id(obj))
+            _add_obj(obj)
+
+        if not all_verts:
+            return None
+        try:
+            bvh = BVHTree.FromPolygons(all_verts, all_polys)
+            print(f"Drawing: scene occluder BVH: {obj_count} objects, {vert_offset} verts, {len(all_polys)} polys.")
+            return bvh
+        except Exception as e:
+            print(f"Drawing: scene BVH build failed: {e}")
+            return None
+
+    def _inject_projection_union_groups(
+        self,
+        root: "etree._Element",
+        projection_union_chunks: "list[tuple[np.ndarray, float]]",
+        min_edge_mm: float = 0.1,
+    ) -> None:
+        """Inject true 2D silhouette outlines for projection-union links.
+
+        For each chunk, all front-facing triangles are projected onto the drawing
+        plane, buffered slightly to close gaps between adjacent elements, unioned
+        with Shapely, and optionally simplified with Douglas-Peucker.  The exterior
+        boundary ring of the union is emitted as a single closed SVG path — giving
+        a clean outline with no interior lines or seams at pipe connections.
+
+        Each chunk is a (tris, simplification_tolerance_mm) tuple.  A tolerance of
+        0 disables simplification; 1.0 is a good default for pipe runs.
+        """
+        if not projection_union_chunks:
+            return
+
+        import uuid
+
+        import shapely
+        import shapely.ops
+
+        SVG_NS = "http://www.w3.org/2000/svg"
+        main_g = root.find(f"{{{SVG_NS}}}g")
+        if main_g is None:
+            return
+
+        cam = self.camera
+        cam_inv = cam.matrix_world.inverted()
+        clip_start = cam.data.clip_start
+        clip_end = cam.data.clip_end
+        bprops = cam.data.BIMCameraProperties
+        svg_scale = self.scale * 1000  # metres → paper mm
+        x_offset = bprops.width / 2
+        y_offset = bprops.height / 2
+        # Buffer to close sub-mm gaps between adjacent tessellated elements before union.
+        buffer_mm = max(min_edge_mm, 0.3)
+
+        total_groups = 0
+        for tris, simplify_tol in projection_union_chunks:  # tris: (K, 3, 3) world-space
+            # Project each triangle to SVG space, clip to camera range.
+            polys: list = []
+            for tri in tris:
+                svg_pts = []
+                skip = False
+                for pt in tri:
+                    cam_pt = cam_inv @ Vector(pt.tolist())
+                    if not (-clip_end <= cam_pt.z <= -clip_start):
+                        skip = True
+                        break
+                    svg_pts.append(((x_offset + cam_pt.x) * svg_scale, (y_offset - cam_pt.y) * svg_scale))
+                if skip:
+                    continue
+                try:
+                    poly = shapely.Polygon(svg_pts)
+                    if poly.is_valid and not poly.is_empty:
+                        polys.append(poly)
+                except Exception:
+                    continue
+
+            if not polys:
+                continue
+
+            # Buffer → union → erode → optional Douglas-Peucker simplification.
+            buffered = shapely.union_all(shapely.GeometryCollection([p.buffer(buffer_mm) for p in polys]))
+            result = buffered.buffer(-buffer_mm * 0.8)
+            if result.is_empty:
+                continue
+            if simplify_tol > 0:
+                result = result.simplify(simplify_tol, preserve_topology=True)
+            if result.is_empty:
+                continue
+
+            # Emit one SVG group per unioned shape.
+            geoms = list(result.geoms) if hasattr(result, "geoms") else [result]
+            path_parts: list[str] = []
+            for geom in geoms:
+                exterior = getattr(geom, "exterior", None)
+                if exterior is None:
+                    continue
+                coords = list(exterior.coords)
+                if len(coords) < 3:
+                    continue
+                path_parts.append("M" + " L".join(f"{x:.4f},{y:.4f}" for x, y in coords[:-1]) + " Z")
+                for interior in geom.interiors:
+                    ic = list(interior.coords)
+                    if len(ic) >= 3:
+                        path_parts.append("M" + " L".join(f"{x:.4f},{y:.4f}" for x, y in ic[:-1]) + " Z")
+
+            if not path_parts:
+                continue
+
+            g = etree.SubElement(main_g, f"{{{SVG_NS}}}g")
+            g.set("id", f"product-{uuid.uuid4()}")
+            g.set("class", "IfcDistributionElement projection")
+            path_el = etree.SubElement(g, f"{{{SVG_NS}}}path")
+            path_el.set("d", " ".join(path_parts))
+            total_groups += 1
+
+        print(
+            f"Drawing: injected {total_groups} projection-union group(s) across {len(projection_union_chunks)} chunk(s)."
+        )
+
+    def _inject_silhouette_groups(
+        self,
+        root: "etree._Element",
+        silhouette_chunks: "list[np.ndarray]",
+        min_edge_mm: float = 0.1,
+        occluder_bvh: "Optional[Any]" = None,
+    ) -> None:
+        """Inject silhouette edge outlines for trace-silhouette links.
+
+        Each chunk's edges are projected onto the drawing plane, clipped to the
+        camera's near/far range, optionally occluded against scene geometry via BVH
+        ray-cast, and filtered by minimum paper length.  All surviving edges are
+        emitted into a single SVG group per chunk.
+
+        min_edge_mm: edges shorter than this value in SVG/paper mm are skipped.
+        occluder_bvh: BVH built from all non-MEP scene mesh objects; edges whose
+            midpoint is blocked from the camera by scene geometry are culled.
+        """
+        if not silhouette_chunks:
+            return
+
+        import uuid
+
+        SVG_NS = "http://www.w3.org/2000/svg"
+
+        main_g = root.find(f"{{{SVG_NS}}}g")
+        if main_g is None:
+            return
+
+        cam = self.camera
+        cam_inv = cam.matrix_world.inverted()
+        cam_pos = cam.matrix_world.translation
+        clip_start = cam.data.clip_start
+        clip_end = cam.data.clip_end
+        bprops = cam.data.BIMCameraProperties
+        svg_scale = self.scale * 1000  # metres → paper mm
+        x_offset = bprops.width / 2
+        y_offset = bprops.height / 2
+        min_edge_sq = min_edge_mm * min_edge_mm
+
+        total_edges = 0
+        total_culled = 0
+        for edges in silhouette_chunks:  # edges: (K, 2, 3)
+            subpaths: list[str] = []
+            for edge in edges:
+                p0, p1 = edge[0], edge[1]
+                mid = (p0 + p1) * 0.5
+
+                # Clip range: midpoint must be within camera near/far planes.
+                cam_mid = cam_inv @ Vector(mid.tolist())
+                if not (-clip_end <= cam_mid.z <= -clip_start):
+                    continue
+
+                # Scene occlusion: cull edges hidden behind structural geometry.
+                if occluder_bvh is not None:
+                    mid_vec = Vector(mid.tolist())
+                    to_cam = cam_pos - mid_vec
+                    dist = to_cam.length
+                    if dist > 1e-6:
+                        direction = to_cam / dist
+                        origin = mid_vec + direction * 0.01
+                        if occluder_bvh.ray_cast(origin, direction, dist - 0.02)[0] is not None:
+                            total_culled += 1
+                            continue
+
+                # Project to SVG and apply min-length filter.
+                c0 = cam_inv @ Vector(p0.tolist())
+                c1 = cam_inv @ Vector(p1.tolist())
+                sx0 = (x_offset + c0.x) * svg_scale
+                sy0 = (y_offset - c0.y) * svg_scale
+                sx1 = (x_offset + c1.x) * svg_scale
+                sy1 = (y_offset - c1.y) * svg_scale
+                dx, dy = sx1 - sx0, sy1 - sy0
+                if dx * dx + dy * dy < min_edge_sq:
+                    continue
+
+                subpaths.append(f"M{sx0:.4f},{sy0:.4f} L{sx1:.4f},{sy1:.4f}")
+
+            if not subpaths:
+                continue
+
+            g = etree.SubElement(main_g, f"{{{SVG_NS}}}g")
+            g.set("id", f"product-{uuid.uuid4()}")
+            g.set("class", "IfcDistributionElement projection")
+            path_el = etree.SubElement(g, f"{{{SVG_NS}}}path")
+            path_el.set("d", " ".join(subpaths))
+            total_edges += len(subpaths)
+
+        cull_info = f", {total_culled} occluded" if total_culled else ""
+        print(
+            f"Drawing: injected {total_edges} silhouette edge(s) across {len(silhouette_chunks)} chunk(s){cull_info}."
+        )
+
+    def _inject_obb_groups(
+        self,
+        root: "etree._Element",
+        obb_elements: "list[tuple[ifcopenshell.entity_instance, np.ndarray]]",
+        occluder_bvh: "Optional[Any]" = None,
+    ) -> None:
+        """Inject oriented bounding-box outlines for OBB-simplified links.
+
+        For each element, vertices are projected onto the drawing plane and clipped
+        to the camera's near/far range.  A PCA-based OBB aligned to the element's
+        principal axis is computed, giving a tight oriented rectangle (correct for
+        diagonal pipes) rather than an axis-aligned one.  Path format matches the
+        DXF converter's expected SVG pattern (Mx,y Lx,y … Z, no space after command).
+
+        occluder_bvh: BVH built from all non-MEP scene mesh objects; elements whose
+            centroid is blocked from the camera by scene geometry are culled.
+        """
+        if not obb_elements:
+            return
+
+        import uuid
+
+        SVG_NS = "http://www.w3.org/2000/svg"
+        IFC_NS = "http://www.ifcopenshell.org/ns"
+
+        main_g = root.find(f"{{{SVG_NS}}}g")
+        if main_g is None:
+            return
+
+        cam = self.camera
+        cam_inv = cam.matrix_world.inverted()
+        cam_pos = cam.matrix_world.translation
+        clip_start = cam.data.clip_start
+        clip_end = cam.data.clip_end
+        bprops = cam.data.BIMCameraProperties
+        svg_scale = self.scale * 1000  # metres → paper mm
+        x_offset = bprops.width / 2
+        y_offset = bprops.height / 2
+
+        count = 0
+        culled = 0
+        for element, world_pts in obb_elements:
+            # Scene occlusion: cull elements hidden behind structural geometry.
+            if occluder_bvh is not None:
+                centroid = Vector(world_pts.mean(axis=0).tolist())
+                to_cam = cam_pos - centroid
+                dist = to_cam.length
+                if dist > 1e-6:
+                    direction = to_cam / dist
+                    origin = centroid + direction * 0.01
+                    if occluder_bvh.ray_cast(origin, direction, dist - 0.02)[0] is not None:
+                        culled += 1
+                        continue
+
+            # Project to camera XY, keeping only vertices within the clip range.
+            # In camera local space the camera looks along -Z: valid depth is
+            # -clip_end ≤ cam_pt.z ≤ -clip_start.
+            cam_xy: list[tuple[float, float]] = []
+            for pt in world_pts:
+                cam_pt = cam_inv @ Vector(pt)
+                if -clip_end <= cam_pt.z <= -clip_start:
+                    cam_xy.append((cam_pt.x, cam_pt.y))
+
+            if len(cam_xy) < 2:
+                continue
+
+            pts_2d = np.asarray(cam_xy, dtype=np.float64)
+
+            # PCA-based OBB: align the bounding rectangle to the element's
+            # principal axis so diagonal pipes get a tight oriented box.
+            centroid = pts_2d.mean(axis=0)
+            centered = pts_2d - centroid
+            cov = centered.T @ centered
+            _, eigvecs = np.linalg.eigh(cov)  # columns sorted by ascending eigenvalue
+            pa = eigvecs[:, -1]  # principal axis (max-variance direction)
+            pe = eigvecs[:, 0]  # perpendicular axis
+
+            along = centered @ pa
+            perp = centered @ pe
+            corners = np.array(
+                [
+                    centroid + along.min() * pa + perp.min() * pe,
+                    centroid + along.max() * pa + perp.min() * pe,
+                    centroid + along.max() * pa + perp.max() * pe,
+                    centroid + along.min() * pa + perp.max() * pe,
+                ]
+            )
+
+            svg_corners = [((x_offset + x) * svg_scale, (y_offset - y) * svg_scale) for x, y in corners]
+            # DXF-compatible path: no space between command letter and coordinate.
+            coord_strs = [f"{x:.4f},{y:.4f}" for x, y in svg_corners]
+            d = "M" + " L".join(coord_strs) + " Z"
+
+            g = etree.SubElement(main_g, f"{{{SVG_NS}}}g")
+            g.set("id", f"product-{uuid.uuid4()}")
+            g.set("class", f"{element.is_a()} projection")
+            g.set(f"{{{IFC_NS}}}guid", element.GlobalId)
+            g.set(f"{{{IFC_NS}}}name", getattr(element, "Name", None) or "")
+            path_el = etree.SubElement(g, f"{{{SVG_NS}}}path")
+            path_el.set("d", d)
+            count += 1
+
+        cull_info = f", {culled} occluded" if culled else ""
+        print(f"Drawing: injected {count} OBB group(s){cull_info}.")
 
     def filter_short_svg_paths(self, root: "etree._Element", min_mm: float = 0.5) -> None:
         """Remove SVG paths too short to be visible at the drawing's print scale.
