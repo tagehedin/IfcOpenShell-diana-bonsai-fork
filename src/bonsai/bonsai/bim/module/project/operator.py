@@ -69,6 +69,7 @@ from bonsai.bim.module.model.decorator import FaceAreaDecorator, PolylineDecorat
 from bonsai.bim.module.model.polyline import PolylineOperator
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
 from bonsai.bim.module.project.decorator import (
+    BMeasureDecorator,
     ClippingPlaneDecorator,
     LaserDecorator,
     MeasureDecorator,
@@ -1155,15 +1156,17 @@ class LoadProject(bpy.types.Operator, IFCFileSelector, ImportHelper):
                 # Record names before converting so we can remove the leftover Blender
                 # objects/collections after — prevents .001 duplicates when reloading.
                 ifc_obj_names = {
-                    obj.name for obj in bpy.data.objects
+                    obj.name
+                    for obj in bpy.data.objects
                     if not obj.library and tool.Blender.get_object_bim_props(obj).ifc_definition_id
                 }
                 ifc_col_names = {
-                    col.name for col in bpy.data.collections
-                    if not col.library and any(
+                    col.name
+                    for col in bpy.data.collections
+                    if not col.library
+                    and any(
                         col.name.startswith(p)
-                        for p in ("IfcProject/", "IfcSite/", "IfcBuilding/",
-                                  "IfcBuildingStorey/", "IfcSpace/")
+                        for p in ("IfcProject/", "IfcSite/", "IfcBuilding/", "IfcBuildingStorey/", "IfcSpace/")
                     )
                 }
                 # Rescue clipping plane objects before removing IFC collections.
@@ -2039,7 +2042,8 @@ class ToggleLinkSelectability(bpy.types.Operator):
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library
+            if "IfcProject" in c.name
+            and c.library
             and Path(bpy.path.abspath(c.library.filepath)) == self.library_filepath
         ]
 
@@ -2101,7 +2105,8 @@ class ToggleLinkVisibility(bpy.types.Operator):
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library
+            if "IfcProject" in c.name
+            and c.library
             and Path(bpy.path.abspath(c.library.filepath)) == self.library_filepath
         ]
 
@@ -2125,9 +2130,7 @@ class ToggleLinkStoreyVisibility(bpy.types.Operator):
             self.report({"ERROR"}, "Invalid link index")
             return {"CANCELLED"}
         link = props.links[self.link_index]
-        library_filepath = tool.Blender.ensure_blender_path_is_abs(
-            Path(link.filepath).with_suffix(".ifc.cache.blend")
-        )
+        library_filepath = tool.Blender.ensure_blender_path_is_abs(Path(link.filepath).with_suffix(".ifc.cache.blend"))
         storey_col = next(
             (
                 c
@@ -2719,10 +2722,15 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
 
         def _empty_buf() -> dict:
             return {
-                "guids": [], "guid_ids": [],
-                "verts": [], "faces": [], "edges": [],
-                "materials": [], "material_ids": [],
-                "material_offset": 0, "offset": 0,
+                "guids": [],
+                "guid_ids": [],
+                "verts": [],
+                "faces": [],
+                "edges": [],
+                "materials": [],
+                "material_ids": [],
+                "material_offset": 0,
+                "offset": 0,
             }
 
         def _flush_buf(target_col: bpy.types.Collection) -> None:
@@ -3334,7 +3342,9 @@ class RefreshClippingPlanes(bpy.types.Operator):
 class CreateClippingPlane(bpy.types.Operator):
     bl_idname = "bim.create_clipping_plane"
     bl_label = "Create Clipping Plane"
-    bl_description = "Move mouse over a surface and click to place a clipping plane aligned to it. Press Escape to cancel"
+    bl_description = (
+        "Move mouse over a surface and click to place a clipping plane aligned to it. Press Escape to cancel"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     def invoke(self, context, event):
@@ -3660,6 +3670,102 @@ class MeasureTool(bpy.types.Operator, PolylineOperator):
 
     def invoke(self, context, event):
         super().invoke(context, event)
+        return {"RUNNING_MODAL"}
+
+
+class BMeasureTool(bpy.types.Operator, PolylineOperator):
+    bl_idname = "bim.b_measure_tool"
+    bl_label = "B Measure"
+    bl_description = (
+        "Click two points to measure X, Y, Z components and total distance. CTRL snaps to vertices and edges."
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data.type == "VIEW_3D"
+
+    def __init__(self, *args, **kwargs):
+        bpy.types.Operator.__init__(self, *args, **kwargs)
+        PolylineOperator.__init__(self)
+        self.input_options = ["D", "X", "Y", "Z"]
+        self.input_ui = tool.Polyline.create_input_ui(input_options=self.input_options)
+
+    def _run_face_snap(self, context, event):
+        try:
+            origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
+        except Exception:
+            return
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, _, _, obj, _ = context.scene.ray_cast(depsgraph, origin, direction)
+        if hit:
+            self.snapping_points = [
+                {"type": "Face", "point": Vector(location), "object": obj, "group": "Object", "distance": 9}
+            ]
+
+    def _do_snap(self, context, event):
+        if event.ctrl:
+            self._run_scene_ray_snap(context, event)
+        else:
+            self._run_face_snap(context, event)
+        snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+        BMeasureDecorator.update(BMeasureDecorator.point1, BMeasureDecorator.point2, snap_pt)
+
+    def _handle_snap_timer(self, context, event):
+        if event.type != "TIMER":
+            return False
+        if event.ctrl and not self._is_navigating:
+            self._run_scene_ray_snap(context, event)
+            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            BMeasureDecorator.update(BMeasureDecorator.point1, BMeasureDecorator.point2, snap_pt)
+            tool.Blender.update_viewport()
+        return True
+
+    def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
+        if event.type in {"ESC", "RIGHTMOUSE"}:
+            BMeasureDecorator.uninstall()
+            context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+        if event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self.mousemove_count += 1
+            if self.mousemove_count > 3:
+                self._do_snap(context, event)
+                tool.Blender.update_viewport()
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            if snap_pt is None:
+                return {"RUNNING_MODAL"}
+            if BMeasureDecorator.point1 is None:
+                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy())
+            elif BMeasureDecorator.point2 is None:
+                BMeasureDecorator.update(BMeasureDecorator.point1, snap_pt.copy(), None)
+            else:
+                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy())
+            tool.Blender.update_viewport()
+
+        return {"RUNNING_MODAL"}
+
+    def invoke(self, context, event):
+        BMeasureDecorator.install(context)
+        tool.Snap.clear_snapping_point()
+        self.tool_state.use_default_container = False
+        self.tool_state.axis_method = None
+        self.tool_state.plane_method = None
+        self.tool_state.mode = "Mouse"
+        context.window.cursor_set("CROSSHAIR")
+        tool.Blender.update_viewport()
+        context.window_manager.modal_handler_add(self)
+        self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
         return {"RUNNING_MODAL"}
 
 
@@ -4112,9 +4218,9 @@ class LaserTool(bpy.types.Operator):
         x_projs = [(v - centroid).dot(x_axis) for v in verts]
         y_projs = [(v - centroid).dot(y_axis) for v in verts]
         x_start = centroid + min(x_projs) * x_axis
-        x_end   = centroid + max(x_projs) * x_axis
+        x_end = centroid + max(x_projs) * x_axis
         y_start = centroid + min(y_projs) * y_axis
-        y_end   = centroid + max(y_projs) * y_axis
+        y_end = centroid + max(y_projs) * y_axis
 
         axes = [
             (x_start, x_end, self._COLORS[0]),

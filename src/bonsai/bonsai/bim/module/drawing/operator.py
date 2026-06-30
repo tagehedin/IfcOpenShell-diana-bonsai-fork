@@ -3268,7 +3268,11 @@ class ActivateModel(bpy.types.Operator):
         time_refine_elements = time.time() - t
 
         t = time.time()
-        representation_targets = {element.id(): model for element, model in refined_elements.items()}
+        representation_targets = {
+            element.id(): model
+            for element, model in refined_elements.items()
+            if element.is_a("IfcProduct")
+        }
         if representation_targets:
             for element in refined_elements:
                 tool.Geometry.clear_cache(element)

@@ -282,20 +282,16 @@ class ClippingPlaneDecorator:
 class LaserDecorator:
     is_installed = False
     handlers = []
-    origin = None   # Vector — face hit point
-    axes = []       # list of (hit_point: Vector, color: tuple)
+    origin = None  # Vector — face hit point
+    axes = []  # list of (hit_point: Vector, color: tuple)
 
     @classmethod
     def install(cls, context):
         if cls.is_installed:
             cls.uninstall()
         handler = cls()
-        cls.handlers.append(
-            SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW")
-        )
-        cls.handlers.append(
-            SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL")
-        )
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
         cls.is_installed = True
 
     @classmethod
@@ -375,6 +371,150 @@ class LaserDecorator:
 
             midpoint = (pt_a + pt_b) / 2
             screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, midpoint)
+            if screen_co:
+                blf.color(font_id, *color, 1.0)
+                blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
+                blf.draw(font_id, text)
+
+        blf.disable(font_id, blf.SHADOW)
+
+
+class BMeasureDecorator:
+    is_installed = False
+    handlers = []
+    point1 = None
+    point2 = None
+    cursor = None
+
+    _COLOR_X = (0.9, 0.25, 0.25)
+    _COLOR_Y = (0.25, 0.85, 0.25)
+    _COLOR_Z = (0.25, 0.50, 1.0)
+    _COLOR_TOTAL = (1.0, 1.0, 1.0)
+
+    @classmethod
+    def install(cls, context):
+        if cls.is_installed:
+            cls.uninstall()
+        handler = cls()
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
+        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
+        cls.is_installed = True
+
+    @classmethod
+    def uninstall(cls):
+        for handler in cls.handlers:
+            try:
+                SpaceView3D.draw_handler_remove(handler, "WINDOW")
+            except ValueError:
+                pass
+        cls.handlers.clear()
+        cls.is_installed = False
+        cls.point1 = None
+        cls.point2 = None
+        cls.cursor = None
+
+    @classmethod
+    def update(cls, point1, point2, cursor):
+        cls.point1 = point1
+        cls.point2 = point2
+        cls.cursor = cursor
+
+    def _target(self):
+        p1 = BMeasureDecorator.point1
+        p2 = BMeasureDecorator.point2 if p1 is not None else None
+        cursor = BMeasureDecorator.cursor
+        return p1, p2, cursor
+
+    def draw_geometry(self, context):
+        p1, p2, cursor = self._target()
+        active = p2 if p2 is not None else cursor
+
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("NONE")
+
+        point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+
+        if active is not None:
+            gpu.state.point_size_set(6)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [active]})
+            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 0.8))
+            batch.draw(point_shader)
+
+        if p1 is None or active is None:
+            gpu.state.blend_set("NONE")
+            gpu.state.depth_test_set("LESS_EQUAL")
+            return
+
+        corner_a = Vector((active.x, p1.y, p1.z))
+        corner_b = Vector((active.x, active.y, p1.z))
+
+        line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        line_shader.bind()
+        line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
+        line_shader.uniform_float("lineWidth", 2.0)
+
+        for pts, color in [
+            ([p1, corner_a], self._COLOR_X),
+            ([corner_a, corner_b], self._COLOR_Y),
+            ([corner_b, active], self._COLOR_Z),
+        ]:
+            batch = batch_for_shader(line_shader, "LINES", {"pos": pts})
+            line_shader.uniform_float("color", (*color, 0.9))
+            batch.draw(line_shader)
+
+        line_shader.uniform_float("lineWidth", 1.0)
+        batch = batch_for_shader(line_shader, "LINES", {"pos": [p1, active]})
+        line_shader.uniform_float("color", (*self._COLOR_TOTAL, 0.3))
+        batch.draw(line_shader)
+
+        gpu.state.point_size_set(8)
+        batch = batch_for_shader(point_shader, "POINTS", {"pos": [p1]})
+        point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+        batch.draw(point_shader)
+
+        gpu.state.point_size_set(5)
+        for pt, color in [(corner_a, self._COLOR_X), (corner_b, self._COLOR_Y)]:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt]})
+            point_shader.uniform_float("color", (*color, 0.7))
+            batch.draw(point_shader)
+
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("LESS_EQUAL")
+
+    def draw_text(self, context):
+        p1, p2, cursor = self._target()
+        active = p2 if p2 is not None else cursor
+        if p1 is None or active is None:
+            return
+
+        region = context.region
+        rv3d = region.data
+        unit_system = context.scene.unit_settings.system
+
+        def fmt(dist):
+            if unit_system == "IMPERIAL":
+                return f"{dist * 3.28084:.3f}'"
+            return f"{dist:.3f} m" if dist >= 1.0 else f"{dist * 1000:.0f} mm"
+
+        corner_a = Vector((active.x, p1.y, p1.z))
+        corner_b = Vector((active.x, active.y, p1.z))
+
+        items = [
+            (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(active.x - p1.x))}"),
+            (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(active.y - p1.y))}"),
+            (corner_b, active, self._COLOR_Z, f"Z: {fmt(abs(active.z - p1.z))}"),
+            (p1, active, self._COLOR_TOTAL, f"d: {fmt((active - p1).length)}"),
+        ]
+
+        font_id = 0
+        blf.size(font_id, 14)
+        blf.enable(font_id, blf.SHADOW)
+        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
+        blf.shadow_offset(font_id, 1, -1)
+
+        for pt_a, pt_b, color, text in items:
+            mid = (pt_a + pt_b) / 2
+            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, mid)
             if screen_co:
                 blf.color(font_id, *color, 1.0)
                 blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)

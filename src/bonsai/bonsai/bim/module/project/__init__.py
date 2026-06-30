@@ -88,6 +88,7 @@ classes = (
     operator.UnloadLink,
     workspace.ExploreHotkey,
     operator.GenerateUVMap,
+    operator.BMeasureTool,
     operator.LaserTool,
     prop.LibraryBreadcrumb,
     prop.LibraryElement,

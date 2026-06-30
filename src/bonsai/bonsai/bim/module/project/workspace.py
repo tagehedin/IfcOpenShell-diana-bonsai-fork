@@ -40,6 +40,7 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         ("bim.explore_hotkey", {"type": "C", "value": "PRESS", "alt": True}, {"properties": [("hotkey", "A_C")]}),
         ("bim.explore_hotkey", {"type": "M", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_M")]}),
         ("bim.explore_hotkey", {"type": "L", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_L")]}),
+        ("bim.explore_hotkey", {"type": "B", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_B")]}),
         ("bim.explore_hotkey", {"type": "S", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_S")]}),
         ("bim.explore_hotkey", {"type": "H", "value": "PRESS"}, {"properties": [("hotkey", "H")]}),
         ("bim.explore_hotkey", {"type": "H", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_H")]}),
@@ -59,6 +60,10 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         op = row.operator("bim.explore_hotkey", text="Laser")
         op.hotkey = "S_L"
 
+        row = layout.row(align=True)
+        op = row.operator("bim.explore_hotkey", text="B Measure")
+        op.hotkey = "S_B"
+
         # --- Navigation / viewport ---
         row = layout.row(align=True)
         row.operator("bim.query_linked_element", text="Query Object")
@@ -74,7 +79,9 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row = layout.row(align=True)
         row.operator("view3d.view_center_pick", text="Set Orbit Center")
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Disable Culling" if LinksData.enable_culling else "Enable Culling")
+        op = row.operator(
+            "bim.explore_hotkey", text="Disable Culling" if LinksData.enable_culling else "Enable Culling"
+        )
         op.hotkey = "A_C"
 
         row = layout.row(align=True)
@@ -136,6 +143,9 @@ class ExploreHotkey(bpy.types.Operator):
 
     def hotkey_S_L(self):
         bpy.ops.bim.laser_tool("INVOKE_DEFAULT")
+
+    def hotkey_S_B(self):
+        bpy.ops.bim.b_measure_tool("INVOKE_DEFAULT")
 
     def hotkey_S_S(self):
         active_obj = bpy.context.active_object
