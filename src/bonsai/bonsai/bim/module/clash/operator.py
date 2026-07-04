@@ -688,6 +688,15 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
         if event.alt:
             self.quick_clash = True
             return self.execute(context)
+        props = tool.Clash.get_clash_props()
+        clash_set = props.active_clash_set
+        if clash_set and clash_set.auto_export_path:
+            ifc_path = tool.Blender.get_bim_props().ifc_file
+            base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+            abs_path = base / "clashes" / f"{clash_set.name}.json"
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            self.filepath = str(abs_path)
+            return self.execute(context)
         if self.filepath:
             abs_path = bpy.path.abspath(self.filepath)
             if Path(abs_path).parent.is_dir():

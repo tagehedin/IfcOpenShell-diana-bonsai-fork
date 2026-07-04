@@ -327,6 +327,11 @@ class ClashSet(PropertyGroup):
         description="Click to unload clash results for the clash set.",
         update=clashes_loaded_update,
     )
+    auto_export_path: BoolProperty(
+        name="Automatic export path",
+        description="Save results to //clashes/<clash set name>.json automatically",
+        default=False,
+    )
 
     if TYPE_CHECKING:
         mode: Literal["intersection", "collision", "clearance"]
@@ -344,6 +349,7 @@ class ClashSet(PropertyGroup):
         h: bpy.types.bpy_prop_collection_idprop[ClashSource]
         clashes: bpy.types.bpy_prop_collection_idprop[Clash]
         clashes_loaded: bool
+        auto_export_path: bool
 
     def get_clash_sources_group(
         self, group: tool.Clash.ClashSourceGroup

@@ -161,11 +161,21 @@ class BIM_PT_ifcclash(Panel):
         row = layout.row()
         row.prop(props, "should_create_clash_snapshots")
 
-        layout.prop(props, "export_path")
+        row = layout.row()
+        row.prop(clash_set, "auto_export_path")
+
+        if clash_set.auto_export_path:
+            row = layout.row()
+            row.enabled = False
+            row.label(text=f"<ifc dir>/clashes/{clash_set.name}.json", icon="FILE_BLANK")
+            effective_path = f"<ifc dir>/clashes/{clash_set.name}.json"
+        else:
+            layout.prop(props, "export_path")
+            effective_path = props.export_path
 
         row = layout.row()
         op = row.operator("bim.execute_blender_clash", icon="MESH_DATA")
-        op.filepath = props.export_path
+        op.filepath = effective_path
 
         row = layout.row()
         if clash_set.clashes_loaded:
