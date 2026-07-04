@@ -20,9 +20,8 @@ import bpy
 import blf
 import gpu
 import time
-from bpy.types import SpaceView3D
-from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
+from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Vector
 
 import bonsai.tool as tool
@@ -74,9 +73,11 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
     return out_pos, out_idx
 
 
-class ClashDecorator:
-    is_installed = False
-    handlers = []
+class ClashDecorator(tool.Blender.ViewportDecorator):
+    draw_methods = (
+        ("draw_text", "POST_PIXEL"),
+        ("draw_geometry", "POST_VIEW"),
+    )
     group_highlights: dict = {}  # {"a": [highlight, ...], "b": [...], ...}
     group_colors: dict = {}  # {"a": (r,g,b), ...}
     show_groups: dict = {}  # {"a": True, ...}
@@ -91,8 +92,6 @@ class ClashDecorator:
 
     @classmethod
     def install(cls, context):
-        if cls.is_installed:
-            cls.uninstall()
         props = tool.Clash.get_clash_props()
         from bonsai.bim.module.clash.prop import ensure_group_colors
 
@@ -100,19 +99,11 @@ class ClashDecorator:
         cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
         cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
         cls.show_volume = props.show_volume_highlight
-        handler = cls()
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
-        cls.is_installed = True
+        super().install(context)
 
     @classmethod
     def uninstall(cls):
-        for handler in cls.handlers:
-            try:
-                SpaceView3D.draw_handler_remove(handler, "WINDOW")
-            except ValueError:
-                pass
-        cls.is_installed = False
+        super().uninstall()
         cls.group_highlights = {}
         cls.c_highlights = []
         cls._batch_cache = {}
@@ -156,14 +147,6 @@ class ClashDecorator:
     @staticmethod
     def _obj_key(obj: "bpy.types.Object") -> "tuple[str, str | None]":
         return (obj.name, obj.library.filepath if obj.library else None)
-
-    def draw_batch(self, shader_type, content_pos, color, indices=None):
-        if not tool.Blender.validate_shader_batch_data(content_pos, indices):
-            return
-        shader = self.line_shader if shader_type == "LINES" else self.shader
-        batch = batch_for_shader(shader, shader_type, {"pos": content_pos}, indices=indices)
-        shader.uniform_float("color", color)
-        batch.draw(shader)
 
     @staticmethod
     def resolve_highlight_geometry(highlight):

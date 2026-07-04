@@ -83,12 +83,6 @@ def toggle_decorations_on_load(*args):
     # as queried object is linked from separate .blend file.
 
 
-def transparent_color(color, alpha=0.1):
-    color = [i for i in color]
-    color[3] = alpha
-    return color
-
-
 class ProjectDecorator:
     installed = None
 
@@ -121,11 +115,6 @@ class ProjectDecorator:
         unselected_elements_color = self.addon_prefs.decorator_color_unselected
         special_elements_color = self.addon_prefs.decorator_color_special
 
-        def transparent_color(color, alpha=0.1):
-            color = [i for i in color]
-            color[3] = alpha
-            return color
-
         gpu.state.point_size_set(6)
         gpu.state.blend_set("ALPHA")
 
@@ -151,7 +140,9 @@ class ProjectDecorator:
 
         if geom.selected_edges:
             self.draw_batch("LINES", selected_vertices, selected_elements_color, geom.selected_edges)
-            self.draw_batch("TRIS", selected_vertices, transparent_color(selected_elements_color), geom.selected_tris)
+            self.draw_batch(
+                "TRIS", selected_vertices, tool.Blender.transparent_color(selected_elements_color), geom.selected_tris
+            )
 
 
 class ClippingPlaneDecorator:
@@ -186,11 +177,6 @@ class ClippingPlaneDecorator:
         selected_elements_color = self.addon_prefs.decorator_color_selected
         unselected_elements_color = self.addon_prefs.decorator_color_unselected
         special_elements_color = self.addon_prefs.decorator_color_special
-
-        def transparent_color(color, alpha=0.1):
-            color = [i for i in color]
-            color[3] = alpha
-            return color
 
         gpu.state.point_size_set(6)
         gpu.state.blend_set("ALPHA")
@@ -252,10 +238,14 @@ class ClippingPlaneDecorator:
 
             if unselected_edges:
                 self.draw_batch("LINES", unselected_vertices, special_elements_color, unselected_edges)
-                self.draw_batch("TRIS", unselected_vertices, transparent_color(special_elements_color), unselected_tris)
+                self.draw_batch(
+                    "TRIS", unselected_vertices, tool.Blender.transparent_color(special_elements_color), unselected_tris
+                )
             if selected_edges:
                 self.draw_batch("LINES", selected_vertices, selected_elements_color, selected_edges)
-                self.draw_batch("TRIS", selected_vertices, transparent_color(selected_elements_color), selected_tris)
+                self.draw_batch(
+                    "TRIS", selected_vertices, tool.Blender.transparent_color(selected_elements_color), selected_tris
+                )
 
         obj = ClippingPlaneDecorator.preview_obj
         if obj and obj.data:
@@ -279,30 +269,17 @@ class ClippingPlaneDecorator:
             self.draw_batch("TRIS", verts, transparent_color(selected_elements_color, 0.15), tris)
 
 
-class LaserDecorator:
-    is_installed = False
-    handlers = []
+class LaserDecorator(tool.Blender.ViewportDecorator):
+    draw_methods = (
+        ("draw_geometry", "POST_VIEW"),
+        ("draw_text", "POST_PIXEL"),
+    )
     origin = None  # Vector — face hit point
     axes = []  # list of (hit_point: Vector, color: tuple)
 
     @classmethod
-    def install(cls, context):
-        if cls.is_installed:
-            cls.uninstall()
-        handler = cls()
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
-        cls.is_installed = True
-
-    @classmethod
     def uninstall(cls):
-        for handler in cls.handlers:
-            try:
-                SpaceView3D.draw_handler_remove(handler, "WINDOW")
-            except ValueError:
-                pass
-        cls.handlers.clear()
-        cls.is_installed = False
+        super().uninstall()
         cls.origin = None
         cls.axes = []
 
@@ -379,9 +356,11 @@ class LaserDecorator:
         blf.disable(font_id, blf.SHADOW)
 
 
-class BMeasureDecorator:
-    is_installed = False
-    handlers = []
+class BMeasureDecorator(tool.Blender.ViewportDecorator):
+    draw_methods = (
+        ("draw_geometry", "POST_VIEW"),
+        ("draw_text", "POST_PIXEL"),
+    )
     point1 = None
     point2 = None
     cursor = None
@@ -390,28 +369,6 @@ class BMeasureDecorator:
     _COLOR_Y = (0.25, 0.85, 0.25)
     _COLOR_Z = (0.25, 0.50, 1.0)
     _COLOR_TOTAL = (1.0, 1.0, 1.0)
-
-    @classmethod
-    def install(cls, context):
-        if cls.is_installed:
-            cls.uninstall()
-        handler = cls()
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_geometry, (context,), "WINDOW", "POST_VIEW"))
-        cls.handlers.append(SpaceView3D.draw_handler_add(handler.draw_text, (context,), "WINDOW", "POST_PIXEL"))
-        cls.is_installed = True
-
-    @classmethod
-    def uninstall(cls):
-        for handler in cls.handlers:
-            try:
-                SpaceView3D.draw_handler_remove(handler, "WINDOW")
-            except ValueError:
-                pass
-        cls.handlers.clear()
-        cls.is_installed = False
-        cls.point1 = None
-        cls.point2 = None
-        cls.cursor = None
 
     @classmethod
     def update(cls, point1, point2, cursor):
@@ -523,31 +480,11 @@ class BMeasureDecorator:
         blf.disable(font_id, blf.SHADOW)
 
 
-class MeasureDecorator:
-    is_installed = False
-    handlers = []
-
-    @classmethod
-    def install(cls, context):
-        if cls.is_installed:
-            cls.uninstall()
-        handler = cls()
-        cls.handlers.append(
-            SpaceView3D.draw_handler_add(handler.draw_measurements_text, (context,), "WINDOW", "POST_PIXEL")
-        )
-        cls.handlers.append(
-            SpaceView3D.draw_handler_add(handler.draw_measurements_poly, (context,), "WINDOW", "POST_VIEW")
-        )
-        cls.is_installed = True
-
-    @classmethod
-    def uninstall(cls):
-        for handler in cls.handlers:
-            try:
-                SpaceView3D.draw_handler_remove(handler, "WINDOW")
-            except ValueError:
-                pass
-        cls.is_installed = False
+class MeasureDecorator(tool.Blender.ViewportDecorator):
+    draw_methods = (
+        ("draw_measurements_text", "POST_PIXEL"),
+        ("draw_measurements_poly", "POST_VIEW"),
+    )
 
     def draw_measurements_text(self, context):
         PolylineDecorator().select_and_draw_measurements_text(context)

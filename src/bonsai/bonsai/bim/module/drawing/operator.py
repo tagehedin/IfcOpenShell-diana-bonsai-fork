@@ -640,6 +640,7 @@ class CreateDrawing(bpy.types.Operator):
         context_type: Literal["body", "annotation"],
         drawing_elements: set[ifcopenshell.entity_instance],
         target_view: str,
+        link_matrix: Optional[Matrix] = None,
     ) -> None:
         drawing_elements = drawing_elements.copy()
         contexts_: list[list[int]] = getattr(contexts, context_type)
@@ -654,9 +655,19 @@ class CreateDrawing(bpy.types.Operator):
                 geom_settings.set("dimensionality", ifcopenshell.ifcopenshell_wrapper.CURVES_SURFACES_AND_SOLIDS)
                 geom_settings.set("iterator-output", ifcopenshell.ifcopenshell_wrapper.NATIVE)
 
-                if ifc.by_id(context[0]).ContextType == "Plan" and "PLAN_VIEW" in target_view:
+                is_plan = ifc.by_id(context[0]).ContextType == "Plan" and "PLAN_VIEW" in target_view
+                z_offset = (0.002 if target_view == "PLAN_VIEW" else -0.002) if is_plan else 0.0
+
+                if link_matrix is not None:
+                    unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+                    t = link_matrix.to_translation()
+                    offset = (t.x / unit_scale, t.y / unit_scale, t.z / unit_scale + z_offset)
+                    geom_settings.set("model-offset", offset)
+                    q = link_matrix.to_quaternion()
+                    geom_settings.set("model-rotation", (q.x, q.y, q.z, q.w))
+                elif z_offset:
                     # A 2mm Z offset to combat Z-fighting in plan or RCPs
-                    geom_settings.set("model-offset", (0.0, 0.0, 0.002 if target_view == "PLAN_VIEW" else -0.002))
+                    geom_settings.set("model-offset", (0.0, 0.0, z_offset))
 
                 geom_settings.set("context-ids", context)
                 it = ifcopenshell.geom.iterator(
@@ -964,7 +975,8 @@ class CreateDrawing(bpy.types.Operator):
 
         bim_props = tool.Blender.get_bim_props()
         prefs = tool.Blender.get_addon_preferences()
-        files = {bim_props.ifc_file: tool.Ifc.get()}
+        # Map ifc_path → (ifc_file, link_matrix); main file has no link_matrix (None)
+        files: dict[str, tuple[ifcopenshell.file, Optional[Matrix]]] = {bim_props.ifc_file: (tool.Ifc.get(), None)}
         link_obj_maps: dict[str, dict[int, bpy.types.Object]] = {}
 
         self._draw_log: list[str] = []
@@ -974,10 +986,13 @@ class CreateDrawing(bpy.types.Operator):
         silhouette_link_paths: set[str] = set()
         projection_union_link_paths: dict[str, float] = {}  # path → simplification_tolerance_mm
         for link in props.get_loaded_links_for_drawings():
+            try:
+                link_matrix = tool.Project.calculate_link_matrix(link)
+            except Exception:
+                link_matrix = None
+            files[link.filepath] = (self.get_linked_file(link), link_matrix)
             resolved = tool.Ifc.resolve_uri(link.filepath)
-            files[link.filepath] = self.get_linked_file(link)
-            obj_map = self.build_linked_obj_map(resolved)
-            link_obj_maps[link.filepath] = obj_map
+            link_obj_maps[link.filepath] = self.build_linked_obj_map(resolved)
             if getattr(link, "use_obb_simplification", False):
                 obb_link_paths.add(link.filepath)
             elif getattr(link, "use_trace_silhouette", False):
@@ -1007,7 +1022,7 @@ class CreateDrawing(bpy.types.Operator):
         clip_start = self.camera.data.clip_start
         clip_end = self.camera.data.clip_end
 
-        for ifc_path, ifc in files.items():
+        for ifc_path, (ifc, link_matrix) in files.items():
             # Don't use draw.main() just whilst we're prototyping and experimenting
             # TODO: hash paths are never used
             ifc_hash = hashlib.md5(ifc_path.encode("utf-8")).hexdigest()
@@ -1113,8 +1128,10 @@ class CreateDrawing(bpy.types.Operator):
             # A drawing prioritises a target view context first, followed by a model view context as a fallback.
             # Specifically for PLAN_VIEW and REFLECTED_PLAN_VIEW, any Plan context is also prioritised.
             contexts = self.get_linework_contexts(ifc, target_view)
-            self.serialize_contexts_elements(ifc, tree, contexts, "body", drawing_elements, target_view)
-            self.serialize_contexts_elements(ifc, tree, contexts, "annotation", drawing_elements, target_view)
+            self.serialize_contexts_elements(ifc, tree, contexts, "body", drawing_elements, target_view, link_matrix)
+            self.serialize_contexts_elements(
+                ifc, tree, contexts, "annotation", drawing_elements, target_view, link_matrix
+            )
 
             if tool.Ifc.get() == ifc and self.camera_element not in drawing_elements:
                 with profile("Camera element"):
@@ -3269,9 +3286,7 @@ class ActivateModel(bpy.types.Operator):
 
         t = time.time()
         representation_targets = {
-            element.id(): model
-            for element, model in refined_elements.items()
-            if element.is_a("IfcProduct")
+            element.id(): model for element, model in refined_elements.items() if element.is_a("IfcProduct")
         }
         if representation_targets:
             for element in refined_elements:
@@ -3319,7 +3334,8 @@ class ActivateDrawingBase(tool.Ifc.Operator):
     bl_description = (
         "Activates the selected drawing view.\n\n"
         + "ALT+CLICK to keep the viewport position.\n\n"
-        + "SHIFT+CLICK to load a quick preview of the drawing view"
+        + "SHIFT+CLICK to load a quick preview of the drawing view.\n\n"
+        + "SHIFT+CTRL+CLICK to load the annotations of all selected drawings without switching views"
     )
 
     drawing: bpy.props.IntProperty()
@@ -3335,13 +3351,23 @@ class ActivateDrawingBase(tool.Ifc.Operator):
         default=False,
         options={"SKIP_SAVE"},
     )
+    load_selected_annotations: bpy.props.BoolProperty(
+        name="Load Selected Annotations",
+        description="Load the annotations of all selected drawings without switching the active view.",
+        default=False,
+        options={"SKIP_SAVE"},
+    )
 
     if TYPE_CHECKING:
         drawing: int
         should_view_from_camera: bool
         use_quick_preview: bool
+        load_selected_annotations: bool
 
     def invoke(self, context, event) -> set["rna_enums.OperatorReturnItems"]:
+        if event.type == "LEFTMOUSE" and event.shift and event.ctrl:
+            self.load_selected_annotations = True
+            return self.execute(context)
         if event.type == "LEFTMOUSE" and event.alt:
             self.should_view_from_camera = False
         if event.type == "LEFTMOUSE" and event.shift:
@@ -3356,6 +3382,18 @@ class ActivateDrawingBase(tool.Ifc.Operator):
         props = tool.Drawing.get_document_props()
         if props.is_editing_drawings == False:
             bpy.ops.bim.load_drawings()
+
+        if self.load_selected_annotations:
+            for d in props.drawings:
+                if not (d.is_drawing and d.is_selected):
+                    continue
+                selected_drawing = tool.Ifc.get().by_id(d.ifc_definition_id)
+                # Importing the camera (if missing) ensures the drawing's
+                # collection exists so the annotations get collected into it.
+                if not tool.Ifc.get_object(selected_drawing):
+                    tool.Drawing.import_drawing(selected_drawing)
+                tool.Drawing.import_annotations_in_group(tool.Drawing.get_drawing_group(selected_drawing))
+            return {"FINISHED"}
 
         drawing = tool.Ifc.get().by_id(self.drawing)
         dprops = tool.Drawing.get_document_props()
@@ -3442,7 +3480,8 @@ class ActivateDrawing(bpy.types.Operator, ActivateDrawingBase):
     bl_description = (
         "Activates the selected drawing view.\n\n"
         + "ALT+CLICK to keep the viewport position.\n\n"
-        + "SHIFT+CLICK to load a quick preview of the drawing view"
+        + "SHIFT+CLICK to load a quick preview of the drawing view.\n\n"
+        + "SHIFT+CTRL+CLICK to load the annotations of all selected drawings without switching views"
     )
 
 

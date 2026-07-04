@@ -78,6 +78,7 @@ if TYPE_CHECKING:
 
 class Drawing(bonsai.core.tool.Drawing):
     ANNOTATION_DATA_TYPE = Literal["empty", "curve", "mesh"]
+    PERSPECTIVE_CAMERA_SHIFT_PROPERTIES = ("PerspectiveShiftX", "PerspectiveShiftY")
     DOCUMENT_TYPE = Literal["SCHEDULE", "REFERENCE"]
     LocationHintLiteral = Literal["PERSPECTIVE", "ORTHOGRAPHIC", "NORTH", "SOUTH", "EAST", "WEST"]
     LOCATION_HINT_LITERALS = ("PERSPECTIVE", "ORTHOGRAPHIC", "NORTH", "SOUTH", "EAST", "WEST")
@@ -452,6 +453,41 @@ class Drawing(bonsai.core.tool.Drawing):
             props.diagram_scale = "1:100|1/100"
         camera.matrix_world = matrix
         return camera
+
+    @classmethod
+    def get_perspective_camera_shifts(cls, drawing: ifcopenshell.entity_instance) -> dict[str, float]:
+        pset = ifcopenshell.util.element.get_pset(drawing, "EPset_Drawing") or {}
+        shift_x_prop, shift_y_prop = cls.PERSPECTIVE_CAMERA_SHIFT_PROPERTIES
+        return {
+            "shift_x": float(pset.get(shift_x_prop, 0.0) or 0.0),
+            "shift_y": float(pset.get(shift_y_prop, 0.0) or 0.0),
+        }
+
+    @classmethod
+    def sync_perspective_camera_shifts(cls, drawing: ifcopenshell.entity_instance, camera: bpy.types.Camera) -> None:
+        if camera.type != "PERSP":
+            return
+
+        shift_x_prop, shift_y_prop = cls.PERSPECTIVE_CAMERA_SHIFT_PROPERTIES
+        current_shifts = cls.get_perspective_camera_shifts(drawing)
+        new_shifts = {"shift_x": float(camera.shift_x or 0.0), "shift_y": float(camera.shift_y or 0.0)}
+        if tool.Cad.is_x(current_shifts["shift_x"], new_shifts["shift_x"]) and tool.Cad.is_x(
+            current_shifts["shift_y"], new_shifts["shift_y"]
+        ):
+            return
+
+        ifc_file = tool.Ifc.get()
+        pset = tool.Pset.get_element_pset(drawing, "EPset_Drawing")
+        if not pset:
+            pset = ifcopenshell.api.pset.add_pset(ifc_file, product=drawing, name="EPset_Drawing")
+        ifcopenshell.api.pset.edit_pset(
+            ifc_file,
+            pset=pset,
+            properties={
+                shift_x_prop: new_shifts["shift_x"],
+                shift_y_prop: new_shifts["shift_y"],
+            },
+        )
 
     @classmethod
     def create_svg_schedule(cls, schedule: ifcopenshell.entity_instance) -> None:
@@ -1009,6 +1045,8 @@ class Drawing(bonsai.core.tool.Drawing):
         camera_props.has_annotation = True
         camera_props.target_view = "PLAN_VIEW"
         camera_props.is_nts = False
+        camera.shift_x = 0.0
+        camera.shift_y = 0.0
 
         pset = ifcopenshell.util.element.get_pset(drawing, "EPset_Drawing")
         if pset:
@@ -1052,6 +1090,10 @@ class Drawing(bonsai.core.tool.Drawing):
                 camera.clip_end = float(pset["Depth"])
             # MinLineLengthMm is read directly via get_min_line_length getter — no restore needed.
             camera_props.update_camera_resolution()
+            if camera.type == "PERSP":
+                shifts = cls.get_perspective_camera_shifts(drawing)
+                camera.shift_x = shifts["shift_x"]
+                camera.shift_y = shifts["shift_y"]
 
         camera_props.update_props = update_props
 
@@ -2275,14 +2317,19 @@ class Drawing(bonsai.core.tool.Drawing):
         cls, drawing: ifcopenshell.entity_instance, ifc_file: Optional[ifcopenshell.file] = None
     ) -> set[ifcopenshell.entity_instance]:
         """returns a set of elements that are included in the drawing"""
-        if ifc_file is None:
+        param_was_none = ifc_file is None
+        if param_was_none:
             ifc_file = tool.Ifc.get()
-            elements = cls.get_elements_in_camera_view(tool.Ifc.get_object(drawing), bpy.data.objects)
-        else:
-            # This can probably be smarter
-            elements = set(ifc_file.by_type("IfcElement"))
         pset = ifcopenshell.util.element.get_psets(drawing).get("EPset_Drawing", {})
         include = pset.get("Include", None)
+
+        # Only the active IFC file has Blender objects we can test against the
+        # camera's view frustum, which lets us drop elements - including those
+        # picked by an Include filter - that fall outside the drawing boundary.
+        camera_view_elements = None
+        if (param_was_none or include) and ifc_file is tool.Ifc.get():
+            camera_view_elements = cls.get_elements_in_camera_view(tool.Ifc.get_object(drawing), bpy.data.objects)
+
         if include:
             try:
                 data = json.loads(include)
@@ -2294,7 +2341,16 @@ class Drawing(bonsai.core.tool.Drawing):
                     elements = ifcopenshell.util.selector.filter_elements(ifc_file, include)
             except (json.JSONDecodeError, ValueError):
                 elements = ifcopenshell.util.selector.filter_elements(ifc_file, include)
+            # The Include filter chooses which elements may appear, but they must
+            # still fall within the drawing's camera boundary.
+            if camera_view_elements is not None:
+                elements &= camera_view_elements
         else:
+            if param_was_none:
+                elements = camera_view_elements
+            else:
+                # This can probably be smarter
+                elements = set(ifc_file.by_type("IfcElement"))
             if ifc_file.schema == "IFC2X3":
                 base_elements = set(ifc_file.by_type("IfcElement") + ifc_file.by_type("IfcSpatialStructureElement"))
             else:
@@ -2538,19 +2594,24 @@ class Drawing(bonsai.core.tool.Drawing):
         if representation_targets:
             tool.Geometry.reimport_elements_batch(representation_targets)
 
+        linked_handles: set[bpy.types.Object] = set()
+        for link in tool.Project.get_project_props().get_loaded_links_for_drawings():
+            try:
+                handle = tool.Project.get_link_empty_handle(link)
+            except Exception:
+                continue
+            if handle:
+                linked_handles.add(handle)
+
         # Library-linked objects (linked IFC chunk objects) cannot be selected in Blender,
         # so isolate_objects (which uses select + hide_view_set) would hide them all.
         # Save their hide state before isolate and restore it after.
-        linked_hide_states = {
-            obj: obj.hide_get()
-            for obj in bpy.context.view_layer.objects
-            if obj.library is not None
-        }
+        linked_hide_states = {obj: obj.hide_get() for obj in bpy.context.view_layer.objects if obj.library is not None}
 
         visible_objects = []
         for obj in bpy.context.view_layer.objects:
             if element := tool.Ifc.get_entity(obj):
-                if element in filtered_elements:
+                if element in filtered_elements or obj in linked_handles:
                     visible_objects.append(obj)
             else:
                 if obj.hide_get() is False and obj.library is None:
@@ -2839,10 +2900,10 @@ class Drawing(bonsai.core.tool.Drawing):
 
         # DXF linetype patterns for standard types
         _LINETYPES = {
-            "DASHED":   [0.6, 0.5, -0.1],
-            "CENTER":   [2.0, 1.25, -0.25, 0.25, -0.25],
-            "HIDDEN":   [0.25, 0.125, -0.125],
-            "PHANTOM":  [2.0, 1.25, -0.25, 0.25, -0.25, 0.25, -0.25],
+            "DASHED": [0.6, 0.5, -0.1],
+            "CENTER": [2.0, 1.25, -0.25, 0.25, -0.25],
+            "HIDDEN": [0.25, 0.125, -0.125],
+            "PHANTOM": [2.0, 1.25, -0.25, 0.25, -0.25, 0.25, -0.25],
             "OVERHEAD": [1.0, 0.625, -0.125, 0.125, -0.125],
         }
 
@@ -2857,6 +2918,7 @@ class Drawing(bonsai.core.tool.Drawing):
         layer_styles: dict = {}
         try:
             import bpy
+
             for ls in bpy.context.scene.DocProperties.layer_styles:
                 layer_styles[ls.name] = ls
         except Exception:

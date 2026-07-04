@@ -287,6 +287,11 @@ class Link(PropertyGroup):
         description="STEP ID of the IfcDocumentReference when linked to a parent IFC project. Zero when no parent IFC exists",
         default=0,
     )
+    query: StringProperty(
+        name="Query",
+        description="Selector query used to filter elements when loading the linked model",
+        default="",
+    )
 
     if TYPE_CHECKING:
         name: str
@@ -306,6 +311,7 @@ class Link(PropertyGroup):
         simplification_tolerance_mm: float
         empty_handle: Union[bpy.types.Object, None]
         ifc_definition_id: int
+        query: str
 
 
 class EditedObj(PropertyGroup):
