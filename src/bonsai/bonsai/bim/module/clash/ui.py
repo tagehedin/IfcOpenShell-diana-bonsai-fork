@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
 import bpy
@@ -161,21 +162,18 @@ class BIM_PT_ifcclash(Panel):
         row = layout.row()
         row.prop(props, "should_create_clash_snapshots")
 
-        row = layout.row()
-        row.prop(clash_set, "auto_export_path")
-
-        if clash_set.auto_export_path:
-            row = layout.row()
-            row.enabled = False
-            row.label(text=f"<ifc dir>/clashes/{clash_set.name}.json", icon="FILE_BLANK")
-            effective_path = f"<ifc dir>/clashes/{clash_set.name}.json"
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        if ifc_path:
+            auto_label = str(Path(ifc_path).parent / "clashes" / f"{clash_set.name}.json")
         else:
-            layout.prop(props, "export_path")
-            effective_path = props.export_path
+            auto_label = f"<ifc dir>/clashes/{clash_set.name}.json"
 
         row = layout.row()
-        op = row.operator("bim.execute_blender_clash", icon="MESH_DATA")
-        op.filepath = effective_path
+        row.enabled = False
+        row.label(text=auto_label, icon="FILE_BLANK")
+
+        row = layout.row()
+        row.operator("bim.execute_blender_clash", icon="MESH_DATA")
 
         row = layout.row()
         if clash_set.clashes_loaded:
@@ -229,47 +227,8 @@ class BIM_PT_ifcclash(Panel):
         else:
             row.label(text="Clashes Are Not Loaded", icon="PIVOT_CURSOR")
 
-
-class BIM_PT_clash_manager(Panel):
-    bl_idname = "BIM_PT_clash_manager"
-    bl_label = "Clash Manager"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_space_type = "PROPERTIES"
-    bl_region_type = "WINDOW"
-    bl_context = "scene"
-    bl_parent_id = "BIM_PT_tab_clash_detection"
-
-    def draw(self, context):
-        pass
-
-
-class BIM_PT_smart_clash_manager(Panel):
-    bl_idname = "BIM_PT_smart_clash_manager"
-    bl_label = "Smart Clash Manager"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_space_type = "PROPERTIES"
-    bl_region_type = "WINDOW"
-    bl_context = "scene"
-    bl_parent_id = "BIM_PT_clash_manager"
-
-    def draw(self, context):
-        assert self.layout
-        layout = self.layout
-        props = tool.Clash.get_clash_props()
-
-        row = layout.row()
-        layout.label(text="Select clash results to group:")
-
-        row = layout.row(align=True)
-        row.prop(props, "clash_results_path", text="")
-        op = row.operator("bim.select_clash_results", icon="FILE_FOLDER", text="")
-
-        row = layout.row()
-        layout.label(text="Select output path for smart-grouped clashes:")
-
-        row = layout.row(align=True)
-        row.prop(props, "smart_grouped_clashes_path", text="")
-        op = row.operator("bim.select_smart_grouped_clashes_path", icon="FILE_FOLDER", text="")
+        layout.separator()
+        layout.label(text="Smart Groups:", icon="OUTLINER_OB_POINTCLOUD")
 
         row = layout.row(align=True)
         row.prop(props, "smart_clash_grouping_max_distance")
@@ -280,7 +239,9 @@ class BIM_PT_smart_clash_manager(Panel):
         row = layout.row(align=True)
         row.operator("bim.load_smart_groups_for_active_clash_set")
 
-        layout.template_list("BIM_UL_smart_groups", "", props, "smart_clash_groups", props, "active_smart_group_index")
+        layout.template_list(
+            "BIM_UL_smart_groups", "", clash_set, "smart_clash_groups", clash_set, "active_smart_group_index"
+        )
 
         row = layout.row(align=True)
         row.operator("bim.select_smart_group", text="Move to Smart Group", icon="CAMERA_DATA")

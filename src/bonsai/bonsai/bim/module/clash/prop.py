@@ -294,6 +294,15 @@ class BIMLinkColorOverride(PropertyGroup):
         color: tuple[float, float, float, float]
 
 
+class SmartClashGroup(PropertyGroup):
+    number: StringProperty(name="Number")
+    global_ids: CollectionProperty(name="GlobalIDs", type=StrProperty)
+
+    if TYPE_CHECKING:
+        number: str
+        global_ids: bpy.types.bpy_prop_collection_idprop[StrProperty]
+
+
 class ClashSet(PropertyGroup):
     mode: EnumProperty(
         items=[
@@ -327,11 +336,6 @@ class ClashSet(PropertyGroup):
         description="Click to unload clash results for the clash set.",
         update=clashes_loaded_update,
     )
-    auto_export_path: BoolProperty(
-        name="Automatic export path",
-        description="Save results to //clashes/<clash set name>.json automatically",
-        default=False,
-    )
 
     if TYPE_CHECKING:
         mode: Literal["intersection", "collision", "clearance"]
@@ -349,7 +353,15 @@ class ClashSet(PropertyGroup):
         h: bpy.types.bpy_prop_collection_idprop[ClashSource]
         clashes: bpy.types.bpy_prop_collection_idprop[Clash]
         clashes_loaded: bool
-        auto_export_path: bool
+        smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
+        active_smart_group_index: int
+
+    smart_clash_groups: CollectionProperty(name="Smart Clash Groups", type=SmartClashGroup)
+    active_smart_group_index: IntProperty(name="Active Smart Group Index")
+
+    @property
+    def active_smart_group(self) -> Union["SmartClashGroup", None]:
+        return tool.Blender.get_active_uilist_element(self.smart_clash_groups, self.active_smart_group_index)
 
     def get_clash_sources_group(
         self, group: tool.Clash.ClashSourceGroup
@@ -360,15 +372,6 @@ class ClashSet(PropertyGroup):
         self,
     ) -> "dict[tool.Clash.ClashSourceGroup, bpy.types.bpy_prop_collection_idprop[ClashSource]]":
         return {g: self.get_clash_sources_group(g) for g in tool.Clash.CLASH_SOURCE_GROUP_LITERALS}
-
-
-class SmartClashGroup(PropertyGroup):
-    number: StringProperty(name="Number")
-    global_ids: CollectionProperty(name="GlobalIDs", type=StrProperty)
-
-    if TYPE_CHECKING:
-        number: str
-        global_ids: bpy.types.bpy_prop_collection_idprop[StrProperty]
 
 
 class BIMClashProperties(PropertyGroup):
@@ -382,8 +385,6 @@ class BIMClashProperties(PropertyGroup):
     smart_grouped_clashes_path: StringProperty(name="Smart Grouped Clashes Path")
     active_clash_set_index: IntProperty(name="Active Clash Set Index")
     active_clash_index: IntProperty(name="Active Clash Index")
-    smart_clash_groups: CollectionProperty(name="Smart Clash Groups", type=SmartClashGroup)
-    active_smart_group_index: IntProperty(name="Active Smart Group Index")
     smart_clash_grouping_max_distance: FloatProperty(
         name="Smart Clash Grouping Max Distance",
         description="Clashes whose contact points are within this distance of each other "
@@ -422,8 +423,6 @@ class BIMClashProperties(PropertyGroup):
         smart_grouped_clashes_path: str
         active_clash_set_index: int
         active_clash_index: int
-        smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
-        active_smart_group_index: int
         smart_clash_grouping_max_distance: float
         p1: Vector
         p2: Vector
@@ -445,7 +444,10 @@ class BIMClashProperties(PropertyGroup):
 
     @property
     def active_smart_group(self) -> Union[SmartClashGroup, None]:
-        return tool.Blender.get_active_uilist_element(self.smart_clash_groups, self.active_smart_group_index)
+        clash_set = self.active_clash_set
+        if not clash_set:
+            return None
+        return clash_set.active_smart_group
 
     @property
     def active_clash(self) -> Union[Clash, None]:

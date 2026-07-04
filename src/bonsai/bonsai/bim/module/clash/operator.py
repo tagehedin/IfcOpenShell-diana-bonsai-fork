@@ -690,19 +690,13 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
             return self.execute(context)
         props = tool.Clash.get_clash_props()
         clash_set = props.active_clash_set
-        if clash_set and clash_set.auto_export_path:
+        if clash_set:
             ifc_path = tool.Blender.get_bim_props().ifc_file
             base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
             abs_path = base / "clashes" / f"{clash_set.name}.json"
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             self.filepath = str(abs_path)
             return self.execute(context)
-        if self.filepath:
-            abs_path = bpy.path.abspath(self.filepath)
-            if Path(abs_path).parent.is_dir():
-                return self.execute(context)
-            # Path is stale (e.g. old Windows path stored in blend file) — open dialog
-            self.filepath = ""
         return ExportHelper.invoke(self, context, event)
 
     def execute(self, context):
@@ -1109,49 +1103,54 @@ class SmartClashGroup(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         props = tool.Clash.get_clash_props()
-        return bool(props.clash_results_path)
+        if not props.active_clash_set:
+            return False
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+        return (base / "clashes" / f"{props.active_clash_set.name}.json").exists()
 
     def execute(self, context):
         from ifcclash import ifcclash
 
         settings = ifcclash.ClashSettings()
         props = tool.Clash.get_clash_props()
-        self.filepath = str(Path(bpy.path.abspath(props.clash_results_path)).with_suffix(".json"))
+        assert props.active_clash_set
+        clash_set_name = props.active_clash_set.name
+
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+        clash_json = base / "clashes" / f"{clash_set_name}.json"
+        smart_json = base / "clashes" / f"{clash_set_name}_smartgroups.json"
+
+        self.filepath = str(clash_json)
         settings.output = self.filepath
         settings.logger = logging.getLogger("Clash")
         settings.logger.setLevel(logging.DEBUG)
         ifc_clasher = ifcclash.Clasher(settings)
 
-        with open(self.filepath) as f:
+        with open(clash_json) as f:
             clash_sets = json.load(f)
 
-        # execute the smart grouping
-        save_path = bpy.path.ensure_ext(bpy.path.abspath(props.smart_grouped_clashes_path), ".json")
         smart_grouped_clashes = ifc_clasher.smart_group_clashes(clash_sets, props.smart_clash_grouping_max_distance)
 
-        # save smart_groups to json
-        with open(save_path, "w") as f:
+        with open(smart_json, "w") as f:
             f.write(json.dumps(smart_grouped_clashes))
 
-        assert props.active_clash_set
-        clash_set_name = props.active_clash_set.name
-
-        # Reset the list of smart_clash_groups for the UI
-        props.smart_clash_groups.clear()
+        active_clash_set = props.active_clash_set
+        assert active_clash_set
+        active_clash_set.smart_clash_groups.clear()
+        active_clash_set.active_smart_group_index = 0
 
         for clash_set, smart_groups in smart_grouped_clashes.items():
-            # Only select the clashes that correspond to the actively selected IFC Clash Set
             if clash_set != clash_set_name:
                 continue
-            else:
-                for smart_group, global_id_pairs in smart_groups[0].items():
-                    new_group = props.smart_clash_groups.add()
-                    new_group.number = f"{smart_group}"
-
-                    for pair in global_id_pairs:
-                        for id in pair:
-                            new_global_id = new_group.global_ids.add()
-                            new_global_id.name = id
+            for smart_group, global_id_pairs in smart_groups[0].items():
+                new_group = active_clash_set.smart_clash_groups.add()
+                new_group.number = f"{smart_group}"
+                for pair in global_id_pairs:
+                    for id in pair:
+                        new_global_id = new_group.global_ids.add()
+                        new_global_id.name = id
 
         return {"FINISHED"}
 
@@ -1164,33 +1163,39 @@ class LoadSmartGroupsForActiveClashSet(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         props = tool.Clash.get_clash_props()
-        return bool(props.active_clash_set)
+        if not props.active_clash_set:
+            return False
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+        return (base / "clashes" / f"{props.active_clash_set.name}_smartgroups.json").exists()
 
     def execute(self, context):
         props = tool.Clash.get_clash_props()
-        smart_groups_path = bpy.path.ensure_ext(bpy.path.abspath(props.smart_grouped_clashes_path), ".json")
-
         assert props.active_clash_set
         clash_set_name = props.active_clash_set.name
 
-        with open(smart_groups_path) as f:
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+        smart_json = base / "clashes" / f"{clash_set_name}_smartgroups.json"
+
+        with open(smart_json) as f:
             smart_grouped_clashes = json.load(f)
 
-        # Reset the list of smart_clash_groups for the UI
-        props.smart_clash_groups.clear()
+        active_clash_set = props.active_clash_set
+        assert active_clash_set
+        active_clash_set.smart_clash_groups.clear()
+        active_clash_set.active_smart_group_index = 0
 
         for clash_set, smart_groups in smart_grouped_clashes.items():
-            # Only select the clashes that correspond to the actively selected IFC Clash Set
             if clash_set != clash_set_name:
                 continue
-            else:
-                for smart_group, global_id_pairs in smart_groups[0].items():
-                    new_group = props.smart_clash_groups.add()
-                    new_group.number = f"{smart_group}"
-                    for pair in global_id_pairs:
-                        for guid in pair:
-                            new_global_id = new_group.global_ids.add()
-                            new_global_id.name = guid
+            for smart_group, global_id_pairs in smart_groups[0].items():
+                new_group = active_clash_set.smart_clash_groups.add()
+                new_group.number = f"{smart_group}"
+                for pair in global_id_pairs:
+                    for guid in pair:
+                        new_global_id = new_group.global_ids.add()
+                        new_global_id.name = guid
 
         return {"FINISHED"}
 
