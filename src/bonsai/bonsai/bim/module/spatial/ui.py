@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 import bpy
 from bpy.types import Panel, UIList
 
+import ifcopenshell.util.placement
 import bonsai.tool as tool
 from bonsai.bim.module.spatial.data import SpatialData, SpatialDecompositionData
 
@@ -405,3 +406,51 @@ class BIM_UL_elements(UIList):
 
     def get_filter_name(self):
         return self.filter_name
+
+
+class BIM_PT_storey_visibility_npanel(Panel):
+    bl_label = "Storey Visibility"
+    bl_idname = "BIM_PT_storey_visibility_npanel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Bonsai"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return tool.Ifc.get() is not None
+
+    def draw(self, context):
+        layout = self.layout
+        ifc = tool.Ifc.get()
+        if not ifc:
+            return
+
+        storeys = sorted(
+            ifc.by_type("IfcBuildingStorey"),
+            key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s),
+            reverse=True,
+        )
+
+        if not storeys:
+            layout.label(text="No storeys in model", icon="INFO")
+            return
+
+        for storey in storeys:
+            storey_obj = tool.Ifc.get_object(storey)
+            if not storey_obj:
+                continue
+            collection = tool.Blender.get_object_bim_props(storey_obj).collection
+            if not collection:
+                continue
+
+            name = storey.Name or f"Storey {storey.id()}"
+            icon = "HIDE_OFF" if collection.bim_storey_is_visible else "HIDE_ON"
+
+            # A real property toggle (not an operator button) so Blender's native
+            # click-and-drag-across-multiple-rows gesture works, same as the Outliner.
+            # bim_storey_is_visible is a plain proxy boolean (get/set onto hide_viewport,
+            # inverted): hide_viewport itself is a "restrict"-type flag with hardcoded icon
+            # behaviour in Blender's own widget code, so a custom icon override on it renders
+            # inconsistently. This proxy behaves like any other ordinary visibility toggle.
+            layout.prop(collection, "bim_storey_is_visible", text=name, icon=icon, toggle=True)

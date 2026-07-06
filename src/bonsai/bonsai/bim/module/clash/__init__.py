@@ -88,6 +88,7 @@ classes = (
     prop.BIMClashProperties,
     ui.BIM_PT_ifcclash,
     ui.BIM_PT_saved_clash_views,
+    ui.BIM_PT_saved_views_npanel,
     ui.BIM_UL_clashes,
     ui.BIM_UL_clash_sets,
     ui.BIM_UL_smart_groups,

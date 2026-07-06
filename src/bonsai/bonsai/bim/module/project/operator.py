@@ -2158,24 +2158,25 @@ class ToggleLinkStoreyVisibility(bpy.types.Operator):
             self.report({"ERROR"}, "Invalid link index")
             return {"CANCELLED"}
         link = props.links[self.link_index]
-        library_filepath = tool.Blender.ensure_blender_path_is_abs(Path(link.filepath).with_suffix(".ifc.cache.blend"))
+        library_filepath = tool.Blender.ensure_blender_path_is_abs(
+            Path(link.filepath).with_suffix(".ifc.cache.blend")
+        ).resolve()
         storey_col = next(
             (
                 c
                 for c in bpy.data.collections
                 if c.name == self.storey_collection_name
                 and c.library
-                and Path(bpy.path.abspath(c.library.filepath)) == library_filepath
+                and Path(bpy.path.abspath(c.library.filepath)).resolve() == library_filepath
             ),
             None,
         )
         if storey_col is None:
             self.report({"WARNING"}, f"Storey collection '{self.storey_collection_name}' not found.")
             return {"CANCELLED"}
-        objs = list(storey_col.all_objects)
-        new_hidden = any(not obj.hide_viewport for obj in objs)
-        for obj in objs:
-            obj.hide_viewport = new_hidden
+        # Set the collection flag, not per-object flags: object property writes
+        # on library-linked data are reverted by the post-operator undo push.
+        storey_col.hide_viewport = not storey_col.hide_viewport
         return {"FINISHED"}
 
 

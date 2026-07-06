@@ -16,13 +16,14 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
+import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import bpy
 import ifcopenshell
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
-
 import ifcopenshell.util.unit
 
 import bonsai.bim.handler
@@ -30,6 +31,27 @@ import bonsai.core.spatial as core
 import bonsai.core.aggregate
 import bonsai.core.geometry
 import bonsai.tool as tool
+
+# Cache of {resolved link filepath: (file mtime, {storey name: elevation in meters})}.
+# Storey elevations rarely change and opening a linked IFC file to read them can take
+# seconds on large models — reuse the parsed result unless the file has been modified.
+_link_storey_elevations_cache: dict[str, tuple[float, dict[str, float]]] = {}
+
+
+def _get_link_storey_elevations(link_filepath: Path) -> dict[str, float]:
+    key = str(link_filepath)
+    mtime = link_filepath.stat().st_mtime
+    cached = _link_storey_elevations_cache.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    link_ifc = ifcopenshell.open(str(link_filepath))
+    unit_scale = ifcopenshell.util.unit.calculate_unit_scale(link_ifc)
+    elevations = {
+        (s.Name or f"Storey {s.id()}"): ifcopenshell.util.placement.get_storey_elevation(s) * unit_scale
+        for s in link_ifc.by_type("IfcBuildingStorey")
+    }
+    _link_storey_elevations_cache[key] = (mtime, elevations)
+    return elevations
 
 
 class ReferenceStructure(bpy.types.Operator, tool.Ifc.Operator):
@@ -501,6 +523,7 @@ class CollapseAllStoreys(bpy.types.Operator):
 
     def execute(self, context):
         import json
+
         props = tool.Spatial.get_spatial_props()
         contracted = set(json.loads(props.contracted_containers))
         for container in props.containers:
@@ -786,3 +809,89 @@ class ToggleSpatialElements(bpy.types.Operator):
     def execute(self, context):
         tool.Spatial.set_space_visibility(self.is_visible)
         return {"FINISHED"}
+
+
+# Last-seen hide_viewport state per main-model storey id, so the depsgraph handler below
+# only re-syncs linked storeys when a storey's visibility actually changed.
+_last_known_storey_hidden: dict[int, bool] = {}
+
+
+def sync_linked_storeys(scene, depsgraph):
+    """Whenever a main-model IfcBuildingStorey collection's visibility changes (drag-toggle
+    in the N-panel, Outliner, or elsewhere), hide/show the Z-matched storey in every loaded
+    link to match. Runs on every depsgraph update but is a no-op unless something changed.
+
+    Each main-model storey "owns" the Z band halfway to its neighbours above and below (a
+    1D Voronoi partition), so every link storey is claimed by exactly one main storey with
+    no gaps — the topmost and bottommost storeys own everything above/below them."""
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return
+    storeys = ifc.by_type("IfcBuildingStorey")
+    if not storeys:
+        return
+    loaded_links = [link for link in tool.Project.get_project_props().links if link.is_loaded]
+    if not loaded_links:
+        return
+
+    main_unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+    sorted_storeys = sorted(storeys, key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s))
+    sorted_zs = [ifcopenshell.util.placement.get_storey_elevation(s) * main_unit_scale for s in sorted_storeys]
+    last_index = len(sorted_storeys) - 1
+
+    for index, storey in enumerate(sorted_storeys):
+        storey_obj = tool.Ifc.get_object(storey)
+        if not storey_obj:
+            continue
+        collection = tool.Blender.get_object_bim_props(storey_obj).collection
+        if not collection:
+            continue
+
+        hidden = collection.hide_viewport
+        if _last_known_storey_hidden.get(storey.id()) == hidden:
+            continue
+        _last_known_storey_hidden[storey.id()] = hidden
+
+        main_z = sorted_zs[index]
+        lower_bound = -math.inf if index == 0 else (main_z + sorted_zs[index - 1]) / 2
+        upper_bound = math.inf if index == last_index else (main_z + sorted_zs[index + 1]) / 2
+
+        for link in loaded_links:
+            # Use same path resolution as the Links UI panel
+            link_filepath = tool.Blender.ensure_blender_path_is_abs(Path(link.filepath))
+            library_filepath = link_filepath.with_suffix(".ifc.cache.blend").resolve()
+
+            # Find the root IfcProject collection for this link (confirms it's actually loaded)
+            root_col = next(
+                (
+                    c
+                    for c in bpy.data.collections
+                    if "IfcProject" in c.name
+                    and c.library
+                    and Path(bpy.path.abspath(c.library.filepath)).resolve() == library_filepath
+                ),
+                None,
+            )
+            if not root_col:
+                continue
+
+            try:
+                storey_elevations = _get_link_storey_elevations(link_filepath)
+            except Exception:
+                continue
+
+            link_empty = tool.Project.get_link_empty_handle(link)
+            link_z_offset = link_empty.matrix_world.translation.z if link_empty else 0.0
+
+            for storey_col in root_col.children:
+                elevation = storey_elevations.get(storey_col.name)
+                if elevation is None:
+                    continue
+                link_z = elevation + link_z_offset
+
+                if not (lower_bound <= link_z < upper_bound):
+                    continue
+
+                # Set the collection flag, not per-object flags: object property writes
+                # on library-linked data are reverted by the post-operator undo push.
+                storey_col.hide_viewport = hidden

@@ -537,12 +537,14 @@ class BIM_PT_links(Panel):
             index = self.props.active_link_index
             library_filepath = tool.Blender.ensure_blender_path_is_abs(
                 Path(link.filepath).with_suffix(".ifc.cache.blend")
-            )
+            ).resolve()
             root_col = next(
                 (
                     c
                     for c in bpy.data.collections
-                    if "IfcProject" in c.name and c.library and Path(c.library.filepath) == library_filepath
+                    if "IfcProject" in c.name
+                    and c.library
+                    and Path(bpy.path.abspath(c.library.filepath)).resolve() == library_filepath
                 ),
                 None,
             )
@@ -550,9 +552,7 @@ class BIM_PT_links(Panel):
                 box = self.layout.box()
                 box.label(text="Storey Visibility", icon="OUTLINER_COLLECTION")
                 for storey_col in root_col.children:
-                    objs = list(storey_col.all_objects)
-                    is_hidden = bool(objs) and all(obj.hide_viewport for obj in objs)
-                    icon = "HIDE_ON" if is_hidden else "HIDE_OFF"
+                    icon = "HIDE_ON" if storey_col.hide_viewport else "HIDE_OFF"
                     op = box.operator("bim.toggle_link_storey_visibility", text=storey_col.name, icon=icon)
                     op.link_index = index
                     op.storey_collection_name = storey_col.name

@@ -17,6 +17,7 @@
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
+from bpy.app.handlers import persistent
 
 from . import operator, prop, ui, workspace
 
@@ -58,8 +59,28 @@ classes = (
     ui.BIM_UL_elements,
     ui.BIM_PT_spatial_decomposition,
     ui.BIM_PT_grids,
+    ui.BIM_PT_storey_visibility_npanel,
     workspace.Hotkey,
 )
+
+
+def _get_storey_is_visible(self):
+    return not self.hide_viewport
+
+
+def _set_storey_is_visible(self, value):
+    self.hide_viewport = not value
+
+
+@persistent
+def _on_depsgraph_update(scene, depsgraph):
+    operator.sync_linked_storeys(scene, depsgraph)
+
+
+@persistent
+def _on_load_post(filepath):
+    operator._last_known_storey_hidden.clear()
+    operator._link_storey_elevations_cache.clear()
 
 
 def register():
@@ -70,11 +91,28 @@ def register():
         type=prop.BIMSpatialDecompositionProperties
     )
     bpy.types.Scene.BIMGridProperties = bpy.props.PointerProperty(type=prop.BIMGridProperties)
+    # hide_viewport is a Blender "restrict"-type flag with hardcoded icon behaviour in its
+    # own widget drawing code, so a custom icon override on it renders inconsistently. This
+    # plain proxy boolean (get/set onto hide_viewport, inverted) behaves like any other
+    # ordinary visibility toggle in this codebase and lets the N-panel button use a normal,
+    # reliable icon + toggle=True highlight.
+    bpy.types.Collection.bim_storey_is_visible = bpy.props.BoolProperty(
+        get=_get_storey_is_visible, set=_set_storey_is_visible
+    )
+    if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
 
 
 def unregister():
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.SpatialTool)
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
+    if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
+    del bpy.types.Collection.bim_storey_is_visible
     del bpy.types.Object.BIMObjectSpatialProperties
     del bpy.types.Scene.BIMSpatialDecompositionProperties
     del bpy.types.Scene.BIMGridProperties

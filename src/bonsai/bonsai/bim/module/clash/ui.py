@@ -336,6 +336,45 @@ class BIM_PT_saved_clash_views(Panel):
             op.index = i
 
 
+class BIM_PT_saved_views_npanel(Panel):
+    bl_label = "Saved Views"
+    bl_idname = "BIM_PT_saved_views_npanel"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Bonsai"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        from bonsai.bim.module.clash.operator import get_saved_view_icon_id
+
+        layout = self.layout
+        props = tool.Clash.get_clash_props()
+
+        layout.operator("bim.save_clash_view", icon="BOOKMARKS")
+
+        for i, view in enumerate(props.saved_views):
+            box = layout.box()
+
+            abs_path = bpy.path.abspath(view.image_path) if view.image_path else ""
+            icon_id = get_saved_view_icon_id(abs_path)
+            if icon_id:
+                box.template_icon(icon_value=icon_id, scale=5)
+            else:
+                box.label(text="No snapshot", icon="IMAGE_DATA")
+
+            box.prop(view, "name", text="Name")
+            box.prop(view, "description", text="Description")
+            box.prop(view, "status", text="Status")
+
+            row = box.row(align=True)
+            op = row.operator("bim.open_clash_view", text="Open View", icon="RESTRICT_VIEW_OFF")
+            op.index = i
+            op = row.operator("bim.reload_clash_view", text="Reload View", icon="FILE_REFRESH")
+            op.index = i
+            op = row.operator("bim.remove_clash_view", text="", icon="X")
+            op.index = i
+
+
 class BIM_UL_clashes(bpy.types.UIList):
     def draw_item(
         self,
