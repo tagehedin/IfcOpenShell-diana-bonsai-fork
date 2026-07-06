@@ -21,9 +21,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import bpy
+import ifcopenshell.util.placement
 from bpy.types import Panel, UIList
 
-import ifcopenshell.util.placement
 import bonsai.tool as tool
 from bonsai.bim.module.spatial.data import SpatialData, SpatialDecompositionData
 

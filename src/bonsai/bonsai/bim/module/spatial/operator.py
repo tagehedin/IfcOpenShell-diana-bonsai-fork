@@ -28,9 +28,9 @@ import ifcopenshell.util.placement
 import ifcopenshell.util.unit
 
 import bonsai.bim.handler
-import bonsai.core.spatial as core
 import bonsai.core.aggregate
 import bonsai.core.geometry
+import bonsai.core.spatial as core
 import bonsai.tool as tool
 
 # Cache of {resolved link filepath: (file mtime, {storey name: elevation in meters})}.
