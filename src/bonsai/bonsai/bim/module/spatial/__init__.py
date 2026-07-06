@@ -77,10 +77,21 @@ def _on_depsgraph_update(scene, depsgraph):
     operator.sync_linked_storeys(scene, depsgraph)
 
 
+def _seed_storey_hidden_state_deferred():
+    operator.seed_storey_hidden_state()
+    # Chain the (slow) link-elevation warm-up after seeding, so it doesn't race the seed step,
+    # and so it happens once at load instead of on whatever click happens to be first.
+    operator.warm_link_storey_elevation_cache()
+    return None  # one-shot timer
+
+
 @persistent
 def _on_load_post(filepath):
     operator._last_known_storey_hidden.clear()
     operator._link_storey_elevations_cache.clear()
+    # Deferred (not called synchronously here): other load_post handlers still need to run
+    # first to restore the IFC data itself onto the newly-loaded Blender objects/collections.
+    bpy.app.timers.register(_seed_storey_hidden_state_deferred, first_interval=0.0)
 
 
 def register():

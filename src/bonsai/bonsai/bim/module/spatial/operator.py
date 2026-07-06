@@ -17,6 +17,7 @@
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,8 @@ def _get_link_storey_elevations(link_filepath: Path) -> dict[str, float]:
     cached = _link_storey_elevations_cache.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
+    print(f"[Bonsai] Building storey elevation cache for linked file: {link_filepath.name}...")
+    t0 = time.perf_counter()
     link_ifc = ifcopenshell.open(str(link_filepath))
     unit_scale = ifcopenshell.util.unit.calculate_unit_scale(link_ifc)
     elevations = {
@@ -51,6 +54,7 @@ def _get_link_storey_elevations(link_filepath: Path) -> dict[str, float]:
         for s in link_ifc.by_type("IfcBuildingStorey")
     }
     _link_storey_elevations_cache[key] = (mtime, elevations)
+    print(f"[Bonsai] Storey elevation cache for {link_filepath.name} built in {time.perf_counter() - t0:.1f}s")
     return elevations
 
 
@@ -816,6 +820,42 @@ class ToggleSpatialElements(bpy.types.Operator):
 _last_known_storey_hidden: dict[int, bool] = {}
 
 
+def seed_storey_hidden_state() -> None:
+    """Populate _last_known_storey_hidden from each storey's current visibility, without
+    running the (expensive, linked-IFC-parsing) cascade. Called on load_post so the first
+    depsgraph tick after opening a file — which could be triggered by literally any UI
+    action, e.g. switching Properties tabs — doesn't mistake "we don't know this storey's
+    state yet" for "this storey's visibility just changed" and pay the link-parsing cost
+    for an action that has nothing to do with storey visibility."""
+    ifc = tool.Ifc.get()
+    if not ifc:
+        return
+    for storey in ifc.by_type("IfcBuildingStorey"):
+        storey_obj = tool.Ifc.get_object(storey)
+        if not storey_obj:
+            continue
+        collection = tool.Blender.get_object_bim_props(storey_obj).collection
+        if not collection:
+            continue
+        _last_known_storey_hidden[storey.id()] = collection.hide_viewport
+
+
+def warm_link_storey_elevation_cache() -> None:
+    """Eagerly parse every loaded link's storey elevations at file-load time (instead of
+    lazily on the first storey-visibility toggle), so the one-off multi-second parsing cost
+    (opening the linked IFC file — see _get_link_storey_elevations) happens once, predictably,
+    right after opening the file, rather than freezing whatever unrelated click triggers the
+    first real storey-visibility change."""
+    for link in tool.Project.get_project_props().links:
+        if not link.is_loaded:
+            continue
+        link_filepath = tool.Blender.ensure_blender_path_is_abs(Path(link.filepath))
+        try:
+            _get_link_storey_elevations(link_filepath)
+        except Exception:
+            continue
+
+
 def sync_linked_storeys(scene, depsgraph):
     """Whenever a main-model IfcBuildingStorey collection's visibility changes (drag-toggle
     in the N-panel, Outliner, or elsewhere), hide/show the Z-matched storey in every loaded
@@ -848,8 +888,11 @@ def sync_linked_storeys(scene, depsgraph):
             continue
 
         hidden = collection.hide_viewport
-        if _last_known_storey_hidden.get(storey.id()) == hidden:
+        is_new_storey = storey.id() not in _last_known_storey_hidden
+        if not is_new_storey and _last_known_storey_hidden[storey.id()] == hidden:
             continue
+        if is_new_storey:
+            print(f"[Bonsai] New storey '{storey.Name}' detected — updating linked-storey sync cache...")
         _last_known_storey_hidden[storey.id()] = hidden
 
         main_z = sorted_zs[index]
