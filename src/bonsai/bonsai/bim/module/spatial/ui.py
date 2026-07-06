@@ -436,6 +436,8 @@ class BIM_PT_storey_visibility_npanel(Panel):
             layout.label(text="No storeys in model", icon="INFO")
             return
 
+        layout.operator("bim.rebuild_storey_visibility_cache", icon="FILE_REFRESH")
+
         for storey in storeys:
             storey_obj = tool.Ifc.get_object(storey)
             if not storey_obj:

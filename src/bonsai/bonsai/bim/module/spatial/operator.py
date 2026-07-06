@@ -401,33 +401,54 @@ class ImportSpatialDecomposition(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _get_loaded_links_for_import():
+    props = bpy.context.scene.BIMProjectProperties
+    result = []
+    for i, link in enumerate(props.links):
+        if link.is_loaded:
+            result.append((i, link.name or link.filepath.split("/")[-1], link.filepath))
+    return result
+
+
+_import_storeys_link_enum_cache: list[tuple[str, str, str]] = []
+
+
+def _import_storeys_link_enum_items(self, context):
+    # Blender caveat 1: a dynamic EnumProperty items callback must return a list that stays
+    # alive between calls, or the C strings backing it can be garbage-collected and the
+    # dropdown shows blank/garbled entries. Reuse one persistent list, refreshing its
+    # contents in place, instead of returning a fresh list literal every call.
+    # Blender caveat 2 (the one that actually broke this): `self` here is a minimal RNA
+    # wrapper that only exposes registered *properties*, not arbitrary custom methods on
+    # the operator class — self._get_loaded_links() raises AttributeError, which Blender
+    # silently swallows, leaving the dropdown with zero items. Must call a plain module-level
+    # function instead of anything through `self`.
+    items = [(str(idx), name, filepath) for idx, name, filepath in _get_loaded_links_for_import()]
+    _import_storeys_link_enum_cache[:] = items or [("-1", "None", "")]
+    return _import_storeys_link_enum_cache
+
+
 class ImportStoreysFromLink(bpy.types.Operator):
     bl_idname = "bim.import_storeys_from_link"
     bl_label = "Import Storeys from Link"
     bl_description = "Create IfcBuildingStoreys in this file matching those in a loaded linked IFC file"
     bl_options = {"REGISTER", "UNDO"}
 
-    link_index: bpy.props.IntProperty(default=0)
+    link_index: bpy.props.EnumProperty(items=_import_storeys_link_enum_items, name="Link")
 
     def invoke(self, context, event):
-        links = self._get_loaded_links()
+        links = _get_loaded_links_for_import()
         if not links:
             self.report({"WARNING"}, "No loaded IFC links found. Load a link first via Project > Links.")
             return {"CANCELLED"}
         if len(links) == 1:
-            self.link_index = links[0][0]
+            self.link_index = str(links[0][0])
             return self.execute(context)
         return context.window_manager.invoke_props_dialog(self, width=350)
 
     def draw(self, context):
-        links = self._get_loaded_links()
         self.layout.label(text="Import storeys from:")
-        for idx, name, filepath in links:
-            row = self.layout.row()
-            row.operator(
-                "bim.import_storeys_from_link",
-                text=name,
-            ).link_index = idx
+        self.layout.prop(self, "link_index", text="")
 
     def execute(self, context):
         ifc = tool.Ifc.get()
@@ -435,8 +456,12 @@ class ImportStoreysFromLink(bpy.types.Operator):
             self.report({"WARNING"}, "No active IFC file.")
             return {"CANCELLED"}
 
-        links = self._get_loaded_links()
-        match = next((l for l in links if l[0] == self.link_index), None)
+        links = _get_loaded_links_for_import()
+        try:
+            link_index = int(self.link_index)
+        except (ValueError, TypeError):
+            link_index = links[0][0] if links else None
+        match = next((l for l in links if l[0] == link_index), None)
         if not match:
             if links:
                 match = links[0]
@@ -445,8 +470,9 @@ class ImportStoreysFromLink(bpy.types.Operator):
                 return {"CANCELLED"}
 
         _, link_name, filepath = match
+        abs_filepath = tool.Blender.ensure_blender_path_is_abs(Path(filepath))
         try:
-            linked_ifc = ifcopenshell.open(filepath)
+            linked_ifc = ifcopenshell.open(str(abs_filepath))
         except Exception as e:
             self.report({"ERROR"}, f"Could not open linked IFC: {e}")
             return {"CANCELLED"}
@@ -467,10 +493,25 @@ class ImportStoreysFromLink(bpy.types.Operator):
             self.report({"WARNING"}, "IfcBuilding has no Blender object.")
             return {"CANCELLED"}
 
-        # Find existing storey names to avoid duplicates.
-        existing_names = {s.Name for s in ifc.by_type("IfcBuildingStorey") if s.Name}
-
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+
+        # Dedup by name AND elevation (within 0.1m, same tolerance used elsewhere for storey
+        # Z-matching) — a name collision alone isn't enough to skip, since different links can
+        # coincidentally reuse a storey name at a different real elevation.
+        #
+        # Only counts as "existing" if it still has a live Blender object. Deleting a storey's
+        # object the native Blender way (X/Delete in the viewport, instead of Bonsai's IFC-aware
+        # "Delete Container") leaves the IfcBuildingStorey entity fully intact with no visible
+        # object — the entity itself doesn't know it was "deleted". Without this check, such an
+        # orphan would silently block reimporting the storey the user thinks is already gone.
+        existing_storeys = [
+            (s.Name, ifcopenshell.util.placement.get_storey_elevation(s) * unit_scale)
+            for s in ifc.by_type("IfcBuildingStorey")
+            if s.Name and tool.Ifc.get_object(s) is not None
+        ]
+
+        created_names = []
+        skipped_names = []
         created = 0
 
         for link_storey in sorted(
@@ -478,11 +519,16 @@ class ImportStoreysFromLink(bpy.types.Operator):
             key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s),
         ):
             name = link_storey.Name or f"Level {created + 1}"
-            if name in existing_names:
-                continue
-
             elevation_si = ifcopenshell.util.placement.get_storey_elevation(link_storey)
             elevation_blender = elevation_si * unit_scale
+
+            is_duplicate = any(
+                existing_name == name and abs(existing_z - elevation_blender) <= 0.1
+                for existing_name, existing_z in existing_storeys
+            )
+            if is_duplicate:
+                skipped_names.append(name)
+                continue
 
             storey_obj = tool.Blender.create_ifc_object(ifc_class="IfcBuildingStorey", name=name)
             storey_obj.location.z = elevation_blender
@@ -499,24 +545,29 @@ class ImportStoreysFromLink(bpy.types.Operator):
             context.view_layer.update()
             bonsai.core.geometry.edit_object_placement(tool.Ifc, tool.Geometry, tool.Surveyor, obj=storey_obj)
 
-            existing_names.add(name)
+            existing_storeys.append((name, elevation_blender))
+            created_names.append(name)
             created += 1
 
-        if created == 0:
-            self.report({"INFO"}, "All storeys already exist — nothing imported.")
-        else:
-            self.report({"INFO"}, f"Imported {created} storey(s) from {link_name}.")
+        if created_names and skipped_names:
+            self.report(
+                {"INFO"},
+                f"Imported {len(created_names)} from {link_name}: {', '.join(created_names)}. "
+                f"Skipped {len(skipped_names)} already present (same name + elevation): {', '.join(skipped_names)}.",
+            )
+        elif created_names:
+            self.report(
+                {"INFO"}, f"Imported {len(created_names)} storey(s) from {link_name}: {', '.join(created_names)}."
+            )
+        elif skipped_names:
+            self.report(
+                {"INFO"},
+                f"All {len(skipped_names)} storeys from {link_name} already exist "
+                f"(same name + elevation): {', '.join(skipped_names)}.",
+            )
 
         core.import_spatial_decomposition(tool.Spatial)
         return {"FINISHED"}
-
-    def _get_loaded_links(self):
-        props = bpy.context.scene.BIMProjectProperties
-        result = []
-        for i, link in enumerate(props.links):
-            if link.is_loaded:
-                result.append((i, link.name or link.filepath.split("/")[-1], link.filepath))
-        return result
 
 
 class CollapseAllStoreys(bpy.types.Operator):
@@ -585,9 +636,23 @@ class ExpandContainer(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _collect_container_descendants(container: ifcopenshell.entity_instance) -> list[ifcopenshell.entity_instance]:
+    """All aggregated/decomposed descendants of a container, shallowest first."""
+    result = []
+    queue = [container]
+    while queue:
+        current = queue.pop(0)
+        children = ifcopenshell.util.element.get_parts(current)
+        for child in children:
+            result.append(child)
+            queue.append(child)
+    return result
+
+
 class DeleteContainer(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.delete_container"
     bl_label = "Delete Container"
+    bl_description = "Delete this container and everything inside it (storeys, spaces, etc)."
     bl_options = {"REGISTER", "UNDO"}
     container: bpy.props.IntProperty()
 
@@ -603,8 +668,27 @@ class DeleteContainer(bpy.types.Operator, tool.Ifc.Operator):
             return False
         return True
 
+    def invoke(self, context, event):
+        container = tool.Ifc.get().by_id(self.container)
+        descendants = _collect_container_descendants(container)
+        if descendants:
+            names = ", ".join(d.Name or d.is_a() for d in descendants[:10])
+            if len(descendants) > 10:
+                names += f", and {len(descendants) - 10} more"
+            message = f"This will also delete {len(descendants)} item(s) inside it: {names}."
+            return context.window_manager.invoke_confirm(self, event, message=message, title="Delete Container")
+        return self.execute(context)
+
     def _execute(self, context):
-        core.delete_container(tool.Ifc, tool.Spatial, tool.Geometry, container=tool.Ifc.get().by_id(self.container))
+        ifc = tool.Ifc.get()
+        container = ifc.by_id(self.container)
+        # Delete deepest descendants first — deleting a container should delete what's
+        # inside it, not "rescue"-relink surviving children up to the grandparent (which
+        # leaves them as orphans with no aggregation, since only the Blender-side collection
+        # gets relinked, not the underlying IfcRelAggregates relationship).
+        for descendant in reversed(_collect_container_descendants(container)):
+            core.delete_container(tool.Ifc, tool.Spatial, tool.Geometry, container=descendant)
+        core.delete_container(tool.Ifc, tool.Spatial, tool.Geometry, container=container)
 
 
 class ToggleContainerElement(bpy.types.Operator):
@@ -841,11 +925,10 @@ def seed_storey_hidden_state() -> None:
 
 
 def warm_link_storey_elevation_cache() -> None:
-    """Eagerly parse every loaded link's storey elevations at file-load time (instead of
-    lazily on the first storey-visibility toggle), so the one-off multi-second parsing cost
-    (opening the linked IFC file — see _get_link_storey_elevations) happens once, predictably,
-    right after opening the file, rather than freezing whatever unrelated click triggers the
-    first real storey-visibility change."""
+    """Eagerly parse every loaded link's storey elevations (instead of lazily on the first
+    storey-visibility toggle), so the one-off multi-second parsing cost (opening the linked
+    IFC file — see _get_link_storey_elevations) happens once, predictably, rather than
+    freezing whatever click triggers the first real storey-visibility change."""
     for link in tool.Project.get_project_props().links:
         if not link.is_loaded:
             continue
@@ -854,6 +937,26 @@ def warm_link_storey_elevation_cache() -> None:
             _get_link_storey_elevations(link_filepath)
         except Exception:
             continue
+
+
+class RebuildStoreyVisibilityCache(bpy.types.Operator):
+    bl_idname = "bim.rebuild_storey_visibility_cache"
+    bl_label = "Rebuild Link Cache"
+    bl_description = (
+        "Refresh the storey-visibility linked-file cache. Press this before using the storey "
+        "buttons below, and again any time storeys have been deleted or recreated (their ids "
+        "change, so the sync cache goes stale)."
+    )
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        _last_known_storey_hidden.clear()
+        _link_storey_elevations_cache.clear()
+        seed_storey_hidden_state()
+        t0 = time.perf_counter()
+        warm_link_storey_elevation_cache()
+        self.report({"INFO"}, f"Storey visibility cache rebuilt in {time.perf_counter() - t0:.1f}s.")
+        return {"FINISHED"}
 
 
 def sync_linked_storeys(scene, depsgraph):

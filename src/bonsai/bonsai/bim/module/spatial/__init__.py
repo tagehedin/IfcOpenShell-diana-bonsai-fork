@@ -35,6 +35,7 @@ classes = (
     operator.EnableEditingContainer,
     operator.ExpandContainer,
     operator.ImportSpatialDecomposition,
+    operator.RebuildStoreyVisibilityCache,
     operator.ReferenceFromProvidedStructure,
     operator.ReferenceStructure,
     operator.RemoveContainer,
@@ -79,9 +80,13 @@ def _on_depsgraph_update(scene, depsgraph):
 
 def _seed_storey_hidden_state_deferred():
     operator.seed_storey_hidden_state()
-    # Chain the (slow) link-elevation warm-up after seeding, so it doesn't race the seed step,
-    # and so it happens once at load instead of on whatever click happens to be first.
-    operator.warm_link_storey_elevation_cache()
+    # NOTE: the (slow) link-elevation warm-up is intentionally NOT chained here anymore —
+    # it used to run automatically at load, but that's an unwanted multi-second delay for
+    # users who don't need the N-panel storey-visibility linking every session. It's now
+    # a manual "Rebuild Cache" button in the N-panel (see spatial/operator.py
+    # RebuildStoreyVisibilityCache) — press it once before using the storey buttons, and
+    # again any time storeys have been deleted/recreated (their ids change, so the stale
+    # tracking dict needs a fresh reseed).
     return None  # one-shot timer
 
 
