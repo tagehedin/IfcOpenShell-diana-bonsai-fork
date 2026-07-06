@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import textwrap
 import time
+import urllib.parse
 import webbrowser
 from collections import namedtuple
 from collections.abc import Iterable
@@ -691,6 +692,26 @@ class OpenUpstream(bpy.types.Operator):
             webbrowser.open("https://community.osarch.org/")
         elif self.page == "fund":
             webbrowser.open("https://opencollective.com/opensourcebim")
+        return {"FINISHED"}
+
+
+class ReportBug(bpy.types.Operator):
+    bl_idname = "bim.report_bug"
+    bl_label = "Report a Bug"
+    bl_description = (
+        "Open a new GitHub issue on this fork with a template ready to paste your error into.\n\n"
+        "Copy the Python error from the terminal first, then paste it into the issue body."
+    )
+
+    def execute(self, context):
+        title = "Bug report"
+        body = (
+            "**Steps to reproduce:**\n\n\n"
+            "**Paste the Python error message from the terminal below:**\n\n"
+            "```\n\n```\n"
+        )
+        params = urllib.parse.urlencode({"title": title, "body": body})
+        webbrowser.open(f"https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/issues/new?{params}")
         return {"FINISHED"}
 
 

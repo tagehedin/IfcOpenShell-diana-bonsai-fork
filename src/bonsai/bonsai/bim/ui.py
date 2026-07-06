@@ -936,6 +936,7 @@ class BIM_PT_tabs(Panel):
             box.operator("bim.copy_debug_information", text="Copy Error Message To Clipboard")
             op = box.operator("bim.open_uri", text="How Can I Fix This?")
             op.uri = "https://docs.bonsaibim.org/guides/troubleshooting.html"
+            box.operator("bim.report_bug", icon="URL")
 
         if not tool.Ifc.get():
             return
@@ -1114,6 +1115,27 @@ class BIM_PT_tab_project_setup(Panel):
 
     def draw(self, context):
         pass
+
+
+class BIM_PT_bug_reporting(Panel):
+    bl_label = "Bug Reporting"
+    bl_idname = "BIM_PT_bug_reporting"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_order = 21  # after BIM_PT_blocks (bl_order = 20), i.e. last in the Project Overview tab
+    bim_tab_name = "PROJECT"
+
+    @classmethod
+    def poll(cls, context):
+        if tool.Blender.should_show_panel(context, cls.bim_tab_name, cls.bl_idname):
+            return True
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Copy the Python error from the terminal first.")
+        layout.operator("bim.report_bug", icon="URL")
 
 
 class BIM_PT_tab_stakeholders(Panel):

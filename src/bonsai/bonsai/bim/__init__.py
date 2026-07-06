@@ -126,6 +126,7 @@ classes = [
     operator.OpenUpstream,
     operator.OpenUri,
     operator.ReloadIfcFile,
+    operator.ReportBug,
     operator.RevertClippingPlaneCut,
     operator.SaveBlendMetadataFile,
     operator.SelectDir,
@@ -172,6 +173,7 @@ classes = [
     ui.BIM_PT_tab_spatial,
     ui.BIM_PT_tab_grouping_and_filtering,
     ui.BIM_PT_tab_project_setup,
+    ui.BIM_PT_bug_reporting,
     ui.BIM_PT_tab_geometry,
     ui.BIM_PT_tab_stakeholders,
     # Object information
