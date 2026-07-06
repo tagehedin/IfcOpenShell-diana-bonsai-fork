@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string>
 #include <iomanip>
+#include <charconv>
 
 #ifdef USE_MMAP
 #include <boost/filesystem/path.hpp>
@@ -449,7 +450,14 @@ const std::string& TokenFunc::asStringRef(const Token& token) {
     }
     std::string& str = token.lexer->GetTempString();
     token.lexer->TokenString(token.startPos, str);
-    if ((isString(token) || isEnumeration(token) || isBinary(token)) && !str.empty()) {
+    // A well-formed string/enumeration/binary token has both delimiters (e.g.
+    // '...', .XXX., "...."), so at least two characters. Malformed input from a
+    // fuzzer can produce a single-character token (e.g. a bare '.' left by
+    // ".)" instead of ".PHYSICAL."); stripping both ends would then erase past
+    // the end of an already-empty string, which is undefined behaviour and
+    // aborts under hardened standard libraries (_GLIBCXX_ASSERTIONS). Require
+    // two characters before stripping. See #5683.
+    if ((isString(token) || isEnumeration(token) || isBinary(token)) && str.size() >= 2) {
         //remove start+end characters in-place
         str.erase(str.end() - 1);
         str.erase(str.begin());
@@ -746,25 +754,29 @@ namespace {
         // the output of the C++ ostream formatting operation.
         // REAL = [ SIGN ] DIGIT { DIGIT } "." { DIGIT } [ "E" [ SIGN ] DIGIT { DIGIT } ] .
         static std::string format_double(const double& d) {
-            std::ostringstream oss;
-            oss.imbue(std::locale::classic());
-            oss << std::setprecision(std::numeric_limits<double>::max_digits10) << d;
-            const std::string str = oss.str();
-            oss.str("");
+            // Use the shortest representation that round-trips exactly (like
+            // Python's repr) instead of max_digits10. max_digits10 padded clean
+            // values with noise digits (0.0174532925199433 -> 0.017453292519943299),
+            // which rewrote every REAL and produced huge diffs when a file was
+            // re-saved. See #7696.
+            // std::to_chars is locale-independent, so no ostringstream/imbue is
+            // needed here.
+            char buf[64];
+            const auto res = std::to_chars(buf, buf + sizeof(buf), d);
+            const std::string str(buf, res.ptr);
             std::string::size_type e = str.find('e');
             if (e == std::string::npos) {
                 e = str.find('E');
             }
-            const std::string mantissa = str.substr(0, e);
-            oss << mantissa;
-            if (mantissa.find('.') == std::string::npos) {
-                oss << ".";
+            std::string result = str.substr(0, e);
+            if (result.find('.') == std::string::npos) {
+                result += '.';
             }
             if (e != std::string::npos) {
-                oss << "E";
-                oss << str.substr(e + 1);
+                result += 'E';
+                result += str.substr(e + 1);
             }
-            return oss.str();
+            return result;
         }
 
         static std::string format_binary(const boost::dynamic_bitset<>& b) {

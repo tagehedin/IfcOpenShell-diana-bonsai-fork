@@ -1022,6 +1022,12 @@ class CreateDrawing(bpy.types.Operator):
         clip_start = self.camera.data.clip_start
         clip_end = self.camera.data.clip_end
 
+        # Accumulated across every file in the loop below (main model plus any
+        # linked models) so the SHAPELY fill pass after the loop covers all of
+        # them, not just whichever file happened to be processed last.
+        raycast_objs = set()
+        elements_with_faces = set()
+
         for ifc_path, (ifc, link_matrix) in files.items():
             # Don't use draw.main() just whilst we're prototyping and experimenting
             # TODO: hash paths are never used
@@ -1122,6 +1128,15 @@ class CreateDrawing(bpy.types.Operator):
                     or tool.Drawing.is_in_camera_view(obj, cam_inv, x, y, clip_start, clip_end)
                 }
                 self._draw_log_msg(f"[LOCAL] {ifc_path}: {len(drawing_elements)}/{before} elements in view")
+
+            if self.cprops.fill_mode == "SHAPELY":
+                for element in drawing_elements.copy():
+                    if element.is_a("IfcAnnotation"):
+                        continue
+                    obj = tool.Ifc.get_object(element)
+                    if obj and isinstance(obj, bpy.types.Object) and obj.type == "MESH" and len(obj.data.polygons):
+                        elements_with_faces.add(element.GlobalId)
+                        raycast_objs.add(obj)
 
             # Get all representation contexts to see what we're dealing with.
             # Drawings only draw bodies and annotations (and facetation, due to a Revit bug).
@@ -1243,16 +1258,6 @@ class CreateDrawing(bpy.types.Operator):
         if self.cprops.fill_mode == "SHAPELY":
             # shapely variant
             group = root.find("{http://www.w3.org/2000/svg}g")
-
-            raycast_objs = set()
-            elements_with_faces = set()
-            for element in drawing_elements.copy():
-                if element.is_a("IfcAnnotation"):
-                    continue
-                obj = tool.Ifc.get_object(element)
-                if obj and isinstance(obj, bpy.types.Object) and obj.type == "MESH" and len(obj.data.polygons):
-                    elements_with_faces.add(element.GlobalId)
-                    raycast_objs.add(obj)
 
             projections = root.xpath(
                 ".//svg:g[contains(@class, 'projection')]", namespaces={"svg": "http://www.w3.org/2000/svg"}
