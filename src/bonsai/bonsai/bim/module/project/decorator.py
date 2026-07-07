@@ -16,6 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
+import math
+
 import blf
 import bmesh
 import bpy
@@ -365,17 +367,27 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     point1 = None
     point2 = None
     cursor = None
+    # Pipe/circular-profile metadata for each point above, as (radius, world_axis)
+    # or None — see tool.Raycast.get_pipe_center_radius.
+    point1_pipe = None
+    point2_pipe = None
+    cursor_pipe = None
 
     _COLOR_X = (0.9, 0.25, 0.25)
     _COLOR_Y = (0.25, 0.85, 0.25)
     _COLOR_Z = (0.25, 0.50, 1.0)
     _COLOR_TOTAL = (1.0, 1.0, 1.0)
+    _COLOR_PIPE = (1.0, 0.65, 0.0)
+    _PIPE_CIRCLE_SEGMENTS = 32
 
     @classmethod
-    def update(cls, point1, point2, cursor):
+    def update(cls, point1, point2, cursor, point1_pipe=None, point2_pipe=None, cursor_pipe=None):
         cls.point1 = point1
         cls.point2 = point2
         cls.cursor = cursor
+        cls.point1_pipe = point1_pipe
+        cls.point2_pipe = point2_pipe
+        cls.cursor_pipe = cursor_pipe
 
     def _target(self):
         p1 = BMeasureDecorator.point1
@@ -383,9 +395,30 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         cursor = BMeasureDecorator.cursor
         return p1, p2, cursor
 
+    @staticmethod
+    def _circle_points(center: Vector, radius: float, axis: Vector, segments: int) -> list:
+        axis = axis.normalized()
+        arbitrary = Vector((1.0, 0.0, 0.0)) if abs(axis.z) < 0.9 else Vector((0.0, 1.0, 0.0))
+        u = axis.cross(arbitrary).normalized()
+        v = axis.cross(u).normalized()
+        return [
+            center + radius * (math.cos(t) * u + math.sin(t) * v)
+            for t in (2 * math.pi * i / segments for i in range(segments))
+        ]
+
+    def _draw_pipe_circle(self, line_shader, center, pipe) -> None:
+        if pipe is None or center is None:
+            return
+        radius, axis = pipe
+        points = self._circle_points(center, radius, axis, self._PIPE_CIRCLE_SEGMENTS)
+        batch = batch_for_shader(line_shader, "LINE_LOOP", {"pos": points})
+        line_shader.uniform_float("color", (*self._COLOR_PIPE, 1.0))
+        batch.draw(line_shader)
+
     def draw_geometry(self, context):
         p1, p2, cursor = self._target()
         active = p2 if p2 is not None else cursor
+        active_pipe = BMeasureDecorator.point2_pipe if p2 is not None else BMeasureDecorator.cursor_pipe
 
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
@@ -410,6 +443,18 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
             batch.draw(point_shader)
 
+        # Pipe/circular-profile highlight — set up regardless of whether a full
+        # two-point widget exists yet, so just hovering a pipe (before any click)
+        # still shows its cross-section outline.
+        line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        line_shader.bind()
+        line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
+        line_shader.uniform_float("lineWidth", 2.0)
+        self._draw_pipe_circle(line_shader, p1, BMeasureDecorator.point1_pipe)
+        self._draw_pipe_circle(line_shader, active, active_pipe)
+        if p2 is not None:
+            self._draw_pipe_circle(line_shader, cursor, BMeasureDecorator.cursor_pipe)
+
         if p1 is None or active is None:
             gpu.state.blend_set("NONE")
             gpu.state.depth_test_set("LESS_EQUAL")
@@ -417,11 +462,6 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
 
         corner_a = Vector((active.x, p1.y, p1.z))
         corner_b = Vector((active.x, active.y, p1.z))
-
-        line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
-        line_shader.bind()
-        line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
-        line_shader.uniform_float("lineWidth", 2.0)
 
         for pts, color in [
             ([p1, corner_a], self._COLOR_X),
@@ -455,8 +495,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     def draw_text(self, context):
         p1, p2, cursor = self._target()
         active = p2 if p2 is not None else cursor
-        if p1 is None or active is None:
-            return
+        active_pipe = BMeasureDecorator.point2_pipe if p2 is not None else BMeasureDecorator.cursor_pipe
 
         region = context.region
         rv3d = region.data
@@ -467,29 +506,44 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 return f"{dist * 3.28084:.3f}'"
             return f"{dist:.3f} m" if dist >= 1.0 else f"{dist * 1000:.0f} mm"
 
-        corner_a = Vector((active.x, p1.y, p1.z))
-        corner_b = Vector((active.x, active.y, p1.z))
-
-        items = [
-            (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(active.x - p1.x))}"),
-            (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(active.y - p1.y))}"),
-            (corner_b, active, self._COLOR_Z, f"Z: {fmt(abs(active.z - p1.z))}"),
-            (p1, active, self._COLOR_TOTAL, f"d: {fmt((active - p1).length)}"),
-        ]
-
         font_id = 0
         blf.size(font_id, 14)
         blf.enable(font_id, blf.SHADOW)
         blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
         blf.shadow_offset(font_id, 1, -1)
 
-        for pt_a, pt_b, color, text in items:
-            mid = (pt_a + pt_b) / 2
-            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, mid)
+        def draw_label(pos_3d, color, text):
+            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
             if screen_co:
                 blf.color(font_id, *color, 1.0)
                 blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
                 blf.draw(font_id, text)
+
+        def draw_diameter_label(center, pipe):
+            # Pipe diameter is always shown in mm regardless of magnitude, unlike the
+            # X/Y/Z/d auto-scaling `fmt()` above — more useful for typical pipe sizes.
+            if center is None or pipe is None:
+                return
+            radius, _axis = pipe
+            draw_label(center, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
+
+        draw_diameter_label(p1, BMeasureDecorator.point1_pipe)
+        draw_diameter_label(active, active_pipe)
+        if p2 is not None:
+            draw_diameter_label(cursor, BMeasureDecorator.cursor_pipe)
+
+        if p1 is not None and active is not None:
+            corner_a = Vector((active.x, p1.y, p1.z))
+            corner_b = Vector((active.x, active.y, p1.z))
+
+            items = [
+                (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(active.x - p1.x))}"),
+                (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(active.y - p1.y))}"),
+                (corner_b, active, self._COLOR_Z, f"Z: {fmt(abs(active.z - p1.z))}"),
+                (p1, active, self._COLOR_TOTAL, f"d: {fmt((active - p1).length)}"),
+            ]
+            for pt_a, pt_b, color, text in items:
+                draw_label((pt_a + pt_b) / 2, color, text)
 
         blf.disable(font_id, blf.SHADOW)
 

@@ -3736,19 +3736,36 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         except Exception:
             return
         depsgraph = context.evaluated_depsgraph_get()
-        hit, location, _, _, obj, _ = tool.Raycast.visible_ray_cast(context, depsgraph, origin, direction)
-        if hit:
-            self.snapping_points = [
-                {"type": "Face", "point": Vector(location), "object": obj, "group": "Object", "distance": 9}
-            ]
+        hit, location, normal, face_index, obj, _ = tool.Raycast.visible_ray_cast(context, depsgraph, origin, direction)
+        if not hit:
+            return
+        point = Vector(location)
+        snap_point = {"type": "Face", "point": point, "object": obj, "group": "Object", "distance": 9}
+        pipe = tool.Raycast.get_pipe_center_radius(obj, point, Vector(normal), face_index)
+        if pipe:
+            snap_point["point"], snap_point["pipe_radius"], snap_point["pipe_axis"] = pipe
+        self.snapping_points = [snap_point]
+
+    @staticmethod
+    def _pipe_from_snap(snap: dict) -> "tuple[float, Vector] | None":
+        if "pipe_radius" not in snap:
+            return None
+        return snap["pipe_radius"], snap["pipe_axis"]
 
     def _do_snap(self, context, event):
         if event.ctrl:
             self._run_scene_ray_snap(context, event)
         else:
             self._run_face_snap(context, event)
-        snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
-        BMeasureDecorator.update(BMeasureDecorator.point1, BMeasureDecorator.point2, snap_pt)
+        snap = self.snapping_points[0] if self.snapping_points else {}
+        BMeasureDecorator.update(
+            BMeasureDecorator.point1,
+            BMeasureDecorator.point2,
+            snap.get("point"),
+            BMeasureDecorator.point1_pipe,
+            BMeasureDecorator.point2_pipe,
+            self._pipe_from_snap(snap),
+        )
 
     def _handle_snap_timer(self, context, event):
         if event.type != "TIMER":
@@ -3756,7 +3773,16 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         if event.ctrl and not self._is_navigating:
             self._run_scene_ray_snap(context, event)
             snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
-            BMeasureDecorator.update(BMeasureDecorator.point1, BMeasureDecorator.point2, snap_pt)
+            # Ctrl-snap (vertex/edge precision) never carries pipe metadata — that's
+            # only detected on the plain-hover face-snap path.
+            BMeasureDecorator.update(
+                BMeasureDecorator.point1,
+                BMeasureDecorator.point2,
+                snap_pt,
+                BMeasureDecorator.point1_pipe,
+                BMeasureDecorator.point2_pipe,
+                None,
+            )
             tool.Blender.update_viewport()
         return True
 
@@ -3768,7 +3794,9 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             if BMeasureDecorator.point1 is not None:
                 # First Esc only clears the placed/in-progress widget, so the
                 # tool stays active with a live point ready to place again.
-                BMeasureDecorator.update(None, None, BMeasureDecorator.cursor)
+                BMeasureDecorator.update(
+                    None, None, BMeasureDecorator.cursor, None, None, BMeasureDecorator.cursor_pipe
+                )
                 tool.Blender.update_viewport()
                 return {"RUNNING_MODAL"}
             BMeasureDecorator.uninstall()
@@ -3794,15 +3822,19 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                 tool.Blender.update_viewport()
 
         if event.type == "LEFTMOUSE" and event.value == "PRESS":
-            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            snap = self.snapping_points[0] if self.snapping_points else {}
+            snap_pt = snap.get("point")
             if snap_pt is None:
                 return {"RUNNING_MODAL"}
+            snap_pipe = self._pipe_from_snap(snap)
             if BMeasureDecorator.point1 is None:
-                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy())
+                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe)
             elif BMeasureDecorator.point2 is None:
-                BMeasureDecorator.update(BMeasureDecorator.point1, snap_pt.copy(), None)
+                BMeasureDecorator.update(
+                    BMeasureDecorator.point1, snap_pt.copy(), None, BMeasureDecorator.point1_pipe, snap_pipe, None
+                )
             else:
-                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy())
+                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe)
             tool.Blender.update_viewport()
 
         return {"RUNNING_MODAL"}

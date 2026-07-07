@@ -23,6 +23,7 @@ from typing import Union
 
 import bmesh
 import bpy
+import ifcopenshell.util.unit
 import mathutils
 import numpy as np
 from bpy_extras import view3d_utils
@@ -368,6 +369,94 @@ class Raycast(bonsai.core.tool.Raycast):
         if hit and not cls.point_is_visible_in_clipping_plane(location):
             return False, Vector(), Vector(), -1, None, mathutils.Matrix.Identity(4)
         return hit, location, normal, face_index, obj, matrix
+
+    @classmethod
+    def get_pipe_center_radius(
+        cls,
+        obj: bpy.types.Object,
+        location: Vector,
+        normal: Vector,
+        face_index: int,
+    ) -> tuple[Vector, float, Vector] | None:
+        """Circular-profile center/radius/world-axis for a raycast hit, hosted or linked.
+
+        Returns ``None`` if the hit element doesn't have a single circular profile (not
+        a pipe/duct-like element), or — for a linked element — if its link's cache
+        predates the ``circular_profiles`` table (needs a reload to pick it up).
+
+        v1 limitation, accepted: the center is derived purely from
+        ``location - radius * normal``, exact only when the hit lands on the profile's
+        curved side. A flat end-cap hit has a normal along the axis, not radial, so this
+        would return a meaningless center — handling that properly needs the actual
+        extrusion axis intersected with the hit point, not just radius+normal.
+        """
+        if tool.Project.Link.is_linked_element(obj):
+            guid = tool.Project.Link.get_guid_by_face_index(obj, face_index)
+            if guid is None:
+                return None
+            info = tool.Project.Link.get_circular_profile_info(obj, guid)
+            if info is None:
+                return None
+            radius, axis = info
+        else:
+            element = tool.Ifc.get_entity(obj)
+            if element is None:
+                return None
+            profile = tool.Model.get_flow_segment_profile(element)
+            if profile is not None and profile.is_a("IfcCircleProfileDef") and profile.Radius:
+                raw_radius = profile.Radius
+            else:
+                # Fallback for elements with no IfcMaterialProfileSet association at all —
+                # confirmed 2026-07-07 on a real MagiCAD-authored pipe model, where the
+                # circular profile only exists on the swept solid itself, not via material.
+                raw_radius = cls._get_circular_profile_radius_from_representation(element)
+            if raw_radius is None:
+                return None
+            unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+            radius = raw_radius * unit_scale
+            start, end = tool.Model.get_flow_segment_axis(obj)
+            axis = (end - start).normalized()
+
+        if radius is None or axis is None or axis.length < 1e-9:
+            return None
+        center = location - normal.normalized() * radius
+        return center, radius, axis
+
+    @classmethod
+    def _get_circular_profile_radius_from_representation(cls, element) -> float | None:
+        """Radius (project units) read straight off a swept circular profile's geometry.
+
+        Fallback for elements with no ``IfcMaterialProfileSet`` association at all — many
+        real-world MEP exports (confirmed on an actual MagiCAD-authored pipe model,
+        2026-07-07) never populate one; the circular profile only exists on the swept
+        solid, sometimes behind an ``IfcMappedItem`` (shared type-level geometry).
+        """
+
+        def radius_from_solid(item) -> float | None:
+            if item.is_a("IfcExtrudedAreaSolid") or item.is_a("IfcExtrudedAreaSolidTapered"):
+                profile = item.SweptArea
+                if profile is not None and profile.is_a("IfcCircleProfileDef") and profile.Radius:
+                    return profile.Radius
+            elif item.is_a("IfcSweptDiskSolid") and item.Radius:
+                return item.Radius
+            return None
+
+        representation = getattr(element, "Representation", None)
+        if not representation:
+            return None
+        for rep in representation.Representations:
+            if rep.RepresentationIdentifier != "Body":
+                continue
+            for item in rep.Items:
+                if item.is_a("IfcMappedItem"):
+                    mapped_rep = item.MappingSource.MappedRepresentation
+                    for sub_item in mapped_rep.Items:
+                        if (radius := radius_from_solid(sub_item)) is not None:
+                            return radius
+                    continue
+                if (radius := radius_from_solid(item)) is not None:
+                    return radius
+        return None
 
     @classmethod
     def get_viewport_ray_data(

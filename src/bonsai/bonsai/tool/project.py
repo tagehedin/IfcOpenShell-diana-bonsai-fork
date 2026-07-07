@@ -809,6 +809,38 @@ class Project(bonsai.core.tool.Project):
                     return guid
 
         @classmethod
+        def get_circular_profile_info(cls, obj: bpy.types.Object, guid: str) -> tuple[float, Vector] | None:
+            """Radius (metres) + world-space extrusion axis for a linked circular-profile element.
+
+            Looks up the ``circular_profiles`` table cached at link time (see
+            ``ifcpatch.recipes.ExtractPropertiesToSQLite``) by GUID, keyed via the same
+            ``obj["db"]`` SQLite cache ``select_linked_element`` already uses. Returns
+            ``None`` if the element isn't a single-profile circular cross-section, or if
+            the cache predates this table (links built before this feature need a reload
+            to pick it up — there's no live IFC file to fall back to for a linked project).
+            """
+            import sqlite3
+
+            db = sqlite3.connect(obj["db"])
+            c = db.cursor()
+            try:
+                c.execute(
+                    "SELECT radius, axis_x, axis_y, axis_z FROM circular_profiles "
+                    "JOIN elements ON elements.id = circular_profiles.element_id "
+                    "WHERE elements.global_id = ? LIMIT 1",
+                    (guid,),
+                )
+                row = c.fetchone()
+            except sqlite3.OperationalError:
+                row = None
+            finally:
+                db.close()
+            if row is None:
+                return None
+            radius, axis_x, axis_y, axis_z = row
+            return radius, Vector((axis_x, axis_y, axis_z))
+
+        @classmethod
         def get_linked_element_geom_slice(cls, obj: bpy.types.Object, guid: str) -> slice[int, int]:
             """
             Get slice for ``obj.data.polygons`` for the provided ``guid``.
