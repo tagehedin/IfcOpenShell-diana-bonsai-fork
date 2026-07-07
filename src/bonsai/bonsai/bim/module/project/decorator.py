@@ -307,6 +307,7 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
             line_shader.uniform_float("color", (*color, 0.9))
             batch.draw(line_shader)
 
+        point_shader.bind()
         gpu.state.point_size_set(8)
         batch = batch_for_shader(point_shader, "POINTS", {"pos": [LaserDecorator.origin]})
         point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
@@ -390,11 +391,23 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         gpu.state.depth_test_set("NONE")
 
         point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        point_shader.bind()
 
         if active is not None:
-            gpu.state.point_size_set(6)
+            gpu.state.point_size_set(8)
             batch = batch_for_shader(point_shader, "POINTS", {"pos": [active]})
-            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 0.8))
+            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+            batch.draw(point_shader)
+
+        # Once a widget is complete (both points placed), `active` above is
+        # frozen on p2 so the finished measurement stays legible. Without
+        # this, there'd be no visible target for the next click at all —
+        # draw the still-live cursor separately so a new measurement can
+        # start right away.
+        if p2 is not None and cursor is not None:
+            gpu.state.point_size_set(8)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [cursor]})
+            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
             batch.draw(point_shader)
 
         if p1 is None or active is None:
@@ -424,6 +437,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         line_shader.uniform_float("color", (*self._COLOR_TOTAL, 0.3))
         batch.draw(line_shader)
 
+        point_shader.bind()
         gpu.state.point_size_set(8)
         batch = batch_for_shader(point_shader, "POINTS", {"pos": [p1]})
         point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))

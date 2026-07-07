@@ -22,7 +22,6 @@ from typing import Literal, Union
 
 import bpy
 import bpy_extras.view3d_utils
-import numpy as np
 import ifcopenshell
 import ifcopenshell.util.unit
 from mathutils import Vector
@@ -77,7 +76,9 @@ class PolylineOperator:
         self.input_ui = tool.Polyline.create_input_ui(input_options=self.input_options)
         self.is_typing = False
         self.snap_angle = None
-        self.snapping_points = [{"type": "Plane", "point": Vector((0, 0, 0)), "object": None, "group": "Plane", "distance": 10}]
+        self.snapping_points = [
+            {"type": "Plane", "point": Vector((0, 0, 0)), "object": None, "group": "Plane", "distance": 10}
+        ]
         self.unit_scale = 1.0
         self.instructions = {
             "Cycle Input": {"icons": True, "keys": ["EVENT_TAB"]},
@@ -526,7 +527,9 @@ class PolylineOperator:
     def _run_scene_ray_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
         origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
         depsgraph = context.evaluated_depsgraph_get()
-        hit, location, face_normal, face_index, obj, matrix = context.scene.ray_cast(depsgraph, origin, direction)
+        hit, location, face_normal, face_index, obj, matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, origin, direction
+        )
 
         if not hit:
             self._run_plane_snap(context, event)

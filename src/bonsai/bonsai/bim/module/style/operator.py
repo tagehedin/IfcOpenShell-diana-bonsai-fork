@@ -1246,7 +1246,9 @@ class PickStyleByFace(bpy.types.Operator):
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
 
         depsgraph = context.evaluated_depsgraph_get()
-        hit, _loc, _norm, face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+        hit, _loc, _norm, face_index, obj, _matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, origin, direction
+        )
 
         if not hit:
             self.report({"WARNING"}, "No face hit — click on a mesh surface")
@@ -1306,9 +1308,7 @@ class CopySurfaceColourToDiffuse(bpy.types.Operator, tool.Ifc.Operator):
         ifc = tool.Ifc.get()
         updated = 0
         for ifc_style in ifc.by_type("IfcSurfaceStyle"):
-            rendering = next(
-                (s for s in ifc_style.Styles if s.is_a("IfcSurfaceStyleRendering")), None
-            )
+            rendering = next((s for s in ifc_style.Styles if s.is_a("IfcSurfaceStyleRendering")), None)
             if rendering is None:
                 continue
             sc = rendering.SurfaceColour

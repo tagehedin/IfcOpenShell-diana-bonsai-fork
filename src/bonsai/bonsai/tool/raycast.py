@@ -269,15 +269,105 @@ class Raycast(bonsai.core.tool.Raycast):
 
     @classmethod
     def point_is_visible_in_clipping_plane(cls, vertex):
-        normals = tool.Project.get_clipping_planes_normals()
-        if not normals:
-            return True
-        for normal in normals:
+        for normal in tool.Project.get_clipping_planes_normals():
             t = (vertex - normal[0]).normalized()
             result = normal[1].dot(t)
             if result < 0:
                 return False
+        clip_box_planes = tool.ClipBox.get_active_planes()
+        if clip_box_planes and not tool.Cad.point_is_inside_clip_planes(clip_box_planes, vertex):
+            return False
         return True
+
+    @classmethod
+    def _get_combined_clip_planes(cls) -> list[tuple[float, float, float, float]]:
+        """All currently active clip constraints as ``(a, b, c, d)`` half-space equations.
+
+        A point is on the visible/kept side iff ``a*x + b*y + c*z + d >= 0``
+        for every returned plane — combines the "Project" clipping-plane
+        objects (converted from point+normal form) and the active Clip Box.
+        Empty when neither feature is active.
+        """
+        planes: list[tuple[float, float, float, float]] = []
+        for point, normal in tool.Project.get_clipping_planes_normals():
+            d = -normal.dot(point)
+            planes.append((normal.x, normal.y, normal.z, d))
+        box_planes = tool.ClipBox.get_active_planes()
+        if box_planes:
+            planes.extend(box_planes)
+        return planes
+
+    @classmethod
+    def _ray_clip_entry_t(
+        cls, origin: Vector, direction: Vector, planes: list[tuple[float, float, float, float]]
+    ) -> Union[float, None]:
+        """Smallest ``t >= 0`` where ``origin + t*direction`` enters the region kept by every plane.
+
+        Since each plane is a half-space and the kept region is their
+        intersection (all must pass), this is a ray/convex-region "slab"
+        test — the same technique used for ray/AABB intersection. Returns
+        ``None`` if the ray can never satisfy every plane simultaneously
+        (parallel to a plane and stuck on its hidden side, or it would exit
+        one plane's half-space before entering another's).
+        """
+        t_enter = 0.0
+        t_exit = math.inf
+        for a, b, c, d in planes:
+            n_dot_dir = a * direction.x + b * direction.y + c * direction.z
+            val0 = a * origin.x + b * origin.y + c * origin.z + d
+            if abs(n_dot_dir) < 1e-9:
+                if val0 < 0:
+                    return None
+                continue
+            t_cross = -val0 / n_dot_dir
+            if n_dot_dir > 0:
+                t_enter = max(t_enter, t_cross)
+            else:
+                t_exit = min(t_exit, t_cross)
+        if t_enter > t_exit:
+            return None
+        return t_enter
+
+    @classmethod
+    def visible_ray_cast(
+        cls,
+        context: bpy.types.Context,
+        depsgraph: bpy.types.Depsgraph,
+        origin: Vector,
+        direction: Vector,
+    ):
+        """Like ``scene.ray_cast`` but skips hits hidden behind an active clip plane / clip box.
+
+        A raw ``scene.ray_cast`` hits the first surface along the ray
+        regardless of viewport clipping, so tools that snap off it (Laser,
+        BMeasure, clipping-plane placement, the material/style/type
+        eyedroppers) would snap to geometry the clip plane has sliced away
+        and isn't actually visible on screen.
+
+        Rather than bouncing the ray past each hidden surface one BVH hit at
+        a time — which degenerates badly when a lot of geometry sits between
+        the camera and the clip cut (e.g. clipping near the bottom of a tall
+        building means every floor above it is a separate hidden hit, and on
+        a fast-firing handler like mouse-move snapping that can stall the
+        whole viewport) — the entry point into the clip-defined visible
+        region is solved for analytically with plane equations only (no
+        raycasting at all), and the actual scene is only hit once, from
+        there onward.
+        """
+        scene = context.scene
+        planes = cls._get_combined_clip_planes()
+        if not planes:
+            return scene.ray_cast(depsgraph, origin, direction)
+
+        t_enter = cls._ray_clip_entry_t(origin, direction, planes)
+        if t_enter is None:
+            return False, Vector(), Vector(), -1, None, mathutils.Matrix.Identity(4)
+
+        cast_origin = origin if t_enter <= 0 else origin + direction * t_enter + direction.normalized() * 1e-4
+        hit, location, normal, face_index, obj, matrix = scene.ray_cast(depsgraph, cast_origin, direction)
+        if hit and not cls.point_is_visible_in_clipping_plane(location):
+            return False, Vector(), Vector(), -1, None, mathutils.Matrix.Identity(4)
+        return hit, location, normal, face_index, obj, matrix
 
     @classmethod
     def get_viewport_ray_data(
@@ -1013,6 +1103,7 @@ class Raycast(bonsai.core.tool.Raycast):
     def build_bvh_for_obj(cls, obj, depsgraph):
         """Build or return a cached BVHTree for a solid mesh object. Main thread only."""
         from mathutils.bvhtree import BVHTree
+
         if obj.type != "MESH" or obj.data is None or not obj.data.polygons:
             return None
         vert_count = len(obj.data.vertices)
@@ -1038,6 +1129,7 @@ class Raycast(bonsai.core.tool.Raycast):
         Returns list of hit dicts with keys: obj_name, point, face_index, type, group, distance, distance_sq.
         """
         from mathutils import Vector
+
         center_origin = Vector(rays[0][0])
         hits = []
         for obj_name, bvh, matrix, matrix_inv in bvh_items:
@@ -1056,15 +1148,17 @@ class Raycast(bonsai.core.tool.Raycast):
                     hit_face_idx = face_idx
                     break  # first hit wins — matches cast_rays_to_single_object behaviour
             if hit_world is not None:
-                hits.append({
-                    "obj_name": obj_name,
-                    "point": hit_world,
-                    "face_index": hit_face_idx,
-                    "type": "Face",
-                    "group": "Object",
-                    "distance": 9,
-                    "distance_sq": (hit_world - center_origin).length_squared,
-                })
+                hits.append(
+                    {
+                        "obj_name": obj_name,
+                        "point": hit_world,
+                        "face_index": hit_face_idx,
+                        "type": "Face",
+                        "group": "Object",
+                        "distance": 9,
+                        "distance_sq": (hit_world - center_origin).length_squared,
+                    }
+                )
         return hits
 
     @classmethod

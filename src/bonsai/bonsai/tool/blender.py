@@ -2738,15 +2738,14 @@ class Blender(bonsai.core.tool.Blender):
         The returned object is not evaluated by the current depsgraph,
         e.g. if object is modified by the depsgraph (e.g. by modifiers)
         object has to be evaluated first (`obj.evaluated_get(depsgraph)`).
+
+        Skips hits hidden behind an active clip plane / clip box, so
+        surface-following tools (e.g. clipping-plane placement) don't snap
+        to geometry the clip plane has cut away. See ``Raycast.visible_ray_cast``.
         """
         depsgraph = context.evaluated_depsgraph_get()
         assert context.scene
-        result = context.scene.ray_cast(
-            depsgraph,
-            origin,
-            direction,
-        )
-        return result
+        return tool.Raycast.visible_ray_cast(context, depsgraph, origin, direction)
 
     @classmethod
     def depsgraph_evaluate(cls, obj: bpy.types.Object) -> bpy.types.Object:

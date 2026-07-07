@@ -28,9 +28,10 @@ import tempfile
 import time
 import traceback
 from collections import defaultdict
+from collections.abc import Callable
 from math import radians
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal, Union, get_args
+from typing import TYPE_CHECKING, Literal, Union, get_args
 
 import bpy
 import ifcopenshell
@@ -3311,6 +3312,15 @@ class RefreshClippingPlanes(bpy.types.Operator):
                 break
 
     def refresh_clipping_planes(self, context):
+        # KNOWN GAP (deliberately deferred 2026-07-07): this writes
+        # region_data.clip_planes/use_clip_planes from Project clipping
+        # planes ONLY — Clip Box (bonsai/tool/clip_box.py) drives the same
+        # RegionView3D properties independently and can overwrite this
+        # wholesale, or vice versa. Only matters if both features are used
+        # at once; see the matching notes on ClipBox.refresh()/
+        # apply_clip_planes() and session_next_actions.md "Unify Clip Box /
+        # Project clipping planes" before changing this for that case
+        # (e.g. after a future upstream Clip Box merge).
         from itertools import cycle
 
         import bmesh
@@ -3726,7 +3736,7 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         except Exception:
             return
         depsgraph = context.evaluated_depsgraph_get()
-        hit, location, _, _, obj, _ = context.scene.ray_cast(depsgraph, origin, direction)
+        hit, location, _, _, obj, _ = tool.Raycast.visible_ray_cast(context, depsgraph, origin, direction)
         if hit:
             self.snapping_points = [
                 {"type": "Face", "point": Vector(location), "object": obj, "group": "Object", "distance": 9}
@@ -3754,7 +3764,20 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         if self._handle_snap_timer(context, event):
             return {"RUNNING_MODAL"}
 
-        if event.type in {"ESC", "RIGHTMOUSE"}:
+        if event.type == "ESC":
+            if BMeasureDecorator.point1 is not None:
+                # First Esc only clears the placed/in-progress widget, so the
+                # tool stays active with a live point ready to place again.
+                BMeasureDecorator.update(None, None, BMeasureDecorator.cursor)
+                tool.Blender.update_viewport()
+                return {"RUNNING_MODAL"}
+            BMeasureDecorator.uninstall()
+            context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type == "RIGHTMOUSE":
             BMeasureDecorator.uninstall()
             context.window.cursor_set("DEFAULT")
             self._remove_snap_timer(context)
@@ -4219,7 +4242,9 @@ class LaserTool(bpy.types.Operator):
             LaserDecorator.update(None, [])
             return
 
-        hit, location, _, face_index, obj, matrix = context.scene.ray_cast(depsgraph, ray_origin, ray_direction)
+        hit, location, _, face_index, obj, matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, ray_origin, ray_direction
+        )
         if not hit or obj is None:
             LaserDecorator.update(None, [])
             return
@@ -4256,7 +4281,11 @@ class LaserTool(bpy.types.Operator):
             (y_start, y_end, self._COLORS[2]),
         ]
 
-        # Z: ray cast in both normal directions from hit point
+        # Z: ray cast in both normal directions from hit point. Deliberately the
+        # plain (non-clip-aware) raycast: the point you're standing on must respect
+        # the clip plane, but the measurement itself should still reach whatever the
+        # clip plane is hiding — e.g. point at a floor with the ceiling clipped away
+        # and still get the floor-to-ceiling distance.
         for direction_vec, color in [(face_normal, self._COLORS[4]), (-face_normal, self._COLORS[5])]:
             ray_start = location + direction_vec * 0.001
             h, loc2, _, _, _, _ = context.scene.ray_cast(depsgraph, ray_start, direction_vec)

@@ -236,6 +236,9 @@ class BIM_OT_remove_clip_box(bpy.types.Operator):
         if self.delete_object and obj is not None:
             bpy.data.objects.remove(obj, do_unlink=True)
 
+        if not scene_props.clip_boxes:
+            scene_props.enabled = False
+
         tool.ClipBox.refresh(context.scene)
         tool.ClipBox.save_to_project_pset(context.scene)
         return {"FINISHED"}

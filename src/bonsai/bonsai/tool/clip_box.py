@@ -214,6 +214,16 @@ class ClipBox:
         visible because the test is using a stale view-frustum bbox
         captured the last time we armed. Re-arming on every commit
         keeps the bbox aligned with the view the user is actually at.
+
+        KNOWN GAP (deliberately deferred 2026-07-07): ``planes`` here is
+        ONLY the clip box's own 6 planes — this overwrites
+        ``region_3d.clip_planes`` wholesale, discarding any Project
+        clipping-plane equations that were previously driving it. Only
+        matters if Clip Box and Project clipping planes are both active at
+        once; see the matching note on ``refresh()`` and
+        `session_next_actions.md` "Unify Clip Box / Project clipping
+        planes" before changing this if that combination ever needs to
+        work correctly (e.g. after a future upstream Clip Box merge).
         """
         for area, region, region_3d in tool.Blender.iter_view3d_regions():
             # Skip collapsed / initializing regions wholesale: arming one
@@ -311,15 +321,56 @@ class ClipBox:
 
     @classmethod
     def refresh(cls, scene: Optional[bpy.types.Scene] = None) -> None:
-        """Re-arm or clear the viewport clip based on the active clip box state."""
+        """Re-arm or clear the viewport clip based on the active clip box state.
+
+        Skips ``clear_clip_planes()`` when Project clipping-plane objects are
+        active. Clip Box and the Project clipping-plane feature both drive
+        the same ``RegionView3D.clip_planes`` / ``use_clip_planes``, with no
+        other coordination between them. Without this check, Clip Box's own
+        post-load refresh — which always finds itself disabled, since its
+        ``enabled`` flag intentionally never persists across a file load —
+        would silently turn off a Project clipping plane's already-correct
+        viewport state a moment after the file finishes opening.
+
+        KNOWN GAP (not fixed, deliberately deferred 2026-07-07): this only
+        skips the clear — it does not repaint ``clip_planes`` with Project's
+        own equations. If Clip Box was just active and gets deactivated
+        while a Project clipping plane is ALSO active, the region can be
+        left showing the clip box's stale plane values (with
+        ``use_clip_planes`` correctly left on) until something else
+        triggers a Project-side refresh (e.g. moving a clipping plane).
+        Only matters if both features are used simultaneously — see
+        `session_next_actions.md` "Unify Clip Box / Project clipping
+        planes" for the real fix (one shared combined-planes writer both
+        features call through) if this ever needs solving for real,
+        including if a future upstream merge touches Clip Box here.
+        """
         if cls._active_scene_props(scene) is None:
-            cls.clear_clip_planes()
+            if not tool.Project.get_clipping_planes_normals():
+                cls.clear_clip_planes()
             return
         obj = cls.get_active_clip_box(scene)
         if obj is None:
-            cls.clear_clip_planes()
+            if not tool.Project.get_clipping_planes_normals():
+                cls.clear_clip_planes()
             return
         cls.apply_clip_planes(cls.compute_planes(obj))
+
+    @classmethod
+    def get_active_planes(cls) -> Optional[PlaneSet]:
+        """Return the currently active clip box's 6 world clip planes, or ``None`` if clipping is off.
+
+        Mirrors the enabled/active-box resolution in :meth:`refresh` so any
+        caller that needs to test "is point on the visible side" (e.g. the
+        clip-plane-aware raycast in ``tool.Raycast``) sees exactly the same
+        clip volume as the viewport.
+        """
+        if cls._active_scene_props() is None:
+            return None
+        obj = cls.get_active_clip_box()
+        if obj is None:
+            return None
+        return cls.compute_planes(obj)
 
     @classmethod
     def schedule_refresh(cls) -> None:
@@ -628,7 +679,8 @@ class ClipBox:
             return
         if getattr(bpy.context, "screen", None) is None:
             return
-        if cls._active_scene_props(scene) is None:
+        scene_props = cls._active_scene_props(scene)
+        if scene_props is None:
             return
         ifc_file = tool.Ifc.get()
         ifc_id = id(ifc_file) if ifc_file is not None else 0
@@ -653,6 +705,22 @@ class ClipBox:
             cls._sync_collection_to_list(scene)
         obj = cls.get_active_clip_box(scene)
         if obj is None:
+            # The active box's host empty is gone — deleted outside
+            # bim.remove_clip_box (native X/Delete, undo, etc). Blender nulls
+            # the PointerProperty, but without this the stale list entry and
+            # the viewport clip (frozen on its last computed planes) would
+            # both survive, leaving clipping stuck on with no visible box to
+            # explain it. Drop dead entries and turn clipping off if nothing
+            # valid is left, so deleting a clip box always turns it off
+            # regardless of how it was deleted.
+            for index in range(len(scene_props.clip_boxes) - 1, -1, -1):
+                if scene_props.clip_boxes[index].obj is None:
+                    scene_props.clip_boxes.remove(index)
+            if scene_props.active_clip_box_index >= len(scene_props.clip_boxes):
+                scene_props.active_clip_box_index = max(0, len(scene_props.clip_boxes) - 1)
+            if not scene_props.clip_boxes:
+                scene_props.enabled = False
+            cls.refresh(scene)
             return
 
         current_matrix = tuple(tuple(row) for row in obj.matrix_world)

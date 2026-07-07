@@ -1251,8 +1251,8 @@ class PickMaterialByObject(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def _pick(self, context, event):
-        from bpy_extras import view3d_utils
         import ifcopenshell.util.element
+        from bpy_extras import view3d_utils
 
         region = rv3d = None
         for area in context.screen.areas:
@@ -1274,7 +1274,9 @@ class PickMaterialByObject(bpy.types.Operator):
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
 
         depsgraph = context.evaluated_depsgraph_get()
-        hit, _loc, _norm, _face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+        hit, _loc, _norm, _face_index, obj, _matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, origin, direction
+        )
 
         if not hit:
             self.report({"WARNING"}, "No object hit — click on an object")

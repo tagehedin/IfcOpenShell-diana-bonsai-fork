@@ -77,6 +77,10 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         op = row.operator("bim.explore_hotkey", text="Flip Clipping Plane")
         op.hotkey = "S_F"
         row = layout.row(align=True)
+        row.operator("bim.add_clip_box", text="Add Clip Box")
+        row = layout.row(align=True)
+        row.operator("bim.remove_clip_box", text="Deactivate Clip Box")
+        row = layout.row(align=True)
         row.operator("view3d.view_center_pick", text="Set Orbit Center")
         row = layout.row(align=True)
         op = row.operator(

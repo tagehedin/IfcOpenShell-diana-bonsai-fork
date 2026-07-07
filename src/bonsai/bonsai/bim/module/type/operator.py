@@ -186,7 +186,7 @@ def _raycast_object(context: bpy.types.Context, event: bpy.types.Event) -> Union
     direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
 
     depsgraph = context.evaluated_depsgraph_get()
-    hit, _loc, _norm, _face_index, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+    hit, _loc, _norm, _face_index, obj, _matrix = tool.Raycast.visible_ray_cast(context, depsgraph, origin, direction)
     return obj if hit else None
 
 
@@ -664,6 +664,7 @@ class RecreateTypeFromElement(bpy.types.Operator, tool.Ifc.Operator):
 
     def _execute(self, context):
         import logging
+
         import bonsai.bim.import_ifc as import_ifc
 
         ifc = tool.Ifc.get()
