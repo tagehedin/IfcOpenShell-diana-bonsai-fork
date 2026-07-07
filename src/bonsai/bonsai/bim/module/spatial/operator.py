@@ -428,7 +428,7 @@ def _import_storeys_link_enum_items(self, context):
     return _import_storeys_link_enum_cache
 
 
-class ImportStoreysFromLink(bpy.types.Operator):
+class ImportStoreysFromLink(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.import_storeys_from_link"
     bl_label = "Import Storeys from Link"
     bl_description = "Create IfcBuildingStoreys in this file matching those in a loaded linked IFC file"
@@ -450,7 +450,7 @@ class ImportStoreysFromLink(bpy.types.Operator):
         self.layout.label(text="Import storeys from:")
         self.layout.prop(self, "link_index", text="")
 
-    def execute(self, context):
+    def _execute(self, context):
         ifc = tool.Ifc.get()
         if not ifc:
             self.report({"WARNING"}, "No active IFC file.")
