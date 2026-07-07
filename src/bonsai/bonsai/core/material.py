@@ -141,7 +141,9 @@ def assign_material(
         if element_material_type.endswith("Usage") and material and not material.is_a(material_type):
             assign_material_arg = None
 
-        ifc.run("material.assign_material", products=[element], type=element_material_type, material=assign_material_arg)
+        ifc.run(
+            "material.assign_material", products=[element], type=element_material_type, material=assign_material_arg
+        )
         assigned_material = material_tool.get_material(element)
         assert assigned_material  # Type checker.
 
@@ -175,9 +177,7 @@ def unassign_material(ifc: type[tool.Ifc], material_tool: type[tool.Material], o
         if material:
             if "Usage" in material.is_a():
                 element_type = material_tool.get_type(element)
-                type_material = (
-                    material_tool.get_material(element_type, should_inherit=False) if element_type else None
-                )
+                type_material = material_tool.get_material(element_type, should_inherit=False) if element_type else None
                 referenced_set = getattr(material, "ForLayerSet", None) or getattr(material, "ForProfileSet", None)
                 if element_type and type_material and referenced_set == type_material:
                     # The instance's usage wraps the type's shared material set, so

@@ -30,14 +30,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
-
 import sqlite3
+from typing import Optional
 
 import bpy
 import ifcopenshell
 import numpy as np
-from mathutils import Matrix, Vector
+from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 import bonsai.tool as tool

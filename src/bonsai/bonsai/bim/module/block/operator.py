@@ -17,16 +17,15 @@
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
 import uuid
-import numpy as np
-import ifcopenshell.api
-import ifcopenshell.util.element
 from typing import TYPE_CHECKING
 
 import bpy
+import ifcopenshell.api
+import ifcopenshell.util.element
 from mathutils import Vector
 
-import bonsai.core.root
 import bonsai.core.geometry
+import bonsai.core.root
 import bonsai.tool as tool
 
 if TYPE_CHECKING:
@@ -178,14 +177,14 @@ def _sync_element_properties(
             if rel.is_a("IfcRelDefinesByProperties"):
                 type_pset_names.add(rel.RelatingPropertyDefinition.Name)
 
-    def_psets: dict[str, "ifcopenshell.entity_instance"] = {}
+    def_psets: dict[str, ifcopenshell.entity_instance] = {}
     for rel in getattr(def_element, "IsDefinedBy", None) or []:
         if rel.is_a("IfcRelDefinesByProperties"):
             pdef = rel.RelatingPropertyDefinition
             if pdef.is_a("IfcPropertySet") and pdef.Name not in type_pset_names:
                 def_psets[pdef.Name] = pdef
 
-    inst_psets: dict[str, "ifcopenshell.entity_instance"] = {}
+    inst_psets: dict[str, ifcopenshell.entity_instance] = {}
     for rel in getattr(inst_element, "IsDefinedBy", None) or []:
         if rel.is_a("IfcRelDefinesByProperties"):
             pdef = rel.RelatingPropertyDefinition
@@ -225,7 +224,7 @@ def _sync_element_properties(
             )
 
     # 4. Classification references
-    def_class_refs: dict[object, "ifcopenshell.entity_instance"] = {}
+    def_class_refs: dict[object, ifcopenshell.entity_instance] = {}
     for rel in getattr(def_element, "HasAssociations", None) or []:
         if rel.is_a("IfcRelAssociatesClassification"):
             ref = rel.RelatingClassification
@@ -249,7 +248,7 @@ def _sync_element_properties(
             )
 
     # 5. Document references
-    def_docs: dict[int, "ifcopenshell.entity_instance"] = {}
+    def_docs: dict[int, ifcopenshell.entity_instance] = {}
     for rel in getattr(def_element, "HasAssociations", None) or []:
         if rel.is_a("IfcRelAssociatesDocument"):
             doc = rel.RelatingDocument
@@ -585,7 +584,9 @@ class MirrorBlockInstance(bpy.types.Operator, tool.Ifc.Operator):
         axis: str
 
     def _execute(self, context):
-        import math, bmesh
+        import math
+
+        import bmesh
         from mathutils import Matrix, Vector
 
         axis_idx = 0 if self.axis == "X" else 1
@@ -712,7 +713,6 @@ class EnterBlockEdit(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        from mathutils import Matrix
 
         props = _get_block_props(context)
         if props.is_editing:

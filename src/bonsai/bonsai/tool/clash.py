@@ -56,8 +56,7 @@ class Clash(bonsai.core.tool.Clash):
                         clash_source["selector"] = query
                         clash_source["mode"] = data.mode
                     groups[group].append(clash_source)
-            clash_set_data: dict = {"name": clash_set.name, "mode": clash_set.mode,
-                                    "a": groups["a"], "b": groups["b"]}
+            clash_set_data: dict = {"name": clash_set.name, "mode": clash_set.mode, "a": groups["a"], "b": groups["b"]}
             for g in ("c", "d", "e", "f", "g", "h"):
                 if groups[g]:
                     clash_set_data[g] = groups[g]

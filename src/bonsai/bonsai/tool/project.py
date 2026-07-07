@@ -119,9 +119,7 @@ class Project(bonsai.core.tool.Project):
 
     @classmethod
     def get_link_root_collection(cls, link: Link) -> bpy.types.Collection | None:
-        library_filepath = tool.Blender.ensure_blender_path_is_abs(
-            Path(link.filepath).with_suffix(".ifc.cache.blend")
-        )
+        library_filepath = tool.Blender.ensure_blender_path_is_abs(Path(link.filepath).with_suffix(".ifc.cache.blend"))
         return next(
             (
                 c

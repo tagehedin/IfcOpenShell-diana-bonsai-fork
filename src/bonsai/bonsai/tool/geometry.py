@@ -1413,9 +1413,7 @@ class Geometry(bonsai.core.tool.Geometry):
                 target_representation = targets.get(element.id())
                 representation_id = tool.Loader.get_representation_id_from_shape(shape.geometry)
                 shape_representation = ifc_file.by_id(representation_id)
-                resolved_representation = ifcopenshell.util.representation.resolve_representation(
-                    shape_representation
-                )
+                resolved_representation = ifcopenshell.util.representation.resolve_representation(shape_representation)
                 if resolved_representation != target_representation:
                     if not iterator.next():
                         break

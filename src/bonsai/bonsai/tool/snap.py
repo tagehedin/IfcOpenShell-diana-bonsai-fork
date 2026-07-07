@@ -108,9 +108,7 @@ class Snap(bonsai.core.tool.Snap):
                 increment = (1 / fractions[3]) * factor
             else:
                 increment = 1 * factor
-        if perspective == "ORTHO" or (
-            perspective == "CAMERA" and context.scene.camera.data.type == "ORTHO"
-        ):
+        if perspective == "ORTHO" or (perspective == "CAMERA" and context.scene.camera.data.type == "ORTHO"):
             window_scale = rv3d.window_matrix.to_scale()
             if window_scale[1] < ortho_threshold[0]:
                 increment = (1 / fractions[0]) * factor

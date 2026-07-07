@@ -449,30 +449,47 @@ class BIMLayerStyle(PropertyGroup):
     svg_color: StringProperty(name="SVG Stroke (hex)", default="#000000")
     svg_color_picker: FloatVectorProperty(
         name="SVG Stroke",
-        subtype="COLOR", size=3, min=0.0, max=1.0,
-        get=_get_svg_color_picker, set=_set_svg_color_picker,
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        get=_get_svg_color_picker,
+        set=_set_svg_color_picker,
     )
-    svg_fill: StringProperty(name="SVG Fill (hex)", default="",
-                             description="Fill color override. Empty = use material CSS")
+    svg_fill: StringProperty(
+        name="SVG Fill (hex)", default="", description="Fill color override. Empty = use material CSS"
+    )
     svg_fill_picker: FloatVectorProperty(
         name="SVG Fill",
-        subtype="COLOR", size=3, min=0.0, max=1.0,
-        get=_get_svg_fill_picker, set=_set_svg_fill_picker,
+        subtype="COLOR",
+        size=3,
+        min=0.0,
+        max=1.0,
+        get=_get_svg_fill_picker,
+        set=_set_svg_fill_picker,
     )
     svg_fill_is_null: BoolProperty(
         name="As Material",
         description="When active, fill uses the material CSS color",
-        get=_get_svg_fill_null, set=_set_svg_fill_null,
+        get=_get_svg_fill_null,
+        set=_set_svg_fill_null,
     )
-    dxf_layer_name: StringProperty(name="DXF Layer Name", default="",
-                                   description="Override DXF layer name. Empty = use IFC class name")
+    dxf_layer_name: StringProperty(
+        name="DXF Layer Name", default="", description="Override DXF layer name. Empty = use IFC class name"
+    )
     dxf_layer_name_is_null: BoolProperty(
         name="Auto",
         description="When active, layer name is derived from IFC class",
-        get=_get_dxf_layer_null, set=_set_dxf_layer_null,
+        get=_get_dxf_layer_null,
+        set=_set_dxf_layer_null,
     )
-    dxf_color: IntProperty(name="DXF Color (ACI)", default=256, min=0, max=256,
-                           description="AutoCAD Color Index (256=ByLayer/black, 7=white, 1=red, 2=yellow, 3=green, 4=cyan, 5=blue)")
+    dxf_color: IntProperty(
+        name="DXF Color (ACI)",
+        default=256,
+        min=0,
+        max=256,
+        description="AutoCAD Color Index (256=ByLayer/black, 7=white, 1=red, 2=yellow, 3=green, 4=cyan, 5=blue)",
+    )
     line_weight: FloatProperty(name="Line Weight (mm)", default=0.25, min=0.0, max=2.0, precision=2)
     linetype: EnumProperty(
         name="Linetype",
@@ -619,9 +636,6 @@ def set_min_line_length(self: "BIMCameraProperties", value: float) -> None:
     update_layer(self, bpy.context, "MinLineLengthMm", value)
 
 
-
-
-
 def _get_storey_elevation(camera_z: float) -> float:
     import bonsai.tool as tool
 
@@ -750,7 +764,14 @@ class BIMCameraProperties(PropertyGroup):
     height: FloatProperty(name="Height", default=50, subtype="DISTANCE", update=update_width_height)
     cut_height: FloatProperty(name="Cut Height", subtype="DISTANCE", get=get_cut_height, set=set_cut_height)
     depth: FloatProperty(name="Depth", subtype="DISTANCE", get=get_depth, set=set_depth)
-    min_line_length: FloatProperty(name="Min Line Length (mm)", default=0.1, min=0.0, soft_max=5.0, get=get_min_line_length, set=set_min_line_length)
+    min_line_length: FloatProperty(
+        name="Min Line Length (mm)",
+        default=0.1,
+        min=0.0,
+        soft_max=5.0,
+        get=get_min_line_length,
+        set=set_min_line_length,
+    )
     # Bonsai property is needed to prevent user from using unsupported panoramic camera.
     camera_type: EnumProperty(
         name="Camera Type",

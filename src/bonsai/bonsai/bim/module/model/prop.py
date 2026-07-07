@@ -50,13 +50,15 @@ if TYPE_CHECKING:
 # Module-level cache keeps items alive — Blender enum callbacks must not return garbage-collected lists.
 _storey_items_cache: list[tuple[str, str, str]] = []
 
+
 def _get_storey_items() -> list[tuple[str, str, str]]:
     global _storey_items_cache
     ifc = tool.Ifc.get()
     if not ifc:
         return [("0", "No IFC file", "")]
-    storeys = sorted(ifc.by_type("IfcBuildingStorey"),
-                     key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s))
+    storeys = sorted(
+        ifc.by_type("IfcBuildingStorey"), key=lambda s: ifcopenshell.util.placement.get_storey_elevation(s)
+    )
     _storey_items_cache = [(str(s.id()), s.Name or "Unnamed", "") for s in storeys] or [("0", "No Storeys", "")]
     return _storey_items_cache
 

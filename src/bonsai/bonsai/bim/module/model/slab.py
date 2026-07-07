@@ -913,7 +913,9 @@ class AddSlabFromWall(bpy.types.Operator, tool.Ifc.Operator):
 class ConvertEdgesToSlab(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.convert_edges_to_slab"
     bl_label = "Floor from Edges"
-    bl_description = "Create a floor slab for every closed edge loop in the active mesh object using the selected slab type."
+    bl_description = (
+        "Create a floor slab for every closed edge loop in the active mesh object using the selected slab type."
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

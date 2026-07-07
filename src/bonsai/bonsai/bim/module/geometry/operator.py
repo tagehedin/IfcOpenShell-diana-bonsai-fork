@@ -33,8 +33,8 @@ from typing import (
 
 import bmesh
 import bpy
-import mathutils
 import ifcopenshell
+import ifcopenshell.api.aggregate
 import ifcopenshell.api.boundary
 import ifcopenshell.api.context
 import ifcopenshell.api.drawing
@@ -42,19 +42,16 @@ import ifcopenshell.api.geometry
 import ifcopenshell.api.group
 import ifcopenshell.api.layer
 import ifcopenshell.api.material
-import ifcopenshell.api.aggregate
-import ifcopenshell.api.feature
 import ifcopenshell.api.project
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
-import ifcopenshell.api.spatial
 import ifcopenshell.api.style
-import ifcopenshell.api.unit
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.representation
 import ifcopenshell.util.shape_builder
 import ifcopenshell.util.unit
+import mathutils
 import numpy as np
 import numpy.typing as npt
 from ifcopenshell.util.shape_builder import ShapeBuilder

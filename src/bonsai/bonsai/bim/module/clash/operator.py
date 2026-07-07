@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Union
 
 import bpy
+import bpy.utils.previews as _bpy_previews
 import ifcopenshell
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Matrix, Vector
@@ -32,8 +33,6 @@ from mathutils import Matrix, Vector
 import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.clash.decorator import ClashDecorator
-
-import bpy.utils.previews as _bpy_previews
 
 _preview_collections: dict = {}
 
@@ -329,8 +328,9 @@ def _save_view_state(view: "bonsai.bim.module.clash.prop.BIMSavedView", context)
 
 def _restore_clip_planes(context, view) -> None:
     """Delete existing clip planes and recreate them from saved view data."""
-    import bmesh as _bmesh
     from itertools import cycle
+
+    import bmesh as _bmesh
 
     proj_props = tool.Project.get_project_props()
 

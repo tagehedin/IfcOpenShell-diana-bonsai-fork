@@ -1009,9 +1009,9 @@ class CreateDrawing(bpy.types.Operator):
         # (element, blender_obj) pairs for OBB-simplified links — filled during the loop below
         obb_elements: list[tuple[ifcopenshell.entity_instance, bpy.types.Object]] = []
         # Per-chunk (K, 2, 3) edge arrays for silhouette links
-        silhouette_chunks: list["np.ndarray"] = []
+        silhouette_chunks: list[np.ndarray] = []
         # Per-chunk (tris, tolerance_mm) for projection-union links
-        projection_union_chunks: list[tuple["np.ndarray", float]] = []
+        projection_union_chunks: list[tuple[np.ndarray, float]] = []
 
         cam_inv = self.camera.matrix_world.inverted()
         # World-space unit vector pointing FROM scene TOWARD camera (its local +Z).
@@ -1061,7 +1061,7 @@ class CreateDrawing(bpy.types.Operator):
                     # Extract per-element vertex arrays from already-loaded chunk meshes.
                     # Chunk objects batch many elements; guid_ids gives cumulative face boundaries.
                     # Cache per chunk object so each chunk mesh is only read once.
-                    chunk_vert_cache: dict[int, dict[str, "np.ndarray"]] = {}
+                    chunk_vert_cache: dict[int, dict[str, np.ndarray]] = {}
                     for element in drawing_elements:
                         guid = getattr(element, "GlobalId", None)
                         if not guid:
@@ -1186,7 +1186,7 @@ class CreateDrawing(bpy.types.Operator):
         # collections may be hidden/excluded from the view layer so visible_get()
         # returns False and _build_scene_occluder_bvh would miss them.  Pass them
         # explicitly so they are always included in the occluder BVH.
-        extra_occluder_objs: list["bpy.types.Object"] = []
+        extra_occluder_objs: list[bpy.types.Object] = []
         for link_path, obj_map in link_obj_maps.items():
             if link_path in mep_link_paths:
                 continue
@@ -1877,7 +1877,6 @@ class CreateDrawing(bpy.types.Operator):
         import uuid
 
         import shapely
-        import shapely.ops
 
         SVG_NS = "http://www.w3.org/2000/svg"
         main_g = root.find(f"{{{SVG_NS}}}g")

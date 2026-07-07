@@ -989,6 +989,7 @@ class GetWallHeight(bpy.types.Operator):
 
     def execute(self, context):
         from math import cos
+
         obj = context.active_object
         if not obj:
             return {"CANCELLED"}
@@ -1004,6 +1005,7 @@ class GetWallHeight(bpy.types.Operator):
         si = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
         x, y, z = extrusion.ExtrudedDirection.DirectionRatios
         from mathutils import Vector
+
         x_angle = Vector((0, 1)).angle_signed(Vector((y, z)))
         tool.Model.get_model_props().extrusion_depth = abs(extrusion.Depth * si * cos(x_angle))
         return {"FINISHED"}
@@ -1029,10 +1031,7 @@ class GetWallLength(bpy.types.Operator):
 
 def _get_block_anchor_ifc_children(anchor_obj: bpy.types.Object) -> list[bpy.types.Object]:
     """Return all direct IFC children of a block anchor empty."""
-    return [
-        child for child in bpy.data.objects
-        if child.parent == anchor_obj and tool.Ifc.get_entity(child)
-    ]
+    return [child for child in bpy.data.objects if child.parent == anchor_obj and tool.Ifc.get_entity(child)]
 
 
 class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
@@ -1052,6 +1051,7 @@ class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
             self.report({"ERROR"}, "Invalid storey specified.")
             return
         import bonsai.core.spatial as spatial_core
+
         unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
         new_storey_z = ifcopenshell.util.placement.get_storey_elevation(new_storey) * unit_scale
 
@@ -1070,8 +1070,11 @@ class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
             if not element:
                 continue
             current_container = ifcopenshell.util.element.get_container(element)
-            current_z = ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale \
-                if current_container and current_container.is_a("IfcBuildingStorey") else 0.0
+            current_z = (
+                ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale
+                if current_container and current_container.is_a("IfcBuildingStorey")
+                else 0.0
+            )
             world_z = obj.matrix_world.translation.z
             offset = world_z - current_z
             spatial_core.assign_container(tool.Ifc, tool.Collector, tool.Spatial, container=new_storey, objs=[obj])
@@ -1094,8 +1097,11 @@ class ChangeWallStorey(bpy.types.Operator, tool.Ifc.Operator):
             # Determine current storey elevation from first child's container
             first_elem = tool.Ifc.get_entity(children[0])
             current_container = ifcopenshell.util.element.get_container(first_elem) if first_elem else None
-            current_storey_z = ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale \
-                if current_container and current_container.is_a("IfcBuildingStorey") else 0.0
+            current_storey_z = (
+                ifcopenshell.util.placement.get_storey_elevation(current_container) * unit_scale
+                if current_container and current_container.is_a("IfcBuildingStorey")
+                else 0.0
+            )
 
             # Move anchor so it keeps its offset from the old storey
             anchor_offset = anchor.matrix_world.translation.z - current_storey_z

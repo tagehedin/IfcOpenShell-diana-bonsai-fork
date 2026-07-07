@@ -21,7 +21,7 @@
 import os
 import weakref
 from collections.abc import Callable
-from math import cos, pi
+from math import pi
 from typing import Union
 
 import bpy

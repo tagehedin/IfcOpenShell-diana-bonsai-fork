@@ -489,9 +489,7 @@ class EnableEditingStructuralConnectionCS(bpy.types.Operator):
         condition_cs = getattr(item, "ConditionCoordinateSystem", None)
         if condition_cs is not None:
             z_axis = (
-                Vector(condition_cs.Axis.DirectionRatios).normalized() @ obj.matrix_world
-                if condition_cs.Axis
-                else None
+                Vector(condition_cs.Axis.DirectionRatios).normalized() @ obj.matrix_world if condition_cs.Axis else None
             )
             x_axis = (
                 Vector(condition_cs.RefDirection.DirectionRatios).normalized() @ obj.matrix_world

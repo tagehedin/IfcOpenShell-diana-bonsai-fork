@@ -1,4 +1,3 @@
-import bpy
 from bpy.types import Panel, UIList
 
 
@@ -23,6 +22,7 @@ class BIM_PT_tab_ifc_schedule(Panel):
     @classmethod
     def poll(cls, context):
         import bonsai.tool as tool
+
         try:
             return tool.Blender.should_show_panel(context, cls.bim_tab_name, cls.bl_idname) and tool.Ifc.get()
         except Exception:
@@ -66,9 +66,12 @@ class BIM_PT_tab_ifc_schedule(Panel):
         op.direction = "DOWN"
 
         box2.template_list(
-            "BIM_UL_schedule_columns", "",
-            template, "columns",
-            template, "active_column_index",
+            "BIM_UL_schedule_columns",
+            "",
+            template,
+            "columns",
+            template,
+            "active_column_index",
             rows=4,
         )
 
@@ -81,6 +84,7 @@ class BIM_PT_tab_ifc_schedule(Panel):
                 sub.label(text="Displays the number of instances in each group.", icon="INFO")
             elif col.source == "ATTRIBUTE":
                 from bonsai.bim.module.schedule.prop import update_attr_cache
+
                 update_attr_cache(template.ifc_class)
                 if col.attribute_name and col.attribute_name != col.attribute_name_enum:
                     try:
@@ -90,6 +94,7 @@ class BIM_PT_tab_ifc_schedule(Panel):
                 sub.prop(col, "attribute_name_enum", text="Attribute")
             elif col.source == "TYPE_ATTRIBUTE":
                 from bonsai.bim.module.schedule.prop import update_type_attr_cache
+
                 update_type_attr_cache(template.ifc_class)
                 if col.attribute_name and col.attribute_name != col.type_attribute_name_enum:
                     try:
@@ -98,7 +103,11 @@ class BIM_PT_tab_ifc_schedule(Panel):
                         pass
                 sub.prop(col, "type_attribute_name_enum", text="Type Attribute")
             else:
-                from bonsai.bim.module.schedule.prop import update_pset_cache, update_prop_cache
+                from bonsai.bim.module.schedule.prop import (
+                    update_prop_cache,
+                    update_pset_cache,
+                )
+
                 update_pset_cache(template.ifc_class)
                 if col.pset_name and col.pset_name != col.pset_name_enum:
                     try:
@@ -117,6 +126,7 @@ class BIM_PT_tab_ifc_schedule(Panel):
 
         # --- Sort & Group ---
         from bonsai.bim.module.schedule.prop import update_col_cache
+
         update_col_cache(template)
 
         box3 = layout.box()
@@ -149,7 +159,13 @@ class BIM_PT_tab_ifc_schedule(Panel):
         # --- Orientation + Itemize ---
         row = layout.row(align=True)
         row.prop(template, "orientation", text="", expand=False)
-        row.prop(template, "itemize_all", text="", icon="LINENUMBERS_ON" if template.itemize_all else "LINENUMBERS_OFF", toggle=True)
+        row.prop(
+            template,
+            "itemize_all",
+            text="",
+            icon="LINENUMBERS_ON" if template.itemize_all else "LINENUMBERS_OFF",
+            toggle=True,
+        )
 
         # --- Page size ---
         row = layout.row(align=True)

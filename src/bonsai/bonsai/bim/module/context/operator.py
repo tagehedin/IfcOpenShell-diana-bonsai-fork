@@ -102,6 +102,7 @@ class MergeRepresentationContexts(bpy.types.Operator):
 
         removed = self._deduplicate(ifc)
         from bonsai.bim.module.context.data import ContextData
+
         ContextData.is_loaded = False
         if removed:
             self.report({"INFO"}, f"Merged {removed} duplicate context(s).")

@@ -2,7 +2,6 @@ import bpy
 import ifcopenshell.api.attribute
 import ifcopenshell.api.pset
 import ifcopenshell.util.element
-import ifcopenshell.util.type
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
 import bonsai.tool as tool
@@ -55,7 +54,9 @@ def set_cell_value(ifc, element, col, value: str) -> None:
         elif col.source == "TYPE_ATTRIBUTE":
             element_type = ifcopenshell.util.element.get_type(element)
             if element_type:
-                ifcopenshell.api.attribute.edit_attributes(ifc, product=element_type, attributes={col.attribute_name: value})
+                ifcopenshell.api.attribute.edit_attributes(
+                    ifc, product=element_type, attributes={col.attribute_name: value}
+                )
         elif col.source == "PSET":
             psets = ifcopenshell.util.element.get_psets(element, should_inherit=False)
             if col.pset_name in psets:
@@ -71,20 +72,32 @@ def set_cell_value(ifc, element, col, value: str) -> None:
 def _matches_filter(cell_value: str, operator: str, filter_value: str) -> bool:
     cv = cell_value.strip().lower()
     fv = filter_value.strip().lower()
-    if operator == "HAS_VALUE":   return bool(cv)
-    if operator == "IS_EMPTY":    return not bool(cv)
-    if operator == "EQ":          return cv == fv
-    if operator == "NEQ":         return cv != fv
-    if operator == "CONTAINS":    return fv in cv
-    if operator == "NOT_CONTAINS":return fv not in cv
-    if operator == "STARTS":      return cv.startswith(fv)
-    if operator == "ENDS":        return cv.endswith(fv)
+    if operator == "HAS_VALUE":
+        return bool(cv)
+    if operator == "IS_EMPTY":
+        return not bool(cv)
+    if operator == "EQ":
+        return cv == fv
+    if operator == "NEQ":
+        return cv != fv
+    if operator == "CONTAINS":
+        return fv in cv
+    if operator == "NOT_CONTAINS":
+        return fv not in cv
+    if operator == "STARTS":
+        return cv.startswith(fv)
+    if operator == "ENDS":
+        return cv.endswith(fv)
     try:
         cv_n, fv_n = float(cell_value), float(filter_value)
-        if operator == "GT":  return cv_n > fv_n
-        if operator == "LT":  return cv_n < fv_n
-        if operator == "GTE": return cv_n >= fv_n
-        if operator == "LTE": return cv_n <= fv_n
+        if operator == "GT":
+            return cv_n > fv_n
+        if operator == "LT":
+            return cv_n < fv_n
+        if operator == "GTE":
+            return cv_n >= fv_n
+        if operator == "LTE":
+            return cv_n <= fv_n
     except (ValueError, TypeError):
         pass
     return True
@@ -132,6 +145,7 @@ class RefreshSchedule(bpy.types.Operator):
         # --- Filter rules ---
         active_rules = [r for r in template.filter_rules if r.enabled]
         if active_rules:
+
             def row_passes(element):
                 result = None
                 for rule in active_rules:
@@ -148,6 +162,7 @@ class RefreshSchedule(bpy.types.Operator):
                     else:
                         result = result or match
                 return bool(result)
+
             elements = [e for e in elements if row_passes(e)]
 
         props.rows.clear()
@@ -164,6 +179,7 @@ class RefreshSchedule(bpy.types.Operator):
         else:
             # Group by columns marked group=True in sort rules; fall back to all columns.
             from collections import OrderedDict
+
             group_col_indices = [
                 int(r.column_index_enum)
                 for r in template.sort_rules
@@ -174,10 +190,7 @@ class RefreshSchedule(bpy.types.Operator):
 
             groups: OrderedDict = OrderedDict()
             for element in elements:
-                key = tuple(
-                    get_cell_value(ifc, element, template.columns[i])
-                    for i in group_col_indices
-                )
+                key = tuple(get_cell_value(ifc, element, template.columns[i]) for i in group_col_indices)
                 if key not in groups:
                     groups[key] = []
                 groups[key].append(element)

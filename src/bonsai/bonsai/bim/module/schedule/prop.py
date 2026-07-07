@@ -1,8 +1,10 @@
-import bpy
 import ifcopenshell.ifcopenshell_wrapper
 from bpy.props import (
-    BoolProperty, CollectionProperty, EnumProperty,
-    IntProperty, StringProperty,
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    IntProperty,
+    StringProperty,
 )
 from bpy.types import PropertyGroup
 
@@ -59,9 +61,7 @@ def update_pset_cache(ifc_class: str) -> None:
     pset_names: set[str] = set()
     try:
         for element in ifc.by_type(ifc_class):
-            pset_names.update(
-                k for k in ifcopenshell.util.element.get_psets(element) if k != "id"
-            )
+            pset_names.update(k for k in ifcopenshell.util.element.get_psets(element) if k != "id")
     except Exception:
         pass
     _pset_items_cache = [(n, n, "") for n in sorted(pset_names)] or [("", "None", "")]
@@ -132,7 +132,8 @@ class BIMScheduleColumn(PropertyGroup):
                 ].ifc_class,
                 self.pset_name_enum,
             ),
-        ) and None,
+        )
+        and None,
     )
     prop_name_enum: EnumProperty(
         name="Property",
@@ -142,18 +143,18 @@ class BIMScheduleColumn(PropertyGroup):
 
 
 FILTER_OPERATORS = [
-    ("EQ",          "=",            "Equals"),
-    ("NEQ",         "≠",            "Not equals"),
-    ("CONTAINS",    "Contains",     "Contains text (case-insensitive)"),
-    ("NOT_CONTAINS","Not contains", "Does not contain text"),
-    ("STARTS",      "Starts with",  ""),
-    ("ENDS",        "Ends with",    ""),
-    ("GT",          ">",            "Greater than (numeric)"),
-    ("LT",          "<",            "Less than (numeric)"),
-    ("GTE",         "≥",            "Greater or equal (numeric)"),
-    ("LTE",         "≤",            "Less or equal (numeric)"),
-    ("HAS_VALUE",   "Has value",    "Field is not empty"),
-    ("IS_EMPTY",    "Is empty",     "Field is empty"),
+    ("EQ", "=", "Equals"),
+    ("NEQ", "≠", "Not equals"),
+    ("CONTAINS", "Contains", "Contains text (case-insensitive)"),
+    ("NOT_CONTAINS", "Not contains", "Does not contain text"),
+    ("STARTS", "Starts with", ""),
+    ("ENDS", "Ends with", ""),
+    ("GT", ">", "Greater than (numeric)"),
+    ("LT", "<", "Less than (numeric)"),
+    ("GTE", "≥", "Greater or equal (numeric)"),
+    ("LTE", "≤", "Less or equal (numeric)"),
+    ("HAS_VALUE", "Has value", "Field is not empty"),
+    ("IS_EMPTY", "Is empty", "Field is empty"),
 ]
 
 # Column name cache for sort/filter rule dropdowns.
@@ -166,8 +167,7 @@ def _get_col_items(self, context) -> list[tuple[str, str, str]]:
 
 def update_col_cache(template) -> None:
     global _col_items_cache
-    _col_items_cache = [(str(i), col.name, "") for i, col in enumerate(template.columns)] \
-        or [("0", "No columns", "")]
+    _col_items_cache = [(str(i), col.name, "") for i, col in enumerate(template.columns)] or [("0", "No columns", "")]
 
 
 class BIMScheduleSortRule(PropertyGroup):
@@ -176,8 +176,7 @@ class BIMScheduleSortRule(PropertyGroup):
         items=_get_col_items,
     )
     reverse: BoolProperty(name="Descending", default=False)
-    group: BoolProperty(name="Group", default=False,
-                        description="Show a header row between groups of equal values")
+    group: BoolProperty(name="Group", default=False, description="Show a header row between groups of equal values")
 
 
 class BIMScheduleFilterRule(PropertyGroup):
