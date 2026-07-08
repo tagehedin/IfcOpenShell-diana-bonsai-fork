@@ -623,13 +623,23 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
     Unlike BMeasureDecorator, placed points are meant to stay visible after the
     tool itself exits (ESC/RIGHTMOUSE) — they're cleared explicitly via
     ``bim.clear_xyz_points``, not implicitly on tool exit. See XYZTool.
+
+    ``points`` holds ``(Vector, label_text)`` pairs — the label is computed
+    ONCE at placement time (``label_text``, below), not on every redraw.
+    Confirmed 2026-07-08: recomputing ``_true_coords`` (a real
+    georeference/CRS lookup) for every placed point on every single POST_VIEW
+    draw call — which fires continuously while dragging anything in the
+    viewport, e.g. the clipping plane — made the whole viewport sluggish once
+    a handful of points were placed and left persisting. Only ``cursor`` (the
+    live, still-moving preview point) legitimately needs per-frame
+    recomputation.
     """
 
     draw_methods = (
         ("draw_geometry", "POST_VIEW"),
         ("draw_text", "POST_PIXEL"),
     )
-    points: list = []
+    points: list = []  # [(Vector, str), ...]
     cursor = None
 
     _COLOR_POINT = (0.3, 0.9, 0.5)
@@ -645,6 +655,11 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
         cls.points = []
         cls.cursor = None
 
+    @staticmethod
+    def label_text(point: Vector) -> str:
+        true_pos = _true_coords(point)
+        return f"X: {true_pos.x:.3f}  Y: {true_pos.y:.3f}  Z: {true_pos.z:.3f}"
+
     def draw_geometry(self, context):
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
@@ -653,8 +668,8 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
         point_shader.bind()
         gpu.state.point_size_set(8)
 
-        for point in XYZDecorator.points:
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [point]})
+        if XYZDecorator.points:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [p for p, _text in XYZDecorator.points]})
             point_shader.uniform_float("color", (*self._COLOR_POINT, 1.0))
             batch.draw(point_shader)
 
@@ -676,20 +691,18 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
         blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
         blf.shadow_offset(font_id, 1, -1)
 
-        def draw_label(pos_3d, color):
+        def draw_label(pos_3d, text, color):
             screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
             if not screen_co:
                 return
-            true_pos = _true_coords(pos_3d)
-            text = f"X: {true_pos.x:.3f}  Y: {true_pos.y:.3f}  Z: {true_pos.z:.3f}"
             blf.color(font_id, *color, 1.0)
             blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
             blf.draw(font_id, text)
 
-        for point in XYZDecorator.points:
-            draw_label(point, self._COLOR_POINT)
+        for point, text in XYZDecorator.points:
+            draw_label(point, text, self._COLOR_POINT)
         if XYZDecorator.cursor is not None:
-            draw_label(XYZDecorator.cursor, self._COLOR_CURSOR)
+            draw_label(XYZDecorator.cursor, self.label_text(XYZDecorator.cursor), self._COLOR_CURSOR)
 
         blf.disable(font_id, blf.SHADOW)
 
@@ -697,13 +710,14 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
 class ZDecorator(tool.Blender.ViewportDecorator):
     """Persistent point markers showing only true Z, formatted as "+42,22m" —
     comma decimal, explicit sign, no label. Same placement/persistence model as
-    XYZDecorator (see ZTool)."""
+    XYZDecorator (see ZTool), including the same cached-label-text fix (see
+    XYZDecorator's docstring)."""
 
     draw_methods = (
         ("draw_geometry", "POST_VIEW"),
         ("draw_text", "POST_PIXEL"),
     )
-    points: list = []
+    points: list = []  # [(Vector, str), ...]
     cursor = None
 
     _COLOR_POINT = (0.3, 0.9, 0.5)
@@ -724,6 +738,10 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         sign = "+" if z >= 0 else "-"
         return f"{sign}{abs(z):.2f}m".replace(".", ",")
 
+    @staticmethod
+    def label_text(point: Vector) -> str:
+        return ZDecorator._fmt_z(_true_coords(point).z)
+
     def draw_geometry(self, context):
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
@@ -732,8 +750,8 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         point_shader.bind()
         gpu.state.point_size_set(8)
 
-        for point in ZDecorator.points:
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [point]})
+        if ZDecorator.points:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [p for p, _text in ZDecorator.points]})
             point_shader.uniform_float("color", (*self._COLOR_POINT, 1.0))
             batch.draw(point_shader)
 
@@ -755,19 +773,18 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
         blf.shadow_offset(font_id, 1, -1)
 
-        def draw_label(pos_3d, color):
+        def draw_label(pos_3d, text, color):
             screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
             if not screen_co:
                 return
-            true_z = _true_coords(pos_3d).z
             blf.color(font_id, *color, 1.0)
             blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-            blf.draw(font_id, self._fmt_z(true_z))
+            blf.draw(font_id, text)
 
-        for point in ZDecorator.points:
-            draw_label(point, self._COLOR_POINT)
+        for point, text in ZDecorator.points:
+            draw_label(point, text, self._COLOR_POINT)
         if ZDecorator.cursor is not None:
-            draw_label(ZDecorator.cursor, self._COLOR_CURSOR)
+            draw_label(ZDecorator.cursor, self.label_text(ZDecorator.cursor), self._COLOR_CURSOR)
 
         blf.disable(font_id, blf.SHADOW)
 
