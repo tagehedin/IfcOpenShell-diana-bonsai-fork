@@ -809,8 +809,11 @@ class Project(bonsai.core.tool.Project):
                     return guid
 
         @classmethod
-        def get_circular_profile_info(cls, obj: bpy.types.Object, guid: str) -> tuple[float, Vector] | None:
-            """Radius (metres) + world-space extrusion axis for a linked circular-profile element.
+        def get_circular_profile_info(
+            cls, obj: bpy.types.Object, guid: str
+        ) -> tuple[float, Vector, Vector | None] | None:
+            """Radius (metres) + world-space extrusion axis (+ centerline point, mesh-fit only)
+            for a linked circular-profile element.
 
             Looks up the ``circular_profiles`` table cached at link time (see
             ``ifcpatch.recipes.ExtractPropertiesToSQLite``) by GUID, keyed via the same
@@ -818,6 +821,12 @@ class Project(bonsai.core.tool.Project):
             ``None`` if the element isn't a single-profile circular cross-section, or if
             the cache predates this table (links built before this feature need a reload
             to pick it up — there's no live IFC file to fall back to for a linked project).
+
+            The third element is a point on the true centerline (only present for
+            mesh-fit-derived rows — ``None`` for parametric-profile rows, which don't
+            need it). See ``get_pipe_center_radius`` for why this matters: raw
+            no-profile duct meshes aren't guaranteed to have consistently outward-facing
+            normals, so a normal-offset center computation can land outside the duct.
             """
             import sqlite3
 
@@ -825,7 +834,8 @@ class Project(bonsai.core.tool.Project):
             c = db.cursor()
             try:
                 c.execute(
-                    "SELECT radius, axis_x, axis_y, axis_z FROM circular_profiles "
+                    "SELECT radius, axis_x, axis_y, axis_z, centroid_x, centroid_y, centroid_z "
+                    "FROM circular_profiles "
                     "JOIN elements ON elements.id = circular_profiles.element_id "
                     "WHERE elements.global_id = ? LIMIT 1",
                     (guid,),
@@ -837,8 +847,47 @@ class Project(bonsai.core.tool.Project):
                 db.close()
             if row is None:
                 return None
-            radius, axis_x, axis_y, axis_z = row
-            return radius, Vector((axis_x, axis_y, axis_z))
+            radius, axis_x, axis_y, axis_z, cx, cy, cz = row
+            centroid = Vector((cx, cy, cz)) if cx is not None else None
+            return radius, Vector((axis_x, axis_y, axis_z)), centroid
+
+        @classmethod
+        def get_rectangular_profile_info(
+            cls, obj: bpy.types.Object, guid: str
+        ) -> tuple[float, float, Vector, Vector, Vector] | None:
+            """(width, height, world-axis, world-ortho, centerline point) metres for a
+            linked rectangular-duct element.
+
+            Mirrors ``get_circular_profile_info`` but for the ``rectangular_profiles``
+            table — see ``ifcpatch.recipes.ExtractPropertiesToSQLite`` for how these are
+            fit straight off bare mesh geometry (no parametric profile exists for these
+            elements at all). ``axis`` is the duct's length direction, ``ortho`` is the
+            direction ``width`` is measured along; the remaining cross-section direction
+            is ``axis.cross(ortho)``. The centerline point is always populated (unlike
+            the circular case) since rectangular profiles only ever come from mesh-fit.
+            """
+            import sqlite3
+
+            db = sqlite3.connect(obj["db"])
+            c = db.cursor()
+            try:
+                c.execute(
+                    "SELECT width, height, axis_x, axis_y, axis_z, ortho_x, ortho_y, ortho_z, "
+                    "centroid_x, centroid_y, centroid_z "
+                    "FROM rectangular_profiles "
+                    "JOIN elements ON elements.id = rectangular_profiles.element_id "
+                    "WHERE elements.global_id = ? LIMIT 1",
+                    (guid,),
+                )
+                row = c.fetchone()
+            except sqlite3.OperationalError:
+                row = None
+            finally:
+                db.close()
+            if row is None:
+                return None
+            width, height, ax, ay, az, ox, oy, oz, cx, cy, cz = row
+            return width, height, Vector((ax, ay, az)), Vector((ox, oy, oz)), Vector((cx, cy, cz))
 
         @classmethod
         def get_linked_element_geom_slice(cls, obj: bpy.types.Object, guid: str) -> slice[int, int]:

@@ -292,6 +292,12 @@ class Link(PropertyGroup):
         description="Selector query used to filter elements when loading the linked model",
         default="",
     )
+    detect_pipe_duct_profiles: BoolProperty(
+        name="Detect Pipe/Duct Profiles",
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
+        default=True,
+        options=set(),
+    )
 
     if TYPE_CHECKING:
         name: str
@@ -312,6 +318,7 @@ class Link(PropertyGroup):
         empty_handle: Union[bpy.types.Object, None]
         ifc_definition_id: int
         query: str
+        detect_pipe_duct_profiles: bool
 
 
 class EditedObj(PropertyGroup):

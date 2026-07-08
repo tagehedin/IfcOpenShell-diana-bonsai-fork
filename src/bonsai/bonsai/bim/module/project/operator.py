@@ -75,6 +75,8 @@ from bonsai.bim.module.project.decorator import (
     LaserDecorator,
     MeasureDecorator,
     ProjectDecorator,
+    XYZDecorator,
+    ZDecorator,
 )
 from bonsai.bim.module.project.prop import BreadcrumbType
 from bonsai.bim.ui import IFCFileSelector
@@ -1546,6 +1548,11 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
             "Default query - IfcElement, but excluding IfcProxy, IfcSpatialStructureElement, IfcSpatialElement, IfcFeatureElement."
         ),
     )
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(
+        name="Detect Pipe/Duct Profiles",
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
+        default=True,
+    )
 
     filename_ext = ".ifc"
 
@@ -1557,6 +1564,7 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
         use_relative_path: bool
         use_cache: bool
         query: str
+        detect_pipe_duct_profiles: bool
 
     def draw(self, context):
         assert self.layout
@@ -1575,6 +1583,7 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
             row = self.layout.row()
             row.prop(pprops, "project_north")
         self.layout.prop(self, "query", placeholder="IfcElement")
+        self.layout.prop(self, "detect_pipe_duct_profiles")
 
     def _execute(self, context):
         start = time.time()
@@ -1608,7 +1617,13 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
             new.name = filepath
             new.filepath = filepath
             new.query = self.query
-            bpy.ops.bim.load_link(link_index=-1, use_cache=self.use_cache, query=self.query)
+            new.detect_pipe_duct_profiles = self.detect_pipe_duct_profiles
+            bpy.ops.bim.load_link(
+                link_index=-1,
+                use_cache=self.use_cache,
+                query=self.query,
+                detect_pipe_duct_profiles=self.detect_pipe_duct_profiles,
+            )
 
 
 class UnlinkIfc(bpy.types.Operator, tool.Ifc.Operator):
@@ -1686,18 +1701,22 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
     link_index: bpy.props.IntProperty(name="Link Index")
     use_cache: bpy.props.BoolProperty(name="Use Cache", default=True)
     query: bpy.props.StringProperty()
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(name="Detect Pipe/Duct Profiles", default=True)
 
     if TYPE_CHECKING:
         link_index: int
         use_cache: bool
         query: str
+        detect_pipe_duct_profiles: bool
 
     def _execute(self, context):
         self.link = tool.Project.get_project_props().links[self.link_index]
-        # Fall back to the Link's stored query so callers that omit it
-        # still replay the filter the link was created with.
+        # Fall back to the Link's stored query/flag so callers that omit them
+        # still replay the settings the link was created with.
         if not self.query and self.link.query:
             self.query = self.link.query
+        if not self.properties.is_property_set("detect_pipe_duct_profiles"):
+            self.detect_pipe_duct_profiles = self.link.detect_pipe_duct_profiles
         filepath = Path(tool.Ifc.resolve_uri(self.link.filepath))
         if not filepath.exists():
             self.report({"ERROR"}, f"File does not exist: '{filepath}'")
@@ -1751,7 +1770,12 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
             # Empty 'query' - model loaded without custom query.
             # Missing 'query' - model was loaded before custom queries were introduced in Bonsai.
             query = data.get("query", "")
-            return query != self.query
+            if query != self.query:
+                return True
+            # Missing 'detect_pipe_duct_profiles' - cache predates this feature, treat as
+            # the old always-on behaviour so existing caches with pipe data aren't
+            # needlessly invalidated.
+            return data.get("detect_pipe_duct_profiles", True) != self.detect_pipe_duct_profiles
 
         if should_clear_cache() and blend_filepath.exists():
             os.remove(blend_filepath)
@@ -1781,7 +1805,11 @@ def run():
     pprops.project_north = "{pprops.project_north}"
     # Use absolute path to be safe from cwd changes.
     try:
-        bpy.ops.bim.load_linked_project(filepath=r"{str(self.filepath_)}", query={repr(self.query)})
+        bpy.ops.bim.load_linked_project(
+            filepath=r"{str(self.filepath_)}",
+            query={repr(self.query)},
+            detect_pipe_duct_profiles={self.detect_pipe_duct_profiles},
+        )
     except RuntimeError as e:
         # Operator failed (returned CANCELLED with error report)
         print(f"Failed to load linked project: {{e}}")
@@ -1876,32 +1904,47 @@ class ReloadLink(bpy.types.Operator):
             "Default query - IfcElement, but excluding IfcProxy, IfcSpatialStructureElement, IfcSpatialElement, IfcFeatureElement."
         ),
     )
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(
+        name="Detect Pipe/Duct Profiles",
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
+        default=True,
+    )
 
     if TYPE_CHECKING:
         link_index: int
         query: str
+        detect_pipe_duct_profiles: bool
 
     def invoke(self, context, event):
         link = tool.Project.get_project_props().links[self.link_index]
         self.query = link.query
+        self.detect_pipe_duct_profiles = link.detect_pipe_duct_profiles
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
         assert self.layout
         self.layout.prop(self, "query", placeholder="IfcElement")
+        self.layout.prop(self, "detect_pipe_duct_profiles")
 
     def execute(self, context):
         if self.link_index >= len(tool.Project.get_project_props().links):
             self.report({"ERROR"}, "Invalid link index")
             return {"CANCELLED"}
         link = tool.Project.get_project_props().links[self.link_index]
-        # An unset query means the operator was called without the dialog
-        # (e.g. from a script) - preserve the link's stored query instead
-        # of overwriting it with the empty default.
+        # An unset query/flag means the operator was called without the dialog
+        # (e.g. from a script) - preserve the link's stored settings instead
+        # of overwriting them with the property defaults.
         if self.properties.is_property_set("query"):
             link.query = self.query
+        if self.properties.is_property_set("detect_pipe_duct_profiles"):
+            link.detect_pipe_duct_profiles = self.detect_pipe_duct_profiles
         bpy.ops.bim.unload_link(link_index=self.link_index)
-        return bpy.ops.bim.load_link(link_index=self.link_index, use_cache=False, query=link.query) or {"FINISHED"}
+        return bpy.ops.bim.load_link(
+            link_index=self.link_index,
+            use_cache=False,
+            query=link.query,
+            detect_pipe_duct_profiles=link.detect_pipe_duct_profiles,
+        ) or {"FINISHED"}
 
 
 _stale_link_paths: set[str] = set()
@@ -2529,9 +2572,12 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
 
     query: bpy.props.StringProperty()
     """See ``bim.link_ifc``."""
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(default=True)
+    """See ``bim.link_ifc``."""
 
     if TYPE_CHECKING:
         query: str
+        detect_pipe_duct_profiles: bool
 
     file: ifcopenshell.file
     meshes: dict[str, bpy.types.Mesh]
@@ -2567,7 +2613,12 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
 
         self.db_filepath = self.filepath + ".cache.sqlite"
         db = ifcpatch.execute(
-            {"input": self.filepath, "file": self.file, "recipe": "ExtractPropertiesToSQLite", "arguments": []}
+            {
+                "input": self.filepath,
+                "file": self.file,
+                "recipe": "ExtractPropertiesToSQLite",
+                "arguments": [self.detect_pipe_duct_profiles],
+            }
         )
         ifcpatch.write(db, self.db_filepath)
         print("Finished writing property database")
@@ -2638,6 +2689,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             "false_origin": pprops.false_origin,
             "project_north": pprops.project_north,
             "query": self.query,
+            "detect_pipe_duct_profiles": self.detect_pipe_duct_profiles,
         }
         with open(self.json_filepath, "w") as f:
             json.dump(data, f)
@@ -3744,6 +3796,16 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         pipe = tool.Raycast.get_pipe_center_radius(obj, point, Vector(normal), face_index)
         if pipe:
             snap_point["point"], snap_point["pipe_radius"], snap_point["pipe_axis"] = pipe
+        else:
+            duct = tool.Raycast.get_duct_center_dims(obj, point, Vector(normal), face_index)
+            if duct:
+                (
+                    snap_point["point"],
+                    snap_point["duct_width"],
+                    snap_point["duct_height"],
+                    snap_point["duct_axis"],
+                    snap_point["duct_ortho"],
+                ) = duct
         self.snapping_points = [snap_point]
 
     @staticmethod
@@ -3751,6 +3813,12 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         if "pipe_radius" not in snap:
             return None
         return snap["pipe_radius"], snap["pipe_axis"]
+
+    @staticmethod
+    def _duct_from_snap(snap: dict) -> "tuple[float, float, Vector, Vector] | None":
+        if "duct_width" not in snap:
+            return None
+        return snap["duct_width"], snap["duct_height"], snap["duct_axis"], snap["duct_ortho"]
 
     def _do_snap(self, context, event):
         if event.ctrl:
@@ -3765,6 +3833,9 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             BMeasureDecorator.point1_pipe,
             BMeasureDecorator.point2_pipe,
             self._pipe_from_snap(snap),
+            BMeasureDecorator.point1_duct,
+            BMeasureDecorator.point2_duct,
+            self._duct_from_snap(snap),
         )
 
     def _handle_snap_timer(self, context, event):
@@ -3782,6 +3853,9 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                 BMeasureDecorator.point1_pipe,
                 BMeasureDecorator.point2_pipe,
                 None,
+                BMeasureDecorator.point1_duct,
+                BMeasureDecorator.point2_duct,
+                None,
             )
             tool.Blender.update_viewport()
         return True
@@ -3795,7 +3869,15 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                 # First Esc only clears the placed/in-progress widget, so the
                 # tool stays active with a live point ready to place again.
                 BMeasureDecorator.update(
-                    None, None, BMeasureDecorator.cursor, None, None, BMeasureDecorator.cursor_pipe
+                    None,
+                    None,
+                    BMeasureDecorator.cursor,
+                    None,
+                    None,
+                    BMeasureDecorator.cursor_pipe,
+                    None,
+                    None,
+                    BMeasureDecorator.cursor_duct,
                 )
                 tool.Blender.update_viewport()
                 return {"RUNNING_MODAL"}
@@ -3827,14 +3909,27 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             if snap_pt is None:
                 return {"RUNNING_MODAL"}
             snap_pipe = self._pipe_from_snap(snap)
+            snap_duct = self._duct_from_snap(snap)
             if BMeasureDecorator.point1 is None:
-                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe)
+                BMeasureDecorator.update(
+                    snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe, snap_duct, None, snap_duct
+                )
             elif BMeasureDecorator.point2 is None:
                 BMeasureDecorator.update(
-                    BMeasureDecorator.point1, snap_pt.copy(), None, BMeasureDecorator.point1_pipe, snap_pipe, None
+                    BMeasureDecorator.point1,
+                    snap_pt.copy(),
+                    None,
+                    BMeasureDecorator.point1_pipe,
+                    snap_pipe,
+                    None,
+                    BMeasureDecorator.point1_duct,
+                    snap_duct,
+                    None,
                 )
             else:
-                BMeasureDecorator.update(snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe)
+                BMeasureDecorator.update(
+                    snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe, snap_duct, None, snap_duct
+                )
             tool.Blender.update_viewport()
 
         return {"RUNNING_MODAL"}
@@ -3851,6 +3946,241 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         context.window_manager.modal_handler_add(self)
         self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
         return {"RUNNING_MODAL"}
+
+
+class XYZTool(bpy.types.Operator, PolylineOperator):
+    bl_idname = "bim.xyz_tool"
+    bl_label = "XYZ"
+    bl_description = (
+        "Click to place a point and read its true X, Y, Z coordinates in metres "
+        "(false-origin corrected). CTRL snaps to vertices and edges. Points stay "
+        "placed until cleared."
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data.type == "VIEW_3D"
+
+    def __init__(self, *args, **kwargs):
+        bpy.types.Operator.__init__(self, *args, **kwargs)
+        PolylineOperator.__init__(self)
+
+    def _run_face_snap(self, context, event):
+        try:
+            origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
+        except Exception:
+            return
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, _normal, _face_index, _obj, _matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, origin, direction
+        )
+        if not hit:
+            self.snapping_points = []
+            return
+        self.snapping_points = [{"point": Vector(location)}]
+
+    def _do_snap(self, context, event):
+        if event.ctrl:
+            self._run_scene_ray_snap(context, event)
+        else:
+            self._run_face_snap(context, event)
+        snap = self.snapping_points[0] if self.snapping_points else {}
+        XYZDecorator.update(XYZDecorator.points, snap.get("point"))
+
+    def _handle_snap_timer(self, context, event):
+        if event.type != "TIMER":
+            return False
+        if event.ctrl and not self._is_navigating:
+            self._run_scene_ray_snap(context, event)
+            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            XYZDecorator.update(XYZDecorator.points, snap_pt)
+            tool.Blender.update_viewport()
+        return True
+
+    def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
+        if event.type in {"ESC", "RIGHTMOUSE"}:
+            # Unlike BMeasure, placed points are meant to persist after the tool
+            # exits — only drop the live cursor preview, leave the decorator
+            # installed so committed points stay visible. Cleared explicitly via
+            # bim.clear_xyz_points.
+            XYZDecorator.update(XYZDecorator.points, None)
+            context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+        if event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self.mousemove_count += 1
+            if self.mousemove_count > 3:
+                self._do_snap(context, event)
+                tool.Blender.update_viewport()
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            snap = self.snapping_points[0] if self.snapping_points else {}
+            snap_pt = snap.get("point")
+            if snap_pt is None:
+                return {"RUNNING_MODAL"}
+            XYZDecorator.points.append(snap_pt.copy())
+            XYZDecorator.update(XYZDecorator.points, snap_pt.copy())
+            tool.Blender.update_viewport()
+
+        return {"RUNNING_MODAL"}
+
+    def invoke(self, context, event):
+        XYZDecorator.install(context)
+        tool.Snap.clear_snapping_point()
+        self.tool_state.use_default_container = False
+        self.tool_state.axis_method = None
+        self.tool_state.plane_method = None
+        self.tool_state.mode = "Mouse"
+        context.window.cursor_set("CROSSHAIR")
+        tool.Blender.update_viewport()
+        context.window_manager.modal_handler_add(self)
+        self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
+        return {"RUNNING_MODAL"}
+
+
+class ClearXYZPoints(bpy.types.Operator):
+    bl_idname = "bim.clear_xyz_points"
+    bl_label = "Clear XYZ Points"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if XYZDecorator.points:
+            return True
+        cls.poll_message_set("No XYZ points to clear.")
+        return False
+
+    def execute(self, context):
+        XYZDecorator.clear()
+        XYZDecorator.uninstall()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
+
+
+class ZTool(bpy.types.Operator, PolylineOperator):
+    bl_idname = "bim.z_tool"
+    bl_label = "Z"
+    bl_description = (
+        "Click to place a point and read its true Z elevation in metres "
+        "(false-origin corrected). CTRL snaps to vertices and edges. Points stay "
+        "placed until cleared."
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data.type == "VIEW_3D"
+
+    def __init__(self, *args, **kwargs):
+        bpy.types.Operator.__init__(self, *args, **kwargs)
+        PolylineOperator.__init__(self)
+
+    def _run_face_snap(self, context, event):
+        try:
+            origin, _, direction = tool.Raycast.get_viewport_ray_data(context, event)
+        except Exception:
+            return
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, _normal, _face_index, _obj, _matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, origin, direction
+        )
+        if not hit:
+            self.snapping_points = []
+            return
+        self.snapping_points = [{"point": Vector(location)}]
+
+    def _do_snap(self, context, event):
+        if event.ctrl:
+            self._run_scene_ray_snap(context, event)
+        else:
+            self._run_face_snap(context, event)
+        snap = self.snapping_points[0] if self.snapping_points else {}
+        ZDecorator.update(ZDecorator.points, snap.get("point"))
+
+    def _handle_snap_timer(self, context, event):
+        if event.type != "TIMER":
+            return False
+        if event.ctrl and not self._is_navigating:
+            self._run_scene_ray_snap(context, event)
+            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            ZDecorator.update(ZDecorator.points, snap_pt)
+            tool.Blender.update_viewport()
+        return True
+
+    def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
+        if event.type in {"ESC", "RIGHTMOUSE"}:
+            # Placed points persist after the tool exits — only drop the live
+            # cursor preview, leave the decorator installed. Cleared explicitly
+            # via bim.clear_z_points.
+            ZDecorator.update(ZDecorator.points, None)
+            context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+        if event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self.mousemove_count += 1
+            if self.mousemove_count > 3:
+                self._do_snap(context, event)
+                tool.Blender.update_viewport()
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            snap = self.snapping_points[0] if self.snapping_points else {}
+            snap_pt = snap.get("point")
+            if snap_pt is None:
+                return {"RUNNING_MODAL"}
+            ZDecorator.points.append(snap_pt.copy())
+            ZDecorator.update(ZDecorator.points, snap_pt.copy())
+            tool.Blender.update_viewport()
+
+        return {"RUNNING_MODAL"}
+
+    def invoke(self, context, event):
+        ZDecorator.install(context)
+        tool.Snap.clear_snapping_point()
+        self.tool_state.use_default_container = False
+        self.tool_state.axis_method = None
+        self.tool_state.plane_method = None
+        self.tool_state.mode = "Mouse"
+        context.window.cursor_set("CROSSHAIR")
+        tool.Blender.update_viewport()
+        context.window_manager.modal_handler_add(self)
+        self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
+        return {"RUNNING_MODAL"}
+
+
+class ClearZPoints(bpy.types.Operator):
+    bl_idname = "bim.clear_z_points"
+    bl_label = "Clear Z Points"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if ZDecorator.points:
+            return True
+        cls.poll_message_set("No Z points to clear.")
+        return False
+
+    def execute(self, context):
+        ZDecorator.clear()
+        ZDecorator.uninstall()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
 
 
 class MeasureFaceAreaTool(bpy.types.Operator, PolylineOperator):

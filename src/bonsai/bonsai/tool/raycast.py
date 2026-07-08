@@ -384,12 +384,21 @@ class Raycast(bonsai.core.tool.Raycast):
         a pipe/duct-like element), or — for a linked element — if its link's cache
         predates the ``circular_profiles`` table (needs a reload to pick it up).
 
-        v1 limitation, accepted: the center is derived purely from
-        ``location - radius * normal``, exact only when the hit lands on the profile's
-        curved side. A flat end-cap hit has a normal along the axis, not radial, so this
-        would return a meaningless center — handling that properly needs the actual
-        extrusion axis intersected with the hit point, not just radius+normal.
+        When a centerline point is available (mesh-fit-derived rows only — see
+        ``tool.Project.Link.get_circular_profile_info``), the center is the raycast hit
+        projected onto the axis line through that point — robust even if the source
+        mesh's face normals aren't consistently outward-facing, which real
+        ``IfcShellBasedSurfaceModel`` duct exports aren't guaranteed to be (confirmed
+        2026-07-08: a normal-offset computation put the center outside the duct on one).
+
+        Otherwise (parametric-profile rows, and all hosted elements — proven reliable
+        without this, so left as-is): v1 limitation, accepted — the center is derived
+        from ``location - radius * normal``, exact only when the hit lands on the
+        profile's curved side. A flat end-cap hit has a normal along the axis, not
+        radial, so this would return a meaningless center — handling that properly needs
+        the actual extrusion axis intersected with the hit point, not just radius+normal.
         """
+        centroid = None
         if tool.Project.Link.is_linked_element(obj):
             guid = tool.Project.Link.get_guid_by_face_index(obj, face_index)
             if guid is None:
@@ -397,7 +406,7 @@ class Raycast(bonsai.core.tool.Raycast):
             info = tool.Project.Link.get_circular_profile_info(obj, guid)
             if info is None:
                 return None
-            radius, axis = info
+            radius, axis, centroid = info
         else:
             element = tool.Ifc.get_entity(obj)
             if element is None:
@@ -419,8 +428,53 @@ class Raycast(bonsai.core.tool.Raycast):
 
         if radius is None or axis is None or axis.length < 1e-9:
             return None
-        center = location - normal.normalized() * radius
+        if centroid is not None:
+            center = centroid + (location - centroid).dot(axis) * axis
+        else:
+            center = location - normal.normalized() * radius
         return center, radius, axis
+
+    @classmethod
+    def get_duct_center_dims(
+        cls,
+        obj: bpy.types.Object,
+        location: Vector,
+        normal: Vector,
+        face_index: int,
+    ) -> tuple[Vector, float, float, Vector, Vector] | None:
+        """Center/width/height/axis/ortho for a rectangular-duct raycast hit.
+
+        v1 scope: linked elements only, matching where this actually shows up — bare
+        ``IfcShellBasedSurfaceModel`` duct exports with no parametric profile at all
+        (confirmed 2026-07-08 on a real ventilation model), always encountered as a
+        loaded consultant link, never a hosted element the user modelled themselves. See
+        ``tool.Project.Link.get_rectangular_profile_info`` and
+        ``ifcpatch.recipes.ExtractPropertiesToSQLite`` for how the underlying
+        ``rectangular_profiles`` cache table is built.
+
+        The center is the raycast hit projected onto the axis line through the stored
+        centerline point — NOT a normal-based offset. ``normal`` is unused (kept only for
+        signature parity with ``get_pipe_center_radius``): raw no-profile duct meshes
+        aren't guaranteed to have consistently outward-facing normals, and trusting the
+        hit normal's sign here previously put the computed center outside the duct
+        entirely on a real file (confirmed 2026-07-08). Same flat-hit caveat as
+        ``get_pipe_center_radius`` still applies for off-plane clicks on an end cap.
+        """
+        if not tool.Project.Link.is_linked_element(obj):
+            return None
+        guid = tool.Project.Link.get_guid_by_face_index(obj, face_index)
+        if guid is None:
+            return None
+        info = tool.Project.Link.get_rectangular_profile_info(obj, guid)
+        if info is None:
+            return None
+        width, height, axis, ortho, centroid = info
+        if axis.length < 1e-9 or ortho.length < 1e-9:
+            return None
+        axis = axis.normalized()
+        ortho = ortho.normalized()
+        center = centroid + (location - centroid).dot(axis) * axis
+        return center, width, height, axis, ortho
 
     @classmethod
     def _get_circular_profile_radius_from_representation(cls, element) -> float | None:

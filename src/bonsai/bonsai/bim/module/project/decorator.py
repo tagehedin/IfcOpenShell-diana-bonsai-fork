@@ -22,6 +22,7 @@ import blf
 import bmesh
 import bpy
 import gpu
+import ifcopenshell.util.unit
 from bpy.app.handlers import persistent
 from bpy.types import SpaceView3D
 from bpy_extras import view3d_utils
@@ -372,6 +373,11 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     point1_pipe = None
     point2_pipe = None
     cursor_pipe = None
+    # Rectangular-duct metadata for each point above, as (width, height, world_axis,
+    # world_ortho) or None — see tool.Raycast.get_duct_center_dims.
+    point1_duct = None
+    point2_duct = None
+    cursor_duct = None
 
     _COLOR_X = (0.9, 0.25, 0.25)
     _COLOR_Y = (0.25, 0.85, 0.25)
@@ -381,13 +387,27 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     _PIPE_CIRCLE_SEGMENTS = 32
 
     @classmethod
-    def update(cls, point1, point2, cursor, point1_pipe=None, point2_pipe=None, cursor_pipe=None):
+    def update(
+        cls,
+        point1,
+        point2,
+        cursor,
+        point1_pipe=None,
+        point2_pipe=None,
+        cursor_pipe=None,
+        point1_duct=None,
+        point2_duct=None,
+        cursor_duct=None,
+    ):
         cls.point1 = point1
         cls.point2 = point2
         cls.cursor = cursor
         cls.point1_pipe = point1_pipe
         cls.point2_pipe = point2_pipe
         cls.cursor_pipe = cursor_pipe
+        cls.point1_duct = point1_duct
+        cls.point2_duct = point2_duct
+        cls.cursor_duct = cursor_duct
 
     def _target(self):
         p1 = BMeasureDecorator.point1
@@ -411,6 +431,28 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             return
         radius, axis = pipe
         points = self._circle_points(center, radius, axis, self._PIPE_CIRCLE_SEGMENTS)
+        batch = batch_for_shader(line_shader, "LINE_LOOP", {"pos": points})
+        line_shader.uniform_float("color", (*self._COLOR_PIPE, 1.0))
+        batch.draw(line_shader)
+
+    @staticmethod
+    def _rect_points(center: Vector, width: float, height: float, axis: Vector, ortho: Vector) -> list:
+        axis = axis.normalized()
+        ortho = ortho.normalized()
+        cross = axis.cross(ortho).normalized()
+        hw, hh = width / 2, height / 2
+        return [
+            center + hw * ortho + hh * cross,
+            center - hw * ortho + hh * cross,
+            center - hw * ortho - hh * cross,
+            center + hw * ortho - hh * cross,
+        ]
+
+    def _draw_duct_rect(self, line_shader, center, duct) -> None:
+        if duct is None or center is None:
+            return
+        width, height, axis, ortho = duct
+        points = self._rect_points(center, width, height, axis, ortho)
         batch = batch_for_shader(line_shader, "LINE_LOOP", {"pos": points})
         line_shader.uniform_float("color", (*self._COLOR_PIPE, 1.0))
         batch.draw(line_shader)
@@ -454,6 +496,12 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         self._draw_pipe_circle(line_shader, active, active_pipe)
         if p2 is not None:
             self._draw_pipe_circle(line_shader, cursor, BMeasureDecorator.cursor_pipe)
+
+        active_duct = BMeasureDecorator.point2_duct if p2 is not None else BMeasureDecorator.cursor_duct
+        self._draw_duct_rect(line_shader, p1, BMeasureDecorator.point1_duct)
+        self._draw_duct_rect(line_shader, active, active_duct)
+        if p2 is not None:
+            self._draw_duct_rect(line_shader, cursor, BMeasureDecorator.cursor_duct)
 
         if p1 is None or active is None:
             gpu.state.blend_set("NONE")
@@ -527,10 +575,22 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             radius, _axis = pipe
             draw_label(center, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
 
+        def draw_duct_dims_label(center, duct):
+            if center is None or duct is None:
+                return
+            width, height, _axis, _ortho = duct
+            draw_label(center, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
+
         draw_diameter_label(p1, BMeasureDecorator.point1_pipe)
         draw_diameter_label(active, active_pipe)
         if p2 is not None:
             draw_diameter_label(cursor, BMeasureDecorator.cursor_pipe)
+
+        active_duct = BMeasureDecorator.point2_duct if p2 is not None else BMeasureDecorator.cursor_duct
+        draw_duct_dims_label(p1, BMeasureDecorator.point1_duct)
+        draw_duct_dims_label(active, active_duct)
+        if p2 is not None:
+            draw_duct_dims_label(cursor, BMeasureDecorator.cursor_duct)
 
         if p1 is not None and active is not None:
             corner_a = Vector((active.x, p1.y, p1.z))
@@ -544,6 +604,170 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             ]
             for pt_a, pt_b, color, text in items:
                 draw_label((pt_a + pt_b) / 2, color, text)
+
+        blf.disable(font_id, blf.SHADOW)
+
+
+def _true_coords(point: Vector) -> Vector:
+    """False-origin-corrected true X/Y/Z (project coordinates) in metres for a
+    Blender scene-space point. Shared by XYZDecorator and ZDecorator."""
+    unit_scale = ifcopenshell.util.unit.calculate_unit_scale(tool.Ifc.get())
+    project_units = [c / unit_scale for c in point]
+    enh = tool.Georeference.xyz2enh(project_units, should_return_in_map_units=False)
+    return Vector([c * unit_scale for c in enh])
+
+
+class XYZDecorator(tool.Blender.ViewportDecorator):
+    """Persistent point markers showing true (false-origin-corrected) X/Y/Z in metres.
+
+    Unlike BMeasureDecorator, placed points are meant to stay visible after the
+    tool itself exits (ESC/RIGHTMOUSE) — they're cleared explicitly via
+    ``bim.clear_xyz_points``, not implicitly on tool exit. See XYZTool.
+    """
+
+    draw_methods = (
+        ("draw_geometry", "POST_VIEW"),
+        ("draw_text", "POST_PIXEL"),
+    )
+    points: list = []
+    cursor = None
+
+    _COLOR_POINT = (0.3, 0.9, 0.5)
+    _COLOR_CURSOR = (1.0, 1.0, 1.0)
+
+    @classmethod
+    def update(cls, points, cursor):
+        cls.points = points
+        cls.cursor = cursor
+
+    @classmethod
+    def clear(cls):
+        cls.points = []
+        cls.cursor = None
+
+    def draw_geometry(self, context):
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("NONE")
+
+        point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        point_shader.bind()
+        gpu.state.point_size_set(8)
+
+        for point in XYZDecorator.points:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [point]})
+            point_shader.uniform_float("color", (*self._COLOR_POINT, 1.0))
+            batch.draw(point_shader)
+
+        if XYZDecorator.cursor is not None:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [XYZDecorator.cursor]})
+            point_shader.uniform_float("color", (*self._COLOR_CURSOR, 1.0))
+            batch.draw(point_shader)
+
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("LESS_EQUAL")
+
+    def draw_text(self, context):
+        region = context.region
+        rv3d = region.data
+
+        font_id = 0
+        blf.size(font_id, 14)
+        blf.enable(font_id, blf.SHADOW)
+        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
+        blf.shadow_offset(font_id, 1, -1)
+
+        def draw_label(pos_3d, color):
+            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
+            if not screen_co:
+                return
+            true_pos = _true_coords(pos_3d)
+            text = f"X: {true_pos.x:.3f}  Y: {true_pos.y:.3f}  Z: {true_pos.z:.3f}"
+            blf.color(font_id, *color, 1.0)
+            blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
+            blf.draw(font_id, text)
+
+        for point in XYZDecorator.points:
+            draw_label(point, self._COLOR_POINT)
+        if XYZDecorator.cursor is not None:
+            draw_label(XYZDecorator.cursor, self._COLOR_CURSOR)
+
+        blf.disable(font_id, blf.SHADOW)
+
+
+class ZDecorator(tool.Blender.ViewportDecorator):
+    """Persistent point markers showing only true Z, formatted as "+42,22m" —
+    comma decimal, explicit sign, no label. Same placement/persistence model as
+    XYZDecorator (see ZTool)."""
+
+    draw_methods = (
+        ("draw_geometry", "POST_VIEW"),
+        ("draw_text", "POST_PIXEL"),
+    )
+    points: list = []
+    cursor = None
+
+    _COLOR_POINT = (0.3, 0.9, 0.5)
+    _COLOR_CURSOR = (1.0, 1.0, 1.0)
+
+    @classmethod
+    def update(cls, points, cursor):
+        cls.points = points
+        cls.cursor = cursor
+
+    @classmethod
+    def clear(cls):
+        cls.points = []
+        cls.cursor = None
+
+    @staticmethod
+    def _fmt_z(z: float) -> str:
+        sign = "+" if z >= 0 else "-"
+        return f"{sign}{abs(z):.2f}m".replace(".", ",")
+
+    def draw_geometry(self, context):
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("NONE")
+
+        point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        point_shader.bind()
+        gpu.state.point_size_set(8)
+
+        for point in ZDecorator.points:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [point]})
+            point_shader.uniform_float("color", (*self._COLOR_POINT, 1.0))
+            batch.draw(point_shader)
+
+        if ZDecorator.cursor is not None:
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [ZDecorator.cursor]})
+            point_shader.uniform_float("color", (*self._COLOR_CURSOR, 1.0))
+            batch.draw(point_shader)
+
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("LESS_EQUAL")
+
+    def draw_text(self, context):
+        region = context.region
+        rv3d = region.data
+
+        font_id = 0
+        blf.size(font_id, 14)
+        blf.enable(font_id, blf.SHADOW)
+        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
+        blf.shadow_offset(font_id, 1, -1)
+
+        def draw_label(pos_3d, color):
+            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
+            if not screen_co:
+                return
+            true_z = _true_coords(pos_3d).z
+            blf.color(font_id, *color, 1.0)
+            blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
+            blf.draw(font_id, self._fmt_z(true_z))
+
+        for point in ZDecorator.points:
+            draw_label(point, self._COLOR_POINT)
+        if ZDecorator.cursor is not None:
+            draw_label(ZDecorator.cursor, self._COLOR_CURSOR)
 
         blf.disable(font_id, blf.SHADOW)
 

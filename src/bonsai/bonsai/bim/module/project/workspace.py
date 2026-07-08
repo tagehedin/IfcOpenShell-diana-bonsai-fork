@@ -41,6 +41,8 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         ("bim.explore_hotkey", {"type": "M", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_M")]}),
         ("bim.explore_hotkey", {"type": "L", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_L")]}),
         ("bim.explore_hotkey", {"type": "B", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_B")]}),
+        ("bim.explore_hotkey", {"type": "X", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_X")]}),
+        ("bim.explore_hotkey", {"type": "Z", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_Z")]}),
         ("bim.explore_hotkey", {"type": "S", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_S")]}),
         ("bim.explore_hotkey", {"type": "H", "value": "PRESS"}, {"properties": [("hotkey", "H")]}),
         ("bim.explore_hotkey", {"type": "H", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_H")]}),
@@ -63,6 +65,16 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="B Measure")
         op.hotkey = "S_B"
+
+        row = layout.row(align=True)
+        op = row.operator("bim.explore_hotkey", text="XYZ")
+        op.hotkey = "S_X"
+        row.operator("bim.clear_xyz_points", text="", icon="X")
+
+        row = layout.row(align=True)
+        op = row.operator("bim.explore_hotkey", text="Z")
+        op.hotkey = "S_Z"
+        row.operator("bim.clear_z_points", text="", icon="X")
 
         # --- Navigation / viewport ---
         row = layout.row(align=True)
@@ -150,6 +162,12 @@ class ExploreHotkey(bpy.types.Operator):
 
     def hotkey_S_B(self):
         bpy.ops.bim.b_measure_tool("INVOKE_DEFAULT")
+
+    def hotkey_S_X(self):
+        bpy.ops.bim.xyz_tool("INVOKE_DEFAULT")
+
+    def hotkey_S_Z(self):
+        bpy.ops.bim.z_tool("INVOKE_DEFAULT")
 
     def hotkey_S_S(self):
         active_obj = bpy.context.active_object
