@@ -294,8 +294,8 @@ class Link(PropertyGroup):
     )
     detect_pipe_duct_profiles: BoolProperty(
         name="Detect Pipe/Duct Profiles",
-        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
-        default=True,
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files (roughly doubles it), off by default, turn on when you need it",
+        default=False,
         options=set(),
     )
 

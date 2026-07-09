@@ -1550,8 +1550,8 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
     )
     detect_pipe_duct_profiles: bpy.props.BoolProperty(
         name="Detect Pipe/Duct Profiles",
-        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
-        default=True,
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files (roughly doubles it), off by default, turn on when you need it",
+        default=False,
     )
 
     filename_ext = ".ifc"
@@ -1701,7 +1701,7 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
     link_index: bpy.props.IntProperty(name="Link Index")
     use_cache: bpy.props.BoolProperty(name="Use Cache", default=True)
     query: bpy.props.StringProperty()
-    detect_pipe_duct_profiles: bpy.props.BoolProperty(name="Detect Pipe/Duct Profiles", default=True)
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(name="Detect Pipe/Duct Profiles", default=False)
 
     if TYPE_CHECKING:
         link_index: int
@@ -1906,8 +1906,8 @@ class ReloadLink(bpy.types.Operator):
     )
     detect_pipe_duct_profiles: bpy.props.BoolProperty(
         name="Detect Pipe/Duct Profiles",
-        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files, safe to turn off for architecture-only links",
-        default=True,
+        description="Scan the link for circular/rectangular pipe and duct cross-sections so BMeasure can snap to their center — costs extra time on load for MEP-heavy files (roughly doubles it), off by default, turn on when you need it",
+        default=False,
     )
 
     if TYPE_CHECKING:
@@ -2572,7 +2572,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
 
     query: bpy.props.StringProperty()
     """See ``bim.link_ifc``."""
-    detect_pipe_duct_profiles: bpy.props.BoolProperty(default=True)
+    detect_pipe_duct_profiles: bpy.props.BoolProperty(default=False)
     """See ``bim.link_ifc``."""
 
     if TYPE_CHECKING:

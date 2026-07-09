@@ -286,7 +286,7 @@ class Patcher(ifcpatch.BasePatcher):
         self,
         file: ifcopenshell.file,
         logger: logging.Logger | None = None,
-        detect_pipe_duct_profiles: bool = True,
+        detect_pipe_duct_profiles: bool = False,
     ):
         """Extracts properties and relationships from a IFC-SPF model to SQLite.
 
@@ -294,11 +294,12 @@ class Patcher(ifcpatch.BasePatcher):
         value pairs.
 
         :param detect_pipe_duct_profiles: Whether to populate the ``circular_profiles``/
-            ``rectangular_profiles`` tables at all. Skipping this avoids the mesh-fit
-            fallback's per-element ``ifcopenshell.geom.create_shape`` calls entirely — the
-            main cost of this recipe on files with lots of no-profile flow elements — so
-            it's worth turning off for links that are known to have no pipes/ducts (e.g.
-            pure architecture files) where the detection would never find anything anyway.
+            ``rectangular_profiles`` tables at all. Off by default — the mesh-fit
+            fallback's per-element ``ifcopenshell.geom.create_shape`` calls are the main
+            cost of this recipe on files with lots of no-profile flow elements (measured
+            ~2x total link load time on a real MEP file), so callers opt in explicitly
+            when they actually need pipe/duct center-snapping rather than paying for it
+            on every link regardless of whether it has any pipes/ducts at all.
 
         Example:
 
