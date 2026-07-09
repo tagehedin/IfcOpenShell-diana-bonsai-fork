@@ -280,13 +280,17 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
     uninstall — see XYZDecorator's docstring for why (persistence model
     shared across Laser/BMeasure/XYZ/Z)."""
 
-    draw_methods = (
-        ("draw_geometry", "POST_VIEW"),
-        ("draw_text", "POST_PIXEL"),
-    )
+    # No POST_PIXEL entry — text for all four measurement tools is drawn by
+    # the shared AllToolsTextDecorator (see gather_labels below).
+    draw_methods = (("draw_geometry", "POST_VIEW"),)
     origin = None  # Vector — live hover face hit point, or None
     axes = []  # live hover: list of (hit_point: Vector, color: tuple)
     widgets: list = []  # committed readings: [(origin: Vector, axes: list), ...]
+
+    # Z (face-normal) ray's line stays this darker blue; its text label is
+    # brightened to _COLOR_Z_TEXT below — must match LaserTool._COLORS[4]/[5].
+    _COLOR_Z_LINE = (0.25, 0.50, 1.0)
+    _COLOR_Z_TEXT = (0.73, 0.88, 1.0)  # same bright blue as BMeasureDecorator._COLOR_Z_TEXT
 
     @classmethod
     def uninstall(cls):
@@ -355,44 +359,33 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
-    def draw_text(self, context):
-        if not LaserDecorator.widgets and not (LaserDecorator.origin and LaserDecorator.axes):
-            return
-
-        region = context.region
-        rv3d = region.data
-
-        font_id = 0
-        blf.size(font_id, 14)
-        blf.enable(font_id, blf.SHADOW)
-        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
-        blf.shadow_offset(font_id, 1, -1)
+    @classmethod
+    def gather_labels(cls, context) -> list:
+        """(pos_3d, color, text) for every label this decorator would draw —
+        see BMeasureDecorator.gather_labels for the full explanation."""
+        if not cls.widgets and not (cls.origin and cls.axes):
+            return []
 
         unit_system = context.scene.unit_settings.system
 
-        def draw_one(axes):
+        def fmt(distance):
+            if unit_system == "IMPERIAL":
+                return f"{distance * 3.28084:.3f}'"
+            return f"{distance:.3f} m" if distance >= 1.0 else f"{distance * 1000:.0f} mm"
+
+        labels = []
+
+        def collect(axes):
             for pt_a, pt_b, color in axes:
-                distance = (pt_b - pt_a).length
-                if unit_system == "IMPERIAL":
-                    text = f"{distance * 3.28084:.3f}'"
-                elif distance >= 1.0:
-                    text = f"{distance:.3f} m"
-                else:
-                    text = f"{distance * 1000:.0f} mm"
+                text_color = cls._COLOR_Z_TEXT if color == cls._COLOR_Z_LINE else color
+                labels.append(((pt_a + pt_b) / 2, text_color, fmt((pt_b - pt_a).length)))
 
-                midpoint = (pt_a + pt_b) / 2
-                screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, midpoint)
-                if screen_co:
-                    blf.color(font_id, *color, 1.0)
-                    blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-                    blf.draw(font_id, text)
+        for _origin, axes in cls.widgets:
+            collect(axes)
+        if cls.origin and cls.axes:
+            collect(cls.axes)
 
-        for _origin, axes in LaserDecorator.widgets:
-            draw_one(axes)
-        if LaserDecorator.origin and LaserDecorator.axes:
-            draw_one(LaserDecorator.axes)
-
-        blf.disable(font_id, blf.SHADOW)
+        return labels
 
 
 class BMeasureDecorator(tool.Blender.ViewportDecorator):
@@ -404,10 +397,11 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     ``bim.delete_last_bmeasure_widget`` / ``bim.all_widgets_off``, not on
     uninstall."""
 
-    draw_methods = (
-        ("draw_geometry", "POST_VIEW"),
-        ("draw_text", "POST_PIXEL"),
-    )
+    # No POST_PIXEL entry here — text for all four measurement tools is drawn
+    # by the shared AllToolsTextDecorator (see gather_labels below), so labels
+    # from different tools sitting close together can be deconflicted together
+    # instead of each decorator drawing its own text independently.
+    draw_methods = (("draw_geometry", "POST_VIEW"),)
     widgets: list = []  # committed: [{"p1","p2","p1_pipe","p2_pipe","p1_duct","p2_duct"}, ...]
     point1 = None  # in-progress start point, or None
     cursor = None  # live hover point
@@ -422,7 +416,8 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
 
     _COLOR_X = (0.9, 0.25, 0.25)
     _COLOR_Y = (0.25, 0.85, 0.25)
-    _COLOR_Z = (0.25, 0.50, 1.0)
+    _COLOR_Z = (0.25, 0.50, 1.0)  # darker blue — kept for the drawn line
+    _COLOR_Z_TEXT = (0.73, 0.88, 1.0)  # lighter/brighter blue, halfway to white — used for the "Z:" label only
     _COLOR_TOTAL = (1.0, 1.0, 1.0)
     _COLOR_PIPE = (1.0, 0.65, 0.0)
     _PIPE_CIRCLE_SEGMENTS = 32
@@ -571,12 +566,15 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
-    def draw_text(self, context):
-        if not BMeasureDecorator.widgets and BMeasureDecorator.point1 is None and BMeasureDecorator.cursor is None:
-            return
+    @classmethod
+    def gather_labels(cls, context) -> list:
+        """(pos_3d, color, text) for every label this decorator would draw —
+        consumed by AllToolsTextDecorator, which collects these from all four
+        measurement tools and deconflicts them together in one pass (see
+        _deconflict_and_draw). No drawing happens here."""
+        if not cls.widgets and cls.point1 is None and cls.cursor is None:
+            return []
 
-        region = context.region
-        rv3d = region.data
         unit_system = context.scene.unit_settings.system
 
         def fmt(dist):
@@ -584,63 +582,273 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 return f"{dist * 3.28084:.3f}'"
             return f"{dist:.3f} m" if dist >= 1.0 else f"{dist * 1000:.0f} mm"
 
-        font_id = 0
-        blf.size(font_id, 14)
-        blf.enable(font_id, blf.SHADOW)
-        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
-        blf.shadow_offset(font_id, 1, -1)
+        labels = []
 
-        def draw_label(pos_3d, color, text):
-            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
-            if screen_co:
-                blf.color(font_id, *color, 1.0)
-                blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-                blf.draw(font_id, text)
-
-        def draw_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+        def collect_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
             # Pipe diameter/duct WxH are always shown in mm regardless of magnitude,
             # unlike the X/Y/Z/d auto-scaling `fmt()` above — more useful for typical
             # pipe/duct sizes.
             if p1 is not None and p1_pipe is not None:
                 radius, _axis = p1_pipe
-                draw_label(p1, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
+                labels.append((p1, cls._COLOR_PIPE, f"d: {radius * 2 * 1000:.0f} mm"))
             if p2 is not None and p2_pipe is not None:
                 radius, _axis = p2_pipe
-                draw_label(p2, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
+                labels.append((p2, cls._COLOR_PIPE, f"d: {radius * 2 * 1000:.0f} mm"))
             if p1 is not None and p1_duct is not None:
                 width, height, _axis, _ortho = p1_duct
-                draw_label(p1, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
+                labels.append((p1, cls._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm"))
             if p2 is not None and p2_duct is not None:
                 width, height, _axis, _ortho = p2_duct
-                draw_label(p2, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
+                labels.append((p2, cls._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm"))
 
-            if p1 is None or p2 is None:
+            if p1 is not None and p2 is not None:
+                corner_a = Vector((p2.x, p1.y, p1.z))
+                corner_b = Vector((p2.x, p2.y, p1.z))
+
+                labels.append(((p1 + corner_a) / 2, cls._COLOR_X, f"X: {fmt(abs(p2.x - p1.x))}"))
+                labels.append(((corner_a + corner_b) / 2, cls._COLOR_Y, f"Y: {fmt(abs(p2.y - p1.y))}"))
+                labels.append(((corner_b + p2) / 2, cls._COLOR_Z_TEXT, f"Z: {fmt(abs(p2.z - p1.z))}"))
+
+                # "d:" (total distance) sits a third of the way down from whichever
+                # of p1/p2 is higher in world Z, rather than at the line's
+                # midpoint — reads as a callout near the top of the run instead of
+                # competing for the same visual centre as the X/Y/Z labels above.
+                top, bottom = (p1, p2) if p1.z >= p2.z else (p2, p1)
+                labels.append((top + (bottom - top) / 3, cls._COLOR_TOTAL, f"d: {fmt((p2 - p1).length)}"))
+
+        for w in cls.widgets:
+            collect_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
+        collect_one(cls.point1, cls.cursor, cls.point1_pipe, cls.cursor_pipe, cls.point1_duct, cls.cursor_duct)
+
+        return labels
+
+
+class DIMDecorator(tool.Blender.ViewportDecorator):
+    """Gold running-dimension tool. The first click anchors a point on a face
+    and fixes the line's direction to that face's normal; every later click
+    picks another face and adds the point where that same fixed line crosses
+    that face's (infinite) plane — see DIMTool. The plane itself is never
+    drawn, only the resulting line/points/length labels.
+
+    ``points`` is always kept sorted by distance-along-the-line from
+    ``anchor`` (see ``sorted_insert``), not by click order — a point that
+    lands between two already-placed points splits that segment into two
+    instead of extending the string, so e.g. clicking 0mm, then 4000mm, then
+    2000mm yields two 2000mm segments rather than a 4000mm then a -2000mm.
+
+    ``widgets`` holds committed strings (persist after the tool exits — at
+    least 2 points each, i.e. at least one segment); ``anchor``/
+    ``direction``/``points`` is the live in-progress string, reset (not
+    necessarily committed) on a first ESC/ENTER rather than uninstall — see
+    DIMTool.modal. ``preview_point`` is the live hover target for the next
+    point. Cleared explicitly via ``bim.delete_last_dim_widget`` /
+    ``bim.all_widgets_off``."""
+
+    # No POST_PIXEL entry — text for all measurement tools is drawn by the
+    # shared AllToolsTextDecorator (see gather_labels below).
+    draw_methods = (("draw_geometry", "POST_VIEW"),)
+    widgets: list = []  # committed: [{"points": [Vector, ...]}, ...], >= 2 points each, sorted along the line
+    anchor = None  # Vector — first point of the in-progress string, or None
+    direction = None  # Vector — unit normal fixing the in-progress line's direction
+    points: list = []  # in-progress points, sorted by distance-along-the-line from anchor
+    preview_point = None  # live hover target for the next point, or None
+
+    _COLOR = (1.0, 0.84, 0.0)  # gold
+    # How far to draw the reference line before any face has been picked yet —
+    # nothing is truly infinite in a GPU draw call, so this just needs to be
+    # comfortably longer than any real building.
+    _PREVIEW_LENGTH = 10000.0
+
+    @classmethod
+    def update(cls, anchor, direction, points, preview_point):
+        cls.anchor = anchor
+        cls.direction = direction
+        cls.points = points
+        cls.preview_point = preview_point
+
+    @classmethod
+    def _t(cls, point: Vector) -> float:
+        return (point - cls.anchor).dot(cls.direction)
+
+    @classmethod
+    def sorted_insert(cls, points: list, point: Vector) -> "tuple[list, int]":
+        """New list with ``point`` inserted at its position along the line
+        (by distance from anchor along direction) — splits whichever
+        existing segment it falls inside instead of always appending at the
+        end. Returns ``(new_list, insertion_index)``."""
+        t = cls._t(point)
+        idx = len(points)
+        for i, existing in enumerate(points):
+            if t < cls._t(existing):
+                idx = i
+                break
+        result = list(points)
+        result.insert(idx, point)
+        return result, idx
+
+    @classmethod
+    def commit(cls):
+        if len(cls.points) >= 2:
+            cls.widgets.append({"points": list(cls.points)})
+        cls.anchor = None
+        cls.direction = None
+        cls.points = []
+        cls.preview_point = None
+
+    @classmethod
+    def delete_last(cls):
+        if cls.widgets:
+            cls.widgets.pop()
+
+    @classmethod
+    def clear(cls):
+        cls.widgets = []
+        cls.anchor = None
+        cls.direction = None
+        cls.points = []
+        cls.preview_point = None
+
+    def draw_geometry(self, context):
+        if not DIMDecorator.widgets and not DIMDecorator.points:
+            return
+
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("NONE")
+
+        point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
+        line_shader.bind()
+        line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
+        line_shader.uniform_float("lineWidth", 2.0)
+
+        def draw_polyline(points, alpha=0.9):
+            if len(points) < 2:
                 return
+            line_shader.bind()
+            batch = batch_for_shader(line_shader, "LINE_STRIP", {"pos": points})
+            line_shader.uniform_float("color", (*self._COLOR, alpha))
+            batch.draw(line_shader)
 
-            corner_a = Vector((p2.x, p1.y, p1.z))
-            corner_b = Vector((p2.x, p2.y, p1.z))
+            point_shader.bind()
+            gpu.state.point_size_set(6)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": points})
+            point_shader.uniform_float("color", (*self._COLOR, 1.0))
+            batch.draw(point_shader)
 
-            items = [
-                (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(p2.x - p1.x))}"),
-                (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(p2.y - p1.y))}"),
-                (corner_b, p2, self._COLOR_Z, f"Z: {fmt(abs(p2.z - p1.z))}"),
-                (p1, p2, self._COLOR_TOTAL, f"d: {fmt((p2 - p1).length)}"),
-            ]
-            for pt_a, pt_b, color, text in items:
-                draw_label((pt_a + pt_b) / 2, color, text)
+        for w in DIMDecorator.widgets:
+            draw_polyline(w["points"])
 
-        for w in BMeasureDecorator.widgets:
-            draw_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
-        draw_one(
-            BMeasureDecorator.point1,
-            BMeasureDecorator.cursor,
-            BMeasureDecorator.point1_pipe,
-            BMeasureDecorator.cursor_pipe,
-            BMeasureDecorator.point1_duct,
-            BMeasureDecorator.cursor_duct,
-        )
+        pts = DIMDecorator.points
+        if len(pts) == 1 and DIMDecorator.direction is not None:
+            # No face picked yet — draw the long bidirectional reference line.
+            anchor = pts[0]
+            d = DIMDecorator.direction
+            line_shader.bind()
+            batch = batch_for_shader(
+                line_shader,
+                "LINES",
+                {"pos": [anchor - d * self._PREVIEW_LENGTH, anchor + d * self._PREVIEW_LENGTH]},
+            )
+            line_shader.uniform_float("color", (*self._COLOR, 0.35))
+            batch.draw(line_shader)
 
-        blf.disable(font_id, blf.SHADOW)
+            point_shader.bind()
+            gpu.state.point_size_set(6)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [anchor]})
+            point_shader.uniform_float("color", (*self._COLOR, 1.0))
+            batch.draw(point_shader)
+        elif len(pts) >= 2:
+            draw_polyline(pts)
+
+        if DIMDecorator.preview_point is not None and pts:
+            # Draw only the 1-2 segments the preview point would actually
+            # create if committed now (it may split an existing segment
+            # rather than extend the string — see sorted_insert), at reduced
+            # alpha to read as not-yet-committed.
+            display, idx = DIMDecorator.sorted_insert(pts, DIMDecorator.preview_point)
+            if idx > 0:
+                draw_polyline([display[idx - 1], display[idx]], alpha=0.5)
+            if idx < len(display) - 1:
+                draw_polyline([display[idx], display[idx + 1]], alpha=0.5)
+
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("LESS_EQUAL")
+
+    @classmethod
+    def gather_labels(cls, context) -> list:
+        """(pos_3d, color, text) for every segment-length label — length in
+        mm regardless of magnitude (matches the pipe/duct labels elsewhere,
+        more useful than auto-scaling for typical dimension-string spans).
+        See BMeasureDecorator.gather_labels for the full explanation."""
+        if not cls.widgets and not cls.points:
+            return []
+
+        labels = []
+
+        def collect(points):
+            for a, b in zip(points, points[1:]):
+                mid = (a + b) / 2
+                labels.append((mid, cls._COLOR, f"{(b - a).length * 1000:.0f} mm"))
+
+        for w in cls.widgets:
+            collect(w["points"])
+        collect(cls.points)
+        if cls.preview_point is not None and cls.points:
+            # Same split-aware logic as draw_geometry's preview segments —
+            # label only the 1-2 segments the preview point would create.
+            display, idx = cls.sorted_insert(cls.points, cls.preview_point)
+            if idx > 0:
+                collect([display[idx - 1], display[idx]])
+            if idx < len(display) - 1:
+                collect([display[idx], display[idx + 1]])
+
+        return labels
+
+
+def _deconflict_and_draw(font_id, region, rv3d, labels) -> None:
+    """Project each (pos_3d, color, text) to screen space, measure its actual
+    pixel footprint via blf.dimensions, then nudge any that would overlap
+    apart vertically before drawing. Shared by AllToolsTextDecorator, which
+    collects labels from all four measurement tools (Laser, BMeasure, XYZ, Z)
+    and calls this once per frame — so widgets from different tools sitting
+    close together in the viewport get deconflicted against each other too,
+    not just within one tool's own widgets."""
+    placed = []
+    for pos_3d, color, text in labels:
+        screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
+        if screen_co is None:
+            continue
+        w, h = blf.dimensions(font_id, text)
+        placed.append({"x": screen_co.x + 5, "y": screen_co.y + 5, "w": w, "h": h, "color": color, "text": text})
+
+    pad = 4
+    for _ in range(6):
+        moved = False
+        for i in range(len(placed)):
+            for j in range(i + 1, len(placed)):
+                a, b = placed[i], placed[j]
+                if (
+                    a["x"] < b["x"] + b["w"] + pad
+                    and a["x"] + a["w"] + pad > b["x"]
+                    and a["y"] < b["y"] + b["h"] + pad
+                    and a["y"] + a["h"] + pad > b["y"]
+                ):
+                    overlap_y = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"]) + pad
+                    shift = overlap_y / 2 + 1
+                    if a["y"] <= b["y"]:
+                        a["y"] -= shift
+                        b["y"] += shift
+                    else:
+                        a["y"] += shift
+                        b["y"] -= shift
+                    moved = True
+        if not moved:
+            break
+
+    for item in placed:
+        blf.color(font_id, *item["color"], 1.0)
+        blf.position(font_id, item["x"], item["y"], 0)
+        blf.draw(font_id, item["text"])
 
 
 def _true_coords(point: Vector) -> Vector:
@@ -670,15 +878,15 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
     recomputation.
     """
 
-    draw_methods = (
-        ("draw_geometry", "POST_VIEW"),
-        ("draw_text", "POST_PIXEL"),
-    )
+    # No POST_PIXEL entry — text for all four measurement tools is drawn by
+    # the shared AllToolsTextDecorator (see gather_labels below).
+    draw_methods = (("draw_geometry", "POST_VIEW"),)
     points: list = []  # [(Vector, str), ...]
     cursor = None
 
     _COLOR_POINT = (0.3, 0.9, 0.5)
     _COLOR_CURSOR = (1.0, 1.0, 1.0)
+    _COLOR_TEXT = (1.0, 1.0, 1.0)  # labels always white for readability, regardless of marker color
 
     @classmethod
     def update(cls, points, cursor):
@@ -721,30 +929,14 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
-    def draw_text(self, context):
-        region = context.region
-        rv3d = region.data
-
-        font_id = 0
-        blf.size(font_id, 14)
-        blf.enable(font_id, blf.SHADOW)
-        blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
-        blf.shadow_offset(font_id, 1, -1)
-
-        def draw_label(pos_3d, text, color):
-            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
-            if not screen_co:
-                return
-            blf.color(font_id, *color, 1.0)
-            blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-            blf.draw(font_id, text)
-
-        for point, text in XYZDecorator.points:
-            draw_label(point, text, self._COLOR_POINT)
-        if XYZDecorator.cursor is not None:
-            draw_label(XYZDecorator.cursor, self.label_text(XYZDecorator.cursor), self._COLOR_CURSOR)
-
-        blf.disable(font_id, blf.SHADOW)
+    @classmethod
+    def gather_labels(cls, context) -> list:
+        """(pos_3d, color, text) for every label this decorator would draw —
+        see BMeasureDecorator.gather_labels for the full explanation."""
+        labels = [(point, cls._COLOR_TEXT, text) for point, text in cls.points]
+        if cls.cursor is not None:
+            labels.append((cls.cursor, cls._COLOR_TEXT, cls.label_text(cls.cursor)))
+        return labels
 
 
 class ZDecorator(tool.Blender.ViewportDecorator):
@@ -753,15 +945,15 @@ class ZDecorator(tool.Blender.ViewportDecorator):
     XYZDecorator (see ZTool), including the same cached-label-text fix (see
     XYZDecorator's docstring)."""
 
-    draw_methods = (
-        ("draw_geometry", "POST_VIEW"),
-        ("draw_text", "POST_PIXEL"),
-    )
+    # No POST_PIXEL entry — text for all four measurement tools is drawn by
+    # the shared AllToolsTextDecorator (see gather_labels below).
+    draw_methods = (("draw_geometry", "POST_VIEW"),)
     points: list = []  # [(Vector, str), ...]
     cursor = None
 
-    _COLOR_POINT = (0.3, 0.9, 0.5)
+    _COLOR_POINT = (0.25, 0.50, 1.0)  # same blue used for Z elsewhere (BMeasureDecorator._COLOR_Z, Laser's normal ray)
     _COLOR_CURSOR = (1.0, 1.0, 1.0)
+    _COLOR_TEXT = (0.73, 0.88, 1.0)  # same bright blue as BMeasureDecorator._COLOR_Z_TEXT
 
     @classmethod
     def update(cls, points, cursor):
@@ -808,9 +1000,39 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
+    @classmethod
+    def gather_labels(cls, context) -> list:
+        """(pos_3d, color, text) for every label this decorator would draw —
+        see BMeasureDecorator.gather_labels for the full explanation."""
+        labels = [(point, cls._COLOR_TEXT, text) for point, text in cls.points]
+        if cls.cursor is not None:
+            labels.append((cls.cursor, cls._COLOR_TEXT, cls.label_text(cls.cursor)))
+        return labels
+
+
+class AllToolsTextDecorator(tool.Blender.ViewportDecorator):
+    """Single shared POST_PIXEL pass that collects text labels from all five
+    measurement tools (Laser, BMeasure, DIM, XYZ, Z) and deconflicts them
+    together — see _deconflict_and_draw. Installed alongside each tool
+    (LaserTool, BMeasureTool, DIMTool, XYZTool, ZTool all call .install() on
+    this too, not just their own decorator), uninstalled only by
+    bim.all_widgets_off, matching the same persist-until-cleared model as the
+    others."""
+
+    draw_methods = (("draw_text", "POST_PIXEL"),)
+
     def draw_text(self, context):
         region = context.region
         rv3d = region.data
+
+        labels = []
+        labels.extend(LaserDecorator.gather_labels(context))
+        labels.extend(BMeasureDecorator.gather_labels(context))
+        labels.extend(DIMDecorator.gather_labels(context))
+        labels.extend(XYZDecorator.gather_labels(context))
+        labels.extend(ZDecorator.gather_labels(context))
+        if not labels:
+            return
 
         font_id = 0
         blf.size(font_id, 14)
@@ -818,18 +1040,7 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 0.8)
         blf.shadow_offset(font_id, 1, -1)
 
-        def draw_label(pos_3d, text, color):
-            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, pos_3d)
-            if not screen_co:
-                return
-            blf.color(font_id, *color, 1.0)
-            blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-            blf.draw(font_id, text)
-
-        for point, text in ZDecorator.points:
-            draw_label(point, text, self._COLOR_POINT)
-        if ZDecorator.cursor is not None:
-            draw_label(ZDecorator.cursor, self.label_text(ZDecorator.cursor), self._COLOR_CURSOR)
+        _deconflict_and_draw(font_id, region, rv3d, labels)
 
         blf.disable(font_id, blf.SHADOW)
 

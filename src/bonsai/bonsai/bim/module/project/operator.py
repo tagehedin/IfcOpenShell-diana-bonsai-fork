@@ -58,6 +58,7 @@ from bpy_extras.view3d_utils import (
     region_2d_to_vector_3d,
 )
 from mathutils import Vector
+from mathutils.geometry import intersect_line_plane
 
 import bonsai.bim.handler
 import bonsai.bim.helper
@@ -70,8 +71,10 @@ from bonsai.bim.module.model.decorator import FaceAreaDecorator, PolylineDecorat
 from bonsai.bim.module.model.polyline import PolylineOperator
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
 from bonsai.bim.module.project.decorator import (
+    AllToolsTextDecorator,
     BMeasureDecorator,
     ClippingPlaneDecorator,
+    DIMDecorator,
     LaserDecorator,
     MeasureDecorator,
     ProjectDecorator,
@@ -3919,6 +3922,7 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
 
     def invoke(self, context, event):
         BMeasureDecorator.install(context)
+        AllToolsTextDecorator.install(context)
         tool.Snap.clear_snapping_point()
         self.tool_state.use_default_container = False
         self.tool_state.axis_method = None
@@ -3928,6 +3932,120 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         tool.Blender.update_viewport()
         context.window_manager.modal_handler_add(self)
         self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
+        return {"RUNNING_MODAL"}
+
+
+class DIMTool(bpy.types.Operator):
+    bl_idname = "bim.dim_tool"
+    bl_label = "DIM"
+    bl_description = (
+        "Click a face to anchor a dimension line along its normal, then click other faces "
+        "to add points where that fixed line crosses their (infinite) plane, building a "
+        "running dimension string. ESC/ENTER keeps what you've built and starts a new "
+        "string from a new point; ESC/ENTER again exits. Strings stay placed until deleted."
+    )
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data.type == "VIEW_3D"
+
+    def invoke(self, context, event):
+        DIMDecorator.install(context)
+        AllToolsTextDecorator.install(context)
+        context.window_manager.modal_handler_add(self)
+        context.window.cursor_set("CROSSHAIR")
+        return {"RUNNING_MODAL"}
+
+    def _face_hit(self, context, event):
+        """Raycast under the mouse (clip-aware); (location, world_normal) or (None, None).
+
+        Deliberately recomputes the normal from the evaluated mesh polygon
+        (like LaserTool._update) rather than trusting the normal returned by
+        the raycast itself."""
+        depsgraph = context.evaluated_depsgraph_get()
+        try:
+            ray_origin, _, ray_direction = tool.Raycast.get_viewport_ray_data(context, event)
+        except Exception:
+            return None, None
+        hit, location, _, face_index, obj, matrix = tool.Raycast.visible_ray_cast(
+            context, depsgraph, ray_origin, ray_direction
+        )
+        if not hit or obj is None:
+            return None, None
+        try:
+            eval_mesh = obj.evaluated_get(depsgraph).data
+            polygon = eval_mesh.polygons[face_index]
+        except Exception:
+            return None, None
+        normal = (matrix.to_3x3() @ polygon.normal).normalized()
+        return location, normal
+
+    def _update_preview(self, context, event):
+        if not DIMDecorator.points:
+            return
+        location, normal = self._face_hit(context, event)
+        if location is None:
+            DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, None)
+            return
+        preview_point = intersect_line_plane(
+            DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, location, normal
+        )
+        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, preview_point)
+
+    def _add_point(self, context, event):
+        location, normal = self._face_hit(context, event)
+        if location is None:
+            return
+
+        if not DIMDecorator.points:
+            # First click: anchor the line, direction fixed by this face's normal.
+            DIMDecorator.update(location.copy(), normal.copy(), [location.copy()], None)
+            return
+
+        intersection = intersect_line_plane(
+            DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, location, normal
+        )
+        if intersection is None:
+            self.report({"ERROR"}, "No collision point found — that face's plane never crosses the line.")
+            return
+
+        # Inserted at its position along the line, not appended — a point
+        # landing between two existing ones splits that segment in two.
+        new_points, _idx = DIMDecorator.sorted_insert(DIMDecorator.points, intersection)
+        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, new_points, None)
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RET", "NUMPAD_ENTER"}:
+            if DIMDecorator.points:
+                # Keep what's built so far (if it has at least one segment)
+                # and stay active, ready to start a new string.
+                DIMDecorator.commit()
+                tool.Blender.update_viewport()
+                return {"RUNNING_MODAL"}
+            context.window.cursor_set("DEFAULT")
+            return {"CANCELLED"}
+
+        if event.type == "RIGHTMOUSE":
+            # Hard cancel, matching the other tools' RIGHTMOUSE convention —
+            # unlike ESC/ENTER above, this discards any in-progress string
+            # outright rather than committing it first.
+            DIMDecorator.update(None, None, [], None)
+            context.window.cursor_set("DEFAULT")
+            tool.Blender.update_viewport()
+            return {"CANCELLED"}
+
+        if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
+            return {"PASS_THROUGH"}
+
+        if event.type == "MOUSEMOVE":
+            self._update_preview(context, event)
+            tool.Blender.update_viewport()
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            self._add_point(context, event)
+            tool.Blender.update_viewport()
+
         return {"RUNNING_MODAL"}
 
 
@@ -4018,6 +4136,7 @@ class XYZTool(bpy.types.Operator, PolylineOperator):
 
     def invoke(self, context, event):
         XYZDecorator.install(context)
+        AllToolsTextDecorator.install(context)
         tool.Snap.clear_snapping_point()
         self.tool_state.use_default_container = False
         self.tool_state.axis_method = None
@@ -4135,6 +4254,7 @@ class ZTool(bpy.types.Operator, PolylineOperator):
 
     def invoke(self, context, event):
         ZDecorator.install(context)
+        AllToolsTextDecorator.install(context)
         tool.Snap.clear_snapping_point()
         self.tool_state.use_default_container = False
         self.tool_state.axis_method = None
@@ -4204,23 +4324,49 @@ class DeleteLastBMeasureWidget(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class AllWidgetsOff(bpy.types.Operator):
-    bl_idname = "bim.all_widgets_off"
-    bl_label = "ALL OFF"
-    bl_description = "Delete every placed Laser, B Measure, XYZ and Z widget, and turn off their viewport overlays"
+class DeleteLastDimWidget(bpy.types.Operator):
+    bl_idname = "bim.delete_last_dim_widget"
+    bl_label = "Delete Last DIM Widget"
+    bl_description = "Delete the most recently placed DIM dimension string"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
-        if LaserDecorator.widgets or BMeasureDecorator.widgets or XYZDecorator.points or ZDecorator.points:
+        if DIMDecorator.widgets:
+            return True
+        cls.poll_message_set("No DIM widgets to delete.")
+        return False
+
+    def execute(self, context):
+        DIMDecorator.delete_last()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
+
+
+class AllWidgetsOff(bpy.types.Operator):
+    bl_idname = "bim.all_widgets_off"
+    bl_label = "ALL OFF"
+    bl_description = "Delete every placed Laser, B Measure, DIM, XYZ and Z widget, and turn off their viewport overlays"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if (
+            LaserDecorator.widgets
+            or BMeasureDecorator.widgets
+            or DIMDecorator.widgets
+            or XYZDecorator.points
+            or ZDecorator.points
+        ):
             return True
         cls.poll_message_set("No widgets to clear.")
         return False
 
     def execute(self, context):
-        for decorator in (LaserDecorator, BMeasureDecorator, XYZDecorator, ZDecorator):
+        for decorator in (LaserDecorator, BMeasureDecorator, DIMDecorator, XYZDecorator, ZDecorator):
             decorator.clear()
             decorator.uninstall()
+        AllToolsTextDecorator.uninstall()
         tool.Blender.update_viewport()
         return {"FINISHED"}
 
@@ -4620,6 +4766,7 @@ class LaserTool(bpy.types.Operator):
 
     def invoke(self, context, event):
         LaserDecorator.install(context)
+        AllToolsTextDecorator.install(context)
         context.window_manager.modal_handler_add(self)
         context.window.cursor_set("CROSSHAIR")
         return {"RUNNING_MODAL"}
