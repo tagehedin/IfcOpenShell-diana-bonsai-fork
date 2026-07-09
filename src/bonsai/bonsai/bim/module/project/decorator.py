@@ -273,12 +273,20 @@ class ClippingPlaneDecorator:
 
 
 class LaserDecorator(tool.Blender.ViewportDecorator):
+    """``widgets`` holds committed readings (persist after the tool exits —
+    see LaserTool); ``origin``/``axes`` is the live hover preview, cleared on
+    exit but never committed unless the user clicks. Cleared explicitly via
+    ``bim.delete_last_laser_widget`` / ``bim.all_widgets_off``, not on
+    uninstall — see XYZDecorator's docstring for why (persistence model
+    shared across Laser/BMeasure/XYZ/Z)."""
+
     draw_methods = (
         ("draw_geometry", "POST_VIEW"),
         ("draw_text", "POST_PIXEL"),
     )
-    origin = None  # Vector — face hit point
-    axes = []  # list of (hit_point: Vector, color: tuple)
+    origin = None  # Vector — live hover face hit point, or None
+    axes = []  # live hover: list of (hit_point: Vector, color: tuple)
+    widgets: list = []  # committed readings: [(origin: Vector, axes: list), ...]
 
     @classmethod
     def uninstall(cls):
@@ -291,8 +299,24 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
         cls.origin = origin
         cls.axes = axes
 
+    @classmethod
+    def commit(cls):
+        if cls.origin is not None and cls.axes:
+            cls.widgets.append((cls.origin, cls.axes))
+
+    @classmethod
+    def delete_last(cls):
+        if cls.widgets:
+            cls.widgets.pop()
+
+    @classmethod
+    def clear(cls):
+        cls.widgets = []
+        cls.origin = None
+        cls.axes = []
+
     def draw_geometry(self, context):
-        if not LaserDecorator.origin or not LaserDecorator.axes:
+        if not LaserDecorator.widgets and not (LaserDecorator.origin and LaserDecorator.axes):
             return
 
         gpu.state.blend_set("ALPHA")
@@ -302,36 +326,41 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
         line_shader.bind()
         line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
         line_shader.uniform_float("lineWidth", 2.0)
-
         point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
 
-        for pt_a, pt_b, color in LaserDecorator.axes:
-            batch = batch_for_shader(line_shader, "LINES", {"pos": [pt_a, pt_b]})
-            line_shader.uniform_float("color", (*color, 0.9))
-            batch.draw(line_shader)
+        def draw_one(origin, axes):
+            line_shader.bind()
+            for pt_a, pt_b, color in axes:
+                batch = batch_for_shader(line_shader, "LINES", {"pos": [pt_a, pt_b]})
+                line_shader.uniform_float("color", (*color, 0.9))
+                batch.draw(line_shader)
 
-        point_shader.bind()
-        gpu.state.point_size_set(8)
-        batch = batch_for_shader(point_shader, "POINTS", {"pos": [LaserDecorator.origin]})
-        point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
-        batch.draw(point_shader)
-
-        gpu.state.point_size_set(5)
-        for pt_a, pt_b, color in LaserDecorator.axes:
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt_a, pt_b]})
-            point_shader.uniform_float("color", (*color, 1.0))
+            point_shader.bind()
+            gpu.state.point_size_set(8)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [origin]})
+            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
             batch.draw(point_shader)
+
+            gpu.state.point_size_set(5)
+            for pt_a, pt_b, color in axes:
+                batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt_a, pt_b]})
+                point_shader.uniform_float("color", (*color, 1.0))
+                batch.draw(point_shader)
+
+        for origin, axes in LaserDecorator.widgets:
+            draw_one(origin, axes)
+        if LaserDecorator.origin and LaserDecorator.axes:
+            draw_one(LaserDecorator.origin, LaserDecorator.axes)
 
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
     def draw_text(self, context):
-        if not LaserDecorator.origin or not LaserDecorator.axes:
+        if not LaserDecorator.widgets and not (LaserDecorator.origin and LaserDecorator.axes):
             return
 
         region = context.region
         rv3d = region.data
-        origin = LaserDecorator.origin
 
         font_id = 0
         blf.size(font_id, 14)
@@ -341,42 +370,54 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
 
         unit_system = context.scene.unit_settings.system
 
-        for pt_a, pt_b, color in LaserDecorator.axes:
-            distance = (pt_b - pt_a).length
-            if unit_system == "IMPERIAL":
-                text = f"{distance * 3.28084:.3f}'"
-            elif distance >= 1.0:
-                text = f"{distance:.3f} m"
-            else:
-                text = f"{distance * 1000:.0f} mm"
+        def draw_one(axes):
+            for pt_a, pt_b, color in axes:
+                distance = (pt_b - pt_a).length
+                if unit_system == "IMPERIAL":
+                    text = f"{distance * 3.28084:.3f}'"
+                elif distance >= 1.0:
+                    text = f"{distance:.3f} m"
+                else:
+                    text = f"{distance * 1000:.0f} mm"
 
-            midpoint = (pt_a + pt_b) / 2
-            screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, midpoint)
-            if screen_co:
-                blf.color(font_id, *color, 1.0)
-                blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
-                blf.draw(font_id, text)
+                midpoint = (pt_a + pt_b) / 2
+                screen_co = view3d_utils.location_3d_to_region_2d(region, rv3d, midpoint)
+                if screen_co:
+                    blf.color(font_id, *color, 1.0)
+                    blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
+                    blf.draw(font_id, text)
+
+        for _origin, axes in LaserDecorator.widgets:
+            draw_one(axes)
+        if LaserDecorator.origin and LaserDecorator.axes:
+            draw_one(LaserDecorator.axes)
 
         blf.disable(font_id, blf.SHADOW)
 
 
 class BMeasureDecorator(tool.Blender.ViewportDecorator):
+    """``widgets`` holds committed 2-point measurements (persist after the
+    tool exits — see BMeasureTool); ``point1``/``cursor`` is the live
+    in-progress widget (0 or 1 points placed so far). Once the 2nd point is
+    clicked, the pair is appended to ``widgets`` and ``point1`` resets to
+    None, ready for the next one. Cleared explicitly via
+    ``bim.delete_last_bmeasure_widget`` / ``bim.all_widgets_off``, not on
+    uninstall."""
+
     draw_methods = (
         ("draw_geometry", "POST_VIEW"),
         ("draw_text", "POST_PIXEL"),
     )
-    point1 = None
-    point2 = None
-    cursor = None
-    # Pipe/circular-profile metadata for each point above, as (radius, world_axis)
+    widgets: list = []  # committed: [{"p1","p2","p1_pipe","p2_pipe","p1_duct","p2_duct"}, ...]
+    point1 = None  # in-progress start point, or None
+    cursor = None  # live hover point
+    # Pipe/circular-profile metadata for point1/cursor above, as (radius, world_axis)
     # or None — see tool.Raycast.get_pipe_center_radius.
     point1_pipe = None
-    point2_pipe = None
     cursor_pipe = None
-    # Rectangular-duct metadata for each point above, as (width, height, world_axis,
+    # Rectangular-duct metadata for point1/cursor above, as (width, height, world_axis,
     # world_ortho) or None — see tool.Raycast.get_duct_center_dims.
     point1_duct = None
-    point2_duct = None
     cursor_duct = None
 
     _COLOR_X = (0.9, 0.25, 0.25)
@@ -387,33 +428,34 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     _PIPE_CIRCLE_SEGMENTS = 32
 
     @classmethod
-    def update(
-        cls,
-        point1,
-        point2,
-        cursor,
-        point1_pipe=None,
-        point2_pipe=None,
-        cursor_pipe=None,
-        point1_duct=None,
-        point2_duct=None,
-        cursor_duct=None,
-    ):
+    def update(cls, point1, cursor, point1_pipe=None, cursor_pipe=None, point1_duct=None, cursor_duct=None):
         cls.point1 = point1
-        cls.point2 = point2
         cls.cursor = cursor
         cls.point1_pipe = point1_pipe
-        cls.point2_pipe = point2_pipe
         cls.cursor_pipe = cursor_pipe
         cls.point1_duct = point1_duct
-        cls.point2_duct = point2_duct
         cls.cursor_duct = cursor_duct
 
-    def _target(self):
-        p1 = BMeasureDecorator.point1
-        p2 = BMeasureDecorator.point2 if p1 is not None else None
-        cursor = BMeasureDecorator.cursor
-        return p1, p2, cursor
+    @classmethod
+    def commit_widget(cls, p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+        cls.widgets.append(
+            {"p1": p1, "p2": p2, "p1_pipe": p1_pipe, "p2_pipe": p2_pipe, "p1_duct": p1_duct, "p2_duct": p2_duct}
+        )
+
+    @classmethod
+    def delete_last(cls):
+        if cls.widgets:
+            cls.widgets.pop()
+
+    @classmethod
+    def clear(cls):
+        cls.widgets = []
+        cls.point1 = None
+        cls.cursor = None
+        cls.point1_pipe = None
+        cls.cursor_pipe = None
+        cls.point1_duct = None
+        cls.cursor_duct = None
 
     @staticmethod
     def _circle_points(center: Vector, radius: float, axis: Vector, segments: int) -> list:
@@ -458,92 +500,80 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         batch.draw(line_shader)
 
     def draw_geometry(self, context):
-        p1, p2, cursor = self._target()
-        active = p2 if p2 is not None else cursor
-        active_pipe = BMeasureDecorator.point2_pipe if p2 is not None else BMeasureDecorator.cursor_pipe
+        if not BMeasureDecorator.widgets and BMeasureDecorator.point1 is None and BMeasureDecorator.cursor is None:
+            return
 
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
 
         point_shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-        point_shader.bind()
-
-        if active is not None:
-            gpu.state.point_size_set(8)
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [active]})
-            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
-            batch.draw(point_shader)
-
-        # Once a widget is complete (both points placed), `active` above is
-        # frozen on p2 so the finished measurement stays legible. Without
-        # this, there'd be no visible target for the next click at all —
-        # draw the still-live cursor separately so a new measurement can
-        # start right away.
-        if p2 is not None and cursor is not None:
-            gpu.state.point_size_set(8)
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [cursor]})
-            point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
-            batch.draw(point_shader)
-
-        # Pipe/circular-profile highlight — set up regardless of whether a full
-        # two-point widget exists yet, so just hovering a pipe (before any click)
-        # still shows its cross-section outline.
         line_shader = gpu.shader.from_builtin("POLYLINE_UNIFORM_COLOR")
         line_shader.bind()
         line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
-        line_shader.uniform_float("lineWidth", 2.0)
-        self._draw_pipe_circle(line_shader, p1, BMeasureDecorator.point1_pipe)
-        self._draw_pipe_circle(line_shader, active, active_pipe)
-        if p2 is not None:
-            self._draw_pipe_circle(line_shader, cursor, BMeasureDecorator.cursor_pipe)
 
-        active_duct = BMeasureDecorator.point2_duct if p2 is not None else BMeasureDecorator.cursor_duct
-        self._draw_duct_rect(line_shader, p1, BMeasureDecorator.point1_duct)
-        self._draw_duct_rect(line_shader, active, active_duct)
-        if p2 is not None:
-            self._draw_duct_rect(line_shader, cursor, BMeasureDecorator.cursor_duct)
+        def draw_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+            point_shader.bind()
+            gpu.state.point_size_set(8)
+            for pt in (p1, p2):
+                if pt is not None:
+                    batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt]})
+                    point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
+                    batch.draw(point_shader)
 
-        if p1 is None or active is None:
-            gpu.state.blend_set("NONE")
-            gpu.state.depth_test_set("LESS_EQUAL")
-            return
+            # Pipe/circular-profile highlight — set up regardless of whether a full
+            # two-point widget exists yet, so just hovering a pipe (before any click)
+            # still shows its cross-section outline.
+            line_shader.bind()
+            line_shader.uniform_float("lineWidth", 2.0)
+            self._draw_pipe_circle(line_shader, p1, p1_pipe)
+            self._draw_pipe_circle(line_shader, p2, p2_pipe)
+            self._draw_duct_rect(line_shader, p1, p1_duct)
+            self._draw_duct_rect(line_shader, p2, p2_duct)
 
-        corner_a = Vector((active.x, p1.y, p1.z))
-        corner_b = Vector((active.x, active.y, p1.z))
+            if p1 is None or p2 is None:
+                return
 
-        for pts, color in [
-            ([p1, corner_a], self._COLOR_X),
-            ([corner_a, corner_b], self._COLOR_Y),
-            ([corner_b, active], self._COLOR_Z),
-        ]:
-            batch = batch_for_shader(line_shader, "LINES", {"pos": pts})
-            line_shader.uniform_float("color", (*color, 0.9))
+            corner_a = Vector((p2.x, p1.y, p1.z))
+            corner_b = Vector((p2.x, p2.y, p1.z))
+
+            for pts, color in [
+                ([p1, corner_a], self._COLOR_X),
+                ([corner_a, corner_b], self._COLOR_Y),
+                ([corner_b, p2], self._COLOR_Z),
+            ]:
+                batch = batch_for_shader(line_shader, "LINES", {"pos": pts})
+                line_shader.uniform_float("color", (*color, 0.9))
+                batch.draw(line_shader)
+
+            line_shader.uniform_float("lineWidth", 1.0)
+            batch = batch_for_shader(line_shader, "LINES", {"pos": [p1, p2]})
+            line_shader.uniform_float("color", (*self._COLOR_TOTAL, 0.3))
             batch.draw(line_shader)
 
-        line_shader.uniform_float("lineWidth", 1.0)
-        batch = batch_for_shader(line_shader, "LINES", {"pos": [p1, active]})
-        line_shader.uniform_float("color", (*self._COLOR_TOTAL, 0.3))
-        batch.draw(line_shader)
+            point_shader.bind()
+            gpu.state.point_size_set(5)
+            for pt, color in [(corner_a, self._COLOR_X), (corner_b, self._COLOR_Y)]:
+                batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt]})
+                point_shader.uniform_float("color", (*color, 0.7))
+                batch.draw(point_shader)
 
-        point_shader.bind()
-        gpu.state.point_size_set(8)
-        batch = batch_for_shader(point_shader, "POINTS", {"pos": [p1]})
-        point_shader.uniform_float("color", (1.0, 1.0, 1.0, 1.0))
-        batch.draw(point_shader)
-
-        gpu.state.point_size_set(5)
-        for pt, color in [(corner_a, self._COLOR_X), (corner_b, self._COLOR_Y)]:
-            batch = batch_for_shader(point_shader, "POINTS", {"pos": [pt]})
-            point_shader.uniform_float("color", (*color, 0.7))
-            batch.draw(point_shader)
+        for w in BMeasureDecorator.widgets:
+            draw_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
+        draw_one(
+            BMeasureDecorator.point1,
+            BMeasureDecorator.cursor,
+            BMeasureDecorator.point1_pipe,
+            BMeasureDecorator.cursor_pipe,
+            BMeasureDecorator.point1_duct,
+            BMeasureDecorator.cursor_duct,
+        )
 
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("LESS_EQUAL")
 
     def draw_text(self, context):
-        p1, p2, cursor = self._target()
-        active = p2 if p2 is not None else cursor
-        active_pipe = BMeasureDecorator.point2_pipe if p2 is not None else BMeasureDecorator.cursor_pipe
+        if not BMeasureDecorator.widgets and BMeasureDecorator.point1 is None and BMeasureDecorator.cursor is None:
+            return
 
         region = context.region
         rv3d = region.data
@@ -567,43 +597,48 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 blf.position(font_id, screen_co.x + 5, screen_co.y + 5, 0)
                 blf.draw(font_id, text)
 
-        def draw_diameter_label(center, pipe):
-            # Pipe diameter is always shown in mm regardless of magnitude, unlike the
-            # X/Y/Z/d auto-scaling `fmt()` above — more useful for typical pipe sizes.
-            if center is None or pipe is None:
+        def draw_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+            # Pipe diameter/duct WxH are always shown in mm regardless of magnitude,
+            # unlike the X/Y/Z/d auto-scaling `fmt()` above — more useful for typical
+            # pipe/duct sizes.
+            if p1 is not None and p1_pipe is not None:
+                radius, _axis = p1_pipe
+                draw_label(p1, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
+            if p2 is not None and p2_pipe is not None:
+                radius, _axis = p2_pipe
+                draw_label(p2, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
+            if p1 is not None and p1_duct is not None:
+                width, height, _axis, _ortho = p1_duct
+                draw_label(p1, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
+            if p2 is not None and p2_duct is not None:
+                width, height, _axis, _ortho = p2_duct
+                draw_label(p2, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
+
+            if p1 is None or p2 is None:
                 return
-            radius, _axis = pipe
-            draw_label(center, self._COLOR_PIPE, f"d: {radius * 2 * 1000:.2f} mm")
 
-        def draw_duct_dims_label(center, duct):
-            if center is None or duct is None:
-                return
-            width, height, _axis, _ortho = duct
-            draw_label(center, self._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm")
-
-        draw_diameter_label(p1, BMeasureDecorator.point1_pipe)
-        draw_diameter_label(active, active_pipe)
-        if p2 is not None:
-            draw_diameter_label(cursor, BMeasureDecorator.cursor_pipe)
-
-        active_duct = BMeasureDecorator.point2_duct if p2 is not None else BMeasureDecorator.cursor_duct
-        draw_duct_dims_label(p1, BMeasureDecorator.point1_duct)
-        draw_duct_dims_label(active, active_duct)
-        if p2 is not None:
-            draw_duct_dims_label(cursor, BMeasureDecorator.cursor_duct)
-
-        if p1 is not None and active is not None:
-            corner_a = Vector((active.x, p1.y, p1.z))
-            corner_b = Vector((active.x, active.y, p1.z))
+            corner_a = Vector((p2.x, p1.y, p1.z))
+            corner_b = Vector((p2.x, p2.y, p1.z))
 
             items = [
-                (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(active.x - p1.x))}"),
-                (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(active.y - p1.y))}"),
-                (corner_b, active, self._COLOR_Z, f"Z: {fmt(abs(active.z - p1.z))}"),
-                (p1, active, self._COLOR_TOTAL, f"d: {fmt((active - p1).length)}"),
+                (p1, corner_a, self._COLOR_X, f"X: {fmt(abs(p2.x - p1.x))}"),
+                (corner_a, corner_b, self._COLOR_Y, f"Y: {fmt(abs(p2.y - p1.y))}"),
+                (corner_b, p2, self._COLOR_Z, f"Z: {fmt(abs(p2.z - p1.z))}"),
+                (p1, p2, self._COLOR_TOTAL, f"d: {fmt((p2 - p1).length)}"),
             ]
             for pt_a, pt_b, color, text in items:
                 draw_label((pt_a + pt_b) / 2, color, text)
+
+        for w in BMeasureDecorator.widgets:
+            draw_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
+        draw_one(
+            BMeasureDecorator.point1,
+            BMeasureDecorator.cursor,
+            BMeasureDecorator.point1_pipe,
+            BMeasureDecorator.cursor_pipe,
+            BMeasureDecorator.point1_duct,
+            BMeasureDecorator.cursor_duct,
+        )
 
         blf.disable(font_id, blf.SHADOW)
 
@@ -649,6 +684,11 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
     def update(cls, points, cursor):
         cls.points = points
         cls.cursor = cursor
+
+    @classmethod
+    def delete_last(cls):
+        if cls.points:
+            cls.points.pop()
 
     @classmethod
     def clear(cls):
@@ -727,6 +767,11 @@ class ZDecorator(tool.Blender.ViewportDecorator):
     def update(cls, points, cursor):
         cls.points = points
         cls.cursor = cursor
+
+    @classmethod
+    def delete_last(cls):
+        if cls.points:
+            cls.points.pop()
 
     @classmethod
     def clear(cls):

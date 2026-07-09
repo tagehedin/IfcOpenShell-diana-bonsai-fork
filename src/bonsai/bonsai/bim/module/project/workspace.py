@@ -59,22 +59,27 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row.operator("bim.clear_measurement", text="", icon="X")
 
         row = layout.row(align=True)
+        row.operator("bim.all_widgets_off", text="ALL OFF")
+
+        row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Laser")
         op.hotkey = "S_L"
+        row.operator("bim.delete_last_laser_widget", text="", icon="X")
 
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="B Measure")
         op.hotkey = "S_B"
+        row.operator("bim.delete_last_bmeasure_widget", text="", icon="X")
 
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="XYZ")
         op.hotkey = "S_X"
-        row.operator("bim.clear_xyz_points", text="", icon="X")
+        row.operator("bim.delete_last_xyz_widget", text="", icon="X")
 
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Z")
         op.hotkey = "S_Z"
-        row.operator("bim.clear_z_points", text="", icon="X")
+        row.operator("bim.delete_last_z_widget", text="", icon="X")
 
         # --- Navigation / viewport ---
         row = layout.row(align=True)

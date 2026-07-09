@@ -3768,7 +3768,8 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
     bl_idname = "bim.b_measure_tool"
     bl_label = "B Measure"
     bl_description = (
-        "Click two points to measure X, Y, Z components and total distance. CTRL snaps to vertices and edges."
+        "Click two points to measure X, Y, Z components and total distance. CTRL snaps to "
+        "vertices and edges. Measurements stay placed until deleted."
     )
     bl_options = {"REGISTER"}
 
@@ -3828,13 +3829,10 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         snap = self.snapping_points[0] if self.snapping_points else {}
         BMeasureDecorator.update(
             BMeasureDecorator.point1,
-            BMeasureDecorator.point2,
             snap.get("point"),
             BMeasureDecorator.point1_pipe,
-            BMeasureDecorator.point2_pipe,
             self._pipe_from_snap(snap),
             BMeasureDecorator.point1_duct,
-            BMeasureDecorator.point2_duct,
             self._duct_from_snap(snap),
         )
 
@@ -3848,13 +3846,10 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             # only detected on the plain-hover face-snap path.
             BMeasureDecorator.update(
                 BMeasureDecorator.point1,
-                BMeasureDecorator.point2,
                 snap_pt,
                 BMeasureDecorator.point1_pipe,
-                BMeasureDecorator.point2_pipe,
                 None,
                 BMeasureDecorator.point1_duct,
-                BMeasureDecorator.point2_duct,
                 None,
             )
             tool.Blender.update_viewport()
@@ -3864,31 +3859,24 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         if self._handle_snap_timer(context, event):
             return {"RUNNING_MODAL"}
 
-        if event.type == "ESC":
-            if BMeasureDecorator.point1 is not None:
-                # First Esc only clears the placed/in-progress widget, so the
-                # tool stays active with a live point ready to place again.
+        if event.type in {"ESC", "RIGHTMOUSE"}:
+            if event.type == "ESC" and BMeasureDecorator.point1 is not None:
+                # First Esc only cancels the in-progress start point, so the
+                # tool stays active with a live cursor ready to place again.
                 BMeasureDecorator.update(
-                    None,
                     None,
                     BMeasureDecorator.cursor,
                     None,
-                    None,
                     BMeasureDecorator.cursor_pipe,
-                    None,
                     None,
                     BMeasureDecorator.cursor_duct,
                 )
                 tool.Blender.update_viewport()
                 return {"RUNNING_MODAL"}
-            BMeasureDecorator.uninstall()
-            context.window.cursor_set("DEFAULT")
-            self._remove_snap_timer(context)
-            tool.Blender.update_viewport()
-            return {"CANCELLED"}
-
-        if event.type == "RIGHTMOUSE":
-            BMeasureDecorator.uninstall()
+            # Exit without clearing committed widgets — they persist until
+            # explicitly deleted (bim.delete_last_bmeasure_widget /
+            # bim.all_widgets_off). Only drop the live in-progress state.
+            BMeasureDecorator.update(None, None, None, None, None, None)
             context.window.cursor_set("DEFAULT")
             self._remove_snap_timer(context)
             tool.Blender.update_viewport()
@@ -3911,25 +3899,20 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             snap_pipe = self._pipe_from_snap(snap)
             snap_duct = self._duct_from_snap(snap)
             if BMeasureDecorator.point1 is None:
-                BMeasureDecorator.update(
-                    snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe, snap_duct, None, snap_duct
-                )
-            elif BMeasureDecorator.point2 is None:
-                BMeasureDecorator.update(
+                # Start a new widget.
+                BMeasureDecorator.update(snap_pt.copy(), snap_pt.copy(), snap_pipe, snap_pipe, snap_duct, snap_duct)
+            else:
+                # Complete it — archive into the persisted list, then start
+                # the next one right away from this same click.
+                BMeasureDecorator.commit_widget(
                     BMeasureDecorator.point1,
                     snap_pt.copy(),
-                    None,
                     BMeasureDecorator.point1_pipe,
                     snap_pipe,
-                    None,
                     BMeasureDecorator.point1_duct,
                     snap_duct,
-                    None,
                 )
-            else:
-                BMeasureDecorator.update(
-                    snap_pt.copy(), None, snap_pt.copy(), snap_pipe, None, snap_pipe, snap_duct, None, snap_duct
-                )
+                BMeasureDecorator.update(None, snap_pt.copy(), None, snap_pipe, None, snap_duct)
             tool.Blender.update_viewport()
 
         return {"RUNNING_MODAL"}
@@ -4047,21 +4030,21 @@ class XYZTool(bpy.types.Operator, PolylineOperator):
         return {"RUNNING_MODAL"}
 
 
-class ClearXYZPoints(bpy.types.Operator):
-    bl_idname = "bim.clear_xyz_points"
-    bl_label = "Clear XYZ Points"
+class DeleteLastXYZWidget(bpy.types.Operator):
+    bl_idname = "bim.delete_last_xyz_widget"
+    bl_label = "Delete Last XYZ Point"
+    bl_description = "Delete the most recently placed XYZ point"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
         if XYZDecorator.points:
             return True
-        cls.poll_message_set("No XYZ points to clear.")
+        cls.poll_message_set("No XYZ points to delete.")
         return False
 
     def execute(self, context):
-        XYZDecorator.clear()
-        XYZDecorator.uninstall()
+        XYZDecorator.delete_last()
         tool.Blender.update_viewport()
         return {"FINISHED"}
 
@@ -4164,21 +4147,80 @@ class ZTool(bpy.types.Operator, PolylineOperator):
         return {"RUNNING_MODAL"}
 
 
-class ClearZPoints(bpy.types.Operator):
-    bl_idname = "bim.clear_z_points"
-    bl_label = "Clear Z Points"
+class DeleteLastZWidget(bpy.types.Operator):
+    bl_idname = "bim.delete_last_z_widget"
+    bl_label = "Delete Last Z Point"
+    bl_description = "Delete the most recently placed Z point"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
         if ZDecorator.points:
             return True
-        cls.poll_message_set("No Z points to clear.")
+        cls.poll_message_set("No Z points to delete.")
         return False
 
     def execute(self, context):
-        ZDecorator.clear()
-        ZDecorator.uninstall()
+        ZDecorator.delete_last()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
+
+
+class DeleteLastLaserWidget(bpy.types.Operator):
+    bl_idname = "bim.delete_last_laser_widget"
+    bl_label = "Delete Last Laser Reading"
+    bl_description = "Delete the most recently placed Laser reading"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if LaserDecorator.widgets:
+            return True
+        cls.poll_message_set("No Laser readings to delete.")
+        return False
+
+    def execute(self, context):
+        LaserDecorator.delete_last()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
+
+
+class DeleteLastBMeasureWidget(bpy.types.Operator):
+    bl_idname = "bim.delete_last_bmeasure_widget"
+    bl_label = "Delete Last B Measure Widget"
+    bl_description = "Delete the most recently placed B Measure widget"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if BMeasureDecorator.widgets:
+            return True
+        cls.poll_message_set("No B Measure widgets to delete.")
+        return False
+
+    def execute(self, context):
+        BMeasureDecorator.delete_last()
+        tool.Blender.update_viewport()
+        return {"FINISHED"}
+
+
+class AllWidgetsOff(bpy.types.Operator):
+    bl_idname = "bim.all_widgets_off"
+    bl_label = "ALL OFF"
+    bl_description = "Delete every placed Laser, B Measure, XYZ and Z widget, and turn off their viewport overlays"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if LaserDecorator.widgets or BMeasureDecorator.widgets or XYZDecorator.points or ZDecorator.points:
+            return True
+        cls.poll_message_set("No widgets to clear.")
+        return False
+
+    def execute(self, context):
+        for decorator in (LaserDecorator, BMeasureDecorator, XYZDecorator, ZDecorator):
+            decorator.clear()
+            decorator.uninstall()
         tool.Blender.update_viewport()
         return {"FINISHED"}
 
@@ -4556,7 +4598,10 @@ class GenerateUVMap(bpy.types.Operator):
 class LaserTool(bpy.types.Operator):
     bl_idname = "bim.laser_tool"
     bl_label = "Laser Tool"
-    bl_description = "Shoot rays from a face along its normal and tangent axes to measure room dimensions"
+    bl_description = (
+        "Hover a face to shoot rays along its normal and tangent axes and measure room "
+        "dimensions. Click to place a reading — it stays until deleted. CTRL is not used here."
+    )
     bl_options = {"REGISTER"}
 
     # Axis colors: red (X, horizontal in face), green (Y, world-Z-aligned in face), blue (face normal)
@@ -4581,7 +4626,10 @@ class LaserTool(bpy.types.Operator):
 
     def modal(self, context, event):
         if event.type in {"ESC", "RIGHTMOUSE"}:
-            LaserDecorator.uninstall()
+            # Exit without clearing committed widgets — they persist until
+            # explicitly deleted (bim.delete_last_laser_widget /
+            # bim.all_widgets_off). Only drop the live hover preview.
+            LaserDecorator.update(None, [])
             context.window.cursor_set("DEFAULT")
             tool.Blender.update_viewport()
             return {"CANCELLED"}
@@ -4591,6 +4639,10 @@ class LaserTool(bpy.types.Operator):
 
         if event.type == "MOUSEMOVE":
             self._update(context, event)
+            tool.Blender.update_viewport()
+
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
+            LaserDecorator.commit()
             tool.Blender.update_viewport()
 
         return {"RUNNING_MODAL"}
