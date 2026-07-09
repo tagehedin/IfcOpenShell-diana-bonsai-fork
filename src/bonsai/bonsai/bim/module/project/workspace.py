@@ -62,28 +62,41 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row = layout.row(align=True)
         row.operator("bim.all_widgets_off", text="ALL OFF")
 
+        # Text-only color swatches for the measurement tools' number labels —
+        # lines/points/markers keep their fixed colors, only the readouts
+        # are adjustable, in case a default is hard to read on a given file.
+        # scale_x shrinks each swatch toward icon-width/square instead of
+        # stretching to fill the row (Blender's default for a bare color prop).
+        row = layout.row(align=True)
+        row.scale_x = 0.3
+        row.prop(prop, "text_color_red", text="")
+        row.prop(prop, "text_color_green", text="")
+        row.prop(prop, "text_color_blue", text="")
+        row.prop(prop, "text_color_gold", text="")
+        row.prop(prop, "text_color_white", text="")
+
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Laser")
         op.hotkey = "S_L"
         row.operator("bim.delete_last_laser_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="B Measure")
+        op = row.operator("bim.explore_hotkey", text="Measure XYZ")
         op.hotkey = "S_B"
         row.operator("bim.delete_last_bmeasure_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="DIM")
+        op = row.operator("bim.explore_hotkey", text="Aligned Dimension")
         op.hotkey = "S_D"
         row.operator("bim.delete_last_dim_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="XYZ")
+        op = row.operator("bim.explore_hotkey", text="XYZ Point")
         op.hotkey = "S_X"
         row.operator("bim.delete_last_xyz_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Z")
+        op = row.operator("bim.explore_hotkey", text="Elevation")
         op.hotkey = "S_Z"
         row.operator("bim.delete_last_z_widget", text="", icon="X")
 

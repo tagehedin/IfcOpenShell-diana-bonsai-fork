@@ -287,10 +287,13 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
     axes = []  # live hover: list of (hit_point: Vector, color: tuple)
     widgets: list = []  # committed readings: [(origin: Vector, axes: list), ...]
 
-    # Z (face-normal) ray's line stays this darker blue; its text label is
-    # brightened to _COLOR_Z_TEXT below — must match LaserTool._COLORS[4]/[5].
+    # Axis lines stay these fixed colors — must match LaserTool._COLORS.
+    # Their text labels instead read the user-adjustable colors from
+    # MeasureToolSettings (see gather_labels) — these are just the defaults/
+    # match-keys, not what actually gets drawn for text.
+    _COLOR_RED_LINE = (0.9, 0.25, 0.25)
+    _COLOR_GREEN_LINE = (0.25, 0.85, 0.25)
     _COLOR_Z_LINE = (0.25, 0.50, 1.0)
-    _COLOR_Z_TEXT = (0.73, 0.88, 1.0)  # same bright blue as BMeasureDecorator._COLOR_Z_TEXT
 
     @classmethod
     def uninstall(cls):
@@ -373,11 +376,19 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
                 return f"{distance * 3.28084:.3f}'"
             return f"{distance:.3f} m" if distance >= 1.0 else f"{distance * 1000:.0f} mm"
 
+        settings = context.scene.MeasureToolSettings
         labels = []
 
         def collect(axes):
             for pt_a, pt_b, color in axes:
-                text_color = cls._COLOR_Z_TEXT if color == cls._COLOR_Z_LINE else color
+                if color == cls._COLOR_RED_LINE:
+                    text_color = tuple(settings.text_color_red)
+                elif color == cls._COLOR_GREEN_LINE:
+                    text_color = tuple(settings.text_color_green)
+                elif color == cls._COLOR_Z_LINE:
+                    text_color = tuple(settings.text_color_blue)
+                else:
+                    text_color = color
                 labels.append(((pt_a + pt_b) / 2, text_color, fmt((pt_b - pt_a).length)))
 
         for _origin, axes in cls.widgets:
@@ -414,11 +425,12 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     point1_duct = None
     cursor_duct = None
 
+    # These are the fixed line colors — the X/Y/Z/d text labels instead read
+    # the user-adjustable colors from MeasureToolSettings (see gather_labels).
     _COLOR_X = (0.9, 0.25, 0.25)
     _COLOR_Y = (0.25, 0.85, 0.25)
     _COLOR_Z = (0.25, 0.50, 1.0)  # darker blue — kept for the drawn line
-    _COLOR_Z_TEXT = (0.73, 0.88, 1.0)  # lighter/brighter blue, halfway to white — used for the "Z:" label only
-    _COLOR_TOTAL = (1.0, 1.0, 1.0)
+    _COLOR_TOTAL = (1.0, 1.0, 1.0)  # kept for the faint total-distance connecting line
     _COLOR_PIPE = (1.0, 0.65, 0.0)
     _PIPE_CIRCLE_SEGMENTS = 32
 
@@ -582,6 +594,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 return f"{dist * 3.28084:.3f}'"
             return f"{dist:.3f} m" if dist >= 1.0 else f"{dist * 1000:.0f} mm"
 
+        settings = context.scene.MeasureToolSettings
         labels = []
 
         def collect_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
@@ -605,16 +618,20 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 corner_a = Vector((p2.x, p1.y, p1.z))
                 corner_b = Vector((p2.x, p2.y, p1.z))
 
-                labels.append(((p1 + corner_a) / 2, cls._COLOR_X, f"X: {fmt(abs(p2.x - p1.x))}"))
-                labels.append(((corner_a + corner_b) / 2, cls._COLOR_Y, f"Y: {fmt(abs(p2.y - p1.y))}"))
-                labels.append(((corner_b + p2) / 2, cls._COLOR_Z_TEXT, f"Z: {fmt(abs(p2.z - p1.z))}"))
+                labels.append(((p1 + corner_a) / 2, tuple(settings.text_color_red), f"X: {fmt(abs(p2.x - p1.x))}"))
+                labels.append(
+                    ((corner_a + corner_b) / 2, tuple(settings.text_color_green), f"Y: {fmt(abs(p2.y - p1.y))}")
+                )
+                labels.append(((corner_b + p2) / 2, tuple(settings.text_color_blue), f"Z: {fmt(abs(p2.z - p1.z))}"))
 
                 # "d:" (total distance) sits a third of the way down from whichever
                 # of p1/p2 is higher in world Z, rather than at the line's
                 # midpoint — reads as a callout near the top of the run instead of
                 # competing for the same visual centre as the X/Y/Z labels above.
                 top, bottom = (p1, p2) if p1.z >= p2.z else (p2, p1)
-                labels.append((top + (bottom - top) / 3, cls._COLOR_TOTAL, f"d: {fmt((p2 - p1).length)}"))
+                labels.append(
+                    (top + (bottom - top) / 3, tuple(settings.text_color_white), f"d: {fmt((p2 - p1).length)}")
+                )
 
         for w in cls.widgets:
             collect_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
@@ -630,6 +647,12 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
     that face's (infinite) plane — see DIMTool. The plane itself is never
     drawn, only the resulting line/points/length labels.
 
+    Holding CTRL instead snaps to a vertex/edge and measures the distance to
+    *that point* — using a plane parallel to the starting face (i.e. its
+    normal is the line's own fixed direction) through the snapped point,
+    which projects it straight onto the line. That plane is always
+    well-defined, never parallel to the line.
+
     ``points`` is always kept sorted by distance-along-the-line from
     ``anchor`` (see ``sorted_insert``), not by click order — a point that
     lands between two already-placed points splits that segment into two
@@ -640,8 +663,15 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
     least 2 points each, i.e. at least one segment); ``anchor``/
     ``direction``/``points`` is the live in-progress string, reset (not
     necessarily committed) on a first ESC/ENTER rather than uninstall — see
-    DIMTool.modal. ``preview_point`` is the live hover target for the next
-    point. Cleared explicitly via ``bim.delete_last_dim_widget`` /
+    DIMTool.modal. ``preview_point`` is the plane-intersection point the next
+    click would actually add (used for the live segment/label preview).
+
+    ``cursor`` is a separate, purely visual marker showing exactly where the
+    mouse is pointing (or CTRL-snapped to a vertex/edge) — before an anchor
+    exists it's just "what surface am I pointing at," but once CTRL is
+    driving the plane math above, ``cursor`` and the point that plane math
+    reads from are literally the same value (see DIMTool._get_plane).
+    Cleared explicitly via ``bim.delete_last_dim_widget`` /
     ``bim.all_widgets_off``."""
 
     # No POST_PIXEL entry — text for all measurement tools is drawn by the
@@ -651,20 +681,32 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
     anchor = None  # Vector — first point of the in-progress string, or None
     direction = None  # Vector — unit normal fixing the in-progress line's direction
     points: list = []  # in-progress points, sorted by distance-along-the-line from anchor
-    preview_point = None  # live hover target for the next point, or None
+    preview_point = None  # plane-intersection target for the next point, or None
+    cursor = None  # purely visual pointer/snap marker, or None — see docstring above
 
-    _COLOR = (1.0, 0.84, 0.0)  # gold
+    _COLOR_LINE = (1.0, 0.84, 0.0)  # gold — fixed; the length-label text instead reads
+    # the user-adjustable gold from MeasureToolSettings (see gather_labels).
+    _COLOR_CURSOR = (1.0, 1.0, 1.0)  # white, matching the plain-point convention used elsewhere
     # How far to draw the reference line before any face has been picked yet —
     # nothing is truly infinite in a GPU draw call, so this just needs to be
     # comfortably longer than any real building.
     _PREVIEW_LENGTH = 10000.0
+    # Sanity cap on how far a line/plane intersection may land from the
+    # anchor. Not a stability fix (the maths is a single closed-form
+    # calculation, never an unbounded loop) — a near-grazing face plane can
+    # still push the result an absurd-but-finite distance away as the angle
+    # approaches parallel (the denominator shrinks toward zero), which reads
+    # as a meaningless multi-kilometre "measurement" rather than a crash.
+    # Treated the same as "no collision found" — see DIMTool._sane_intersection.
+    _MAX_SEGMENT_LENGTH = 100000.0  # 100 km
 
     @classmethod
-    def update(cls, anchor, direction, points, preview_point):
+    def update(cls, anchor, direction, points, preview_point, cursor):
         cls.anchor = anchor
         cls.direction = direction
         cls.points = points
         cls.preview_point = preview_point
+        cls.cursor = cursor
 
     @classmethod
     def _t(cls, point: Vector) -> float:
@@ -694,6 +736,7 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
         cls.direction = None
         cls.points = []
         cls.preview_point = None
+        cls.cursor = None
 
     @classmethod
     def delete_last(cls):
@@ -707,9 +750,10 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
         cls.direction = None
         cls.points = []
         cls.preview_point = None
+        cls.cursor = None
 
     def draw_geometry(self, context):
-        if not DIMDecorator.widgets and not DIMDecorator.points:
+        if not DIMDecorator.widgets and not DIMDecorator.points and DIMDecorator.cursor is None:
             return
 
         gpu.state.blend_set("ALPHA")
@@ -721,18 +765,25 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
         line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
         line_shader.uniform_float("lineWidth", 2.0)
 
+        if DIMDecorator.cursor is not None:
+            point_shader.bind()
+            gpu.state.point_size_set(6)
+            batch = batch_for_shader(point_shader, "POINTS", {"pos": [DIMDecorator.cursor]})
+            point_shader.uniform_float("color", (*self._COLOR_CURSOR, 1.0))
+            batch.draw(point_shader)
+
         def draw_polyline(points, alpha=0.9):
             if len(points) < 2:
                 return
             line_shader.bind()
             batch = batch_for_shader(line_shader, "LINE_STRIP", {"pos": points})
-            line_shader.uniform_float("color", (*self._COLOR, alpha))
+            line_shader.uniform_float("color", (*self._COLOR_LINE, alpha))
             batch.draw(line_shader)
 
             point_shader.bind()
             gpu.state.point_size_set(6)
             batch = batch_for_shader(point_shader, "POINTS", {"pos": points})
-            point_shader.uniform_float("color", (*self._COLOR, 1.0))
+            point_shader.uniform_float("color", (*self._COLOR_LINE, 1.0))
             batch.draw(point_shader)
 
         for w in DIMDecorator.widgets:
@@ -749,13 +800,13 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
                 "LINES",
                 {"pos": [anchor - d * self._PREVIEW_LENGTH, anchor + d * self._PREVIEW_LENGTH]},
             )
-            line_shader.uniform_float("color", (*self._COLOR, 0.35))
+            line_shader.uniform_float("color", (*self._COLOR_LINE, 0.35))
             batch.draw(line_shader)
 
             point_shader.bind()
             gpu.state.point_size_set(6)
             batch = batch_for_shader(point_shader, "POINTS", {"pos": [anchor]})
-            point_shader.uniform_float("color", (*self._COLOR, 1.0))
+            point_shader.uniform_float("color", (*self._COLOR_LINE, 1.0))
             batch.draw(point_shader)
         elif len(pts) >= 2:
             draw_polyline(pts)
@@ -783,12 +834,13 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
         if not cls.widgets and not cls.points:
             return []
 
+        text_color = tuple(context.scene.MeasureToolSettings.text_color_gold)
         labels = []
 
         def collect(points):
             for a, b in zip(points, points[1:]):
                 mid = (a + b) / 2
-                labels.append((mid, cls._COLOR, f"{(b - a).length * 1000:.0f} mm"))
+                labels.append((mid, text_color, f"{(b - a).length * 1000:.0f} mm"))
 
         for w in cls.widgets:
             collect(w["points"])
@@ -845,10 +897,55 @@ def _deconflict_and_draw(font_id, region, rv3d, labels) -> None:
         if not moved:
             break
 
+    _draw_label_backgrounds(placed)
+
     for item in placed:
         blf.color(font_id, *item["color"], 1.0)
         blf.position(font_id, item["x"], item["y"], 0)
         blf.draw(font_id, item["text"])
+
+
+def _rounded_rect_points(x: float, y: float, w: float, h: float, radius: float, segments: int = 6) -> list:
+    """Points tracing a rounded rectangle's outline, corner by corner
+    (bottom-left, bottom-right, top-right, top-left), each corner approximated
+    by a small quarter-circle arc."""
+    radius = min(radius, w / 2, h / 2)
+    corners = [
+        (x + radius, y + radius, 180),
+        (x + w - radius, y + radius, 270),
+        (x + w - radius, y + h - radius, 0),
+        (x + radius, y + h - radius, 90),
+    ]
+    points = []
+    for cx, cy, start_deg in corners:
+        for i in range(segments + 1):
+            angle = math.radians(start_deg + i * 90 / segments)
+            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    return points
+
+
+def _draw_label_backgrounds(
+    placed: list, padding: float = 4.0, radius: float = 4.0, color: tuple = (0.05, 0.05, 0.05, 0.55)
+) -> None:
+    """Dark, semi-transparent rounded-rect backdrop behind each already-
+    deconflicted label, sized to its actual measured text footprint plus
+    padding — drawn before the text itself so the text ends up on top."""
+    if not placed:
+        return
+    gpu.state.blend_set("ALPHA")
+    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+    shader.bind()
+    shader.uniform_float("color", color)
+    for item in placed:
+        x = item["x"] - padding
+        y = item["y"] - padding
+        w = item["w"] + padding * 2
+        h = item["h"] + padding * 2
+        outline = _rounded_rect_points(x, y, w, h, radius)
+        center = (x + w / 2, y + h / 2)
+        batch = batch_for_shader(shader, "TRI_FAN", {"pos": [center, *outline, outline[0]]})
+        batch.draw(shader)
+    gpu.state.blend_set("NONE")
 
 
 def _true_coords(point: Vector) -> Vector:
@@ -886,7 +983,6 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
 
     _COLOR_POINT = (0.3, 0.9, 0.5)
     _COLOR_CURSOR = (1.0, 1.0, 1.0)
-    _COLOR_TEXT = (1.0, 1.0, 1.0)  # labels always white for readability, regardless of marker color
 
     @classmethod
     def update(cls, points, cursor):
@@ -933,9 +1029,10 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
     def gather_labels(cls, context) -> list:
         """(pos_3d, color, text) for every label this decorator would draw —
         see BMeasureDecorator.gather_labels for the full explanation."""
-        labels = [(point, cls._COLOR_TEXT, text) for point, text in cls.points]
+        text_color = tuple(context.scene.MeasureToolSettings.text_color_white)
+        labels = [(point, text_color, text) for point, text in cls.points]
         if cls.cursor is not None:
-            labels.append((cls.cursor, cls._COLOR_TEXT, cls.label_text(cls.cursor)))
+            labels.append((cls.cursor, text_color, cls.label_text(cls.cursor)))
         return labels
 
 
@@ -953,7 +1050,6 @@ class ZDecorator(tool.Blender.ViewportDecorator):
 
     _COLOR_POINT = (0.25, 0.50, 1.0)  # same blue used for Z elsewhere (BMeasureDecorator._COLOR_Z, Laser's normal ray)
     _COLOR_CURSOR = (1.0, 1.0, 1.0)
-    _COLOR_TEXT = (0.73, 0.88, 1.0)  # same bright blue as BMeasureDecorator._COLOR_Z_TEXT
 
     @classmethod
     def update(cls, points, cursor):
@@ -1004,9 +1100,10 @@ class ZDecorator(tool.Blender.ViewportDecorator):
     def gather_labels(cls, context) -> list:
         """(pos_3d, color, text) for every label this decorator would draw —
         see BMeasureDecorator.gather_labels for the full explanation."""
-        labels = [(point, cls._COLOR_TEXT, text) for point, text in cls.points]
+        text_color = tuple(context.scene.MeasureToolSettings.text_color_blue)
+        labels = [(point, text_color, text) for point, text in cls.points]
         if cls.cursor is not None:
-            labels.append((cls.cursor, cls._COLOR_TEXT, cls.label_text(cls.cursor)))
+            labels.append((cls.cursor, text_color, cls.label_text(cls.cursor)))
         return labels
 
 

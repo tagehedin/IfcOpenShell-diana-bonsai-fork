@@ -658,5 +658,31 @@ class MeasureToolSettings(PropertyGroup):
 
     measurement_type: bpy.props.EnumProperty(items=measurement_type_items, default="POLYLINE")
 
+    # Text colors for the Laser/B Measure/Aligned Dimension/Z measurement
+    # labels — adjustable in case a default is hard to read against a
+    # particular background. Deliberately only affects text (see each
+    # decorator's gather_labels); the drawn lines/points/markers keep their
+    # fixed default colors. Defaults match what was previously hardcoded.
+    text_color_red: bpy.props.FloatVectorProperty(
+        name="Red Text Color", subtype="COLOR", size=3, min=0.0, max=1.0, default=(0.9, 0.25, 0.25)
+    )
+    text_color_green: bpy.props.FloatVectorProperty(
+        name="Green Text Color", subtype="COLOR", size=3, min=0.0, max=1.0, default=(0.25, 0.85, 0.25)
+    )
+    text_color_blue: bpy.props.FloatVectorProperty(
+        name="Blue Text Color", subtype="COLOR", size=3, min=0.0, max=1.0, default=(0.73, 0.88, 1.0)
+    )
+    text_color_gold: bpy.props.FloatVectorProperty(
+        name="Gold Text Color", subtype="COLOR", size=3, min=0.0, max=1.0, default=(1.0, 0.84, 0.0)
+    )
+    text_color_white: bpy.props.FloatVectorProperty(
+        name="White Text Color", subtype="COLOR", size=3, min=0.0, max=1.0, default=(1.0, 1.0, 1.0)
+    )
+
     if TYPE_CHECKING:
         measurement_type: Literal["SINGLE", "POLYLINE", "AREA"]
+        text_color_red: tuple[float, float, float]
+        text_color_green: tuple[float, float, float]
+        text_color_blue: tuple[float, float, float]
+        text_color_gold: tuple[float, float, float]
+        text_color_white: tuple[float, float, float]

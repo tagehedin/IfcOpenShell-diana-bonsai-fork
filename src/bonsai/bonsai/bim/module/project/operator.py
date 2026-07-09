@@ -3769,7 +3769,7 @@ class MeasureTool(bpy.types.Operator, PolylineOperator):
 
 class BMeasureTool(bpy.types.Operator, PolylineOperator):
     bl_idname = "bim.b_measure_tool"
-    bl_label = "B Measure"
+    bl_label = "Measure XYZ"
     bl_description = (
         "Click two points to measure X, Y, Z components and total distance. CTRL snaps to "
         "vertices and edges. Measurements stay placed until deleted."
@@ -3935,14 +3935,17 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         return {"RUNNING_MODAL"}
 
 
-class DIMTool(bpy.types.Operator):
+class DIMTool(bpy.types.Operator, PolylineOperator):
     bl_idname = "bim.dim_tool"
-    bl_label = "DIM"
+    bl_label = "Aligned Dimension"
     bl_description = (
         "Click a face to anchor a dimension line along its normal, then click other faces "
-        "to add points where that fixed line crosses their (infinite) plane, building a "
-        "running dimension string. ESC/ENTER keeps what you've built and starts a new "
-        "string from a new point; ESC/ENTER again exits. Strings stay placed until deleted."
+        "to add points where that fixed line crosses their (infinite) plane — or hold CTRL "
+        "to snap to a vertex/edge and measure the distance to that point instead, using a "
+        "plane parallel to the starting face through the snapped point (perpendicular to "
+        "the line). Building a running dimension string. ESC/ENTER keeps what you've built "
+        "and starts a new string from a new point; ESC/ENTER again exits. Strings stay "
+        "placed until deleted."
     )
     bl_options = {"REGISTER"}
 
@@ -3950,11 +3953,22 @@ class DIMTool(bpy.types.Operator):
     def poll(cls, context):
         return context.space_data.type == "VIEW_3D"
 
+    def __init__(self, *args, **kwargs):
+        bpy.types.Operator.__init__(self, *args, **kwargs)
+        PolylineOperator.__init__(self)
+
     def invoke(self, context, event):
         DIMDecorator.install(context)
         AllToolsTextDecorator.install(context)
-        context.window_manager.modal_handler_add(self)
+        tool.Snap.clear_snapping_point()
+        self.tool_state.use_default_container = False
+        self.tool_state.axis_method = None
+        self.tool_state.plane_method = None
+        self.tool_state.mode = "Mouse"
         context.window.cursor_set("CROSSHAIR")
+        tool.Blender.update_viewport()
+        context.window_manager.modal_handler_add(self)
+        self._snap_timer = context.window_manager.event_timer_add(0.1, window=context.window)
         return {"RUNNING_MODAL"}
 
     def _face_hit(self, context, event):
@@ -3981,41 +3995,108 @@ class DIMTool(bpy.types.Operator):
         normal = (matrix.to_3x3() @ polygon.normal).normalized()
         return location, normal
 
+    def _get_plane(self, context, event):
+        """(point, plane_no) to intersect the fixed line against.
+
+        Normally the hovered face's own plane (point = raycast hit,
+        plane_no = that face's normal). With CTRL held, snaps to a
+        vertex/edge instead and uses a plane parallel to the *starting*
+        plane through that snapped point — i.e. plane_no is the line's own
+        fixed direction, which projects the snapped point straight onto the
+        line ("distance to this point" measured along the starting
+        direction). That plane is always well-defined (never parallel to the
+        line, since its normal literally *is* the line's direction).
+
+        `point` alone (regardless of plane_no) also drives the purely-visual
+        cursor marker — see DIMDecorator's docstring."""
+        if event.ctrl:
+            self._run_scene_ray_snap(context, event)
+            snap = self.snapping_points[0] if self.snapping_points else {}
+            return snap.get("point"), DIMDecorator.direction
+        return self._face_hit(context, event)
+
+    def _sane_intersection(self, point):
+        """None if `point` is None or absurdly far from the anchor.
+
+        A near-grazing face plane pushes the line/plane intersection an
+        enormous but still finite distance away as the angle approaches
+        parallel (the maths itself is a single closed-form calculation, not
+        an unbounded loop — this isn't a stability fix). Treated the same as
+        "no collision found" rather than drawing/labeling a meaningless
+        multi-kilometre segment — see DIMDecorator._MAX_SEGMENT_LENGTH."""
+        if point is None:
+            return None
+        if (point - DIMDecorator.anchor).length > DIMDecorator._MAX_SEGMENT_LENGTH:
+            return None
+        return point
+
     def _update_preview(self, context, event):
+        point, plane_no = self._get_plane(context, event)
         if not DIMDecorator.points:
+            DIMDecorator.update(None, None, [], None, point)
             return
-        location, normal = self._face_hit(context, event)
-        if location is None:
-            DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, None)
-            return
-        preview_point = intersect_line_plane(
-            DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, location, normal
-        )
-        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, preview_point)
+        preview_point = None
+        if point is not None:
+            preview_point = self._sane_intersection(
+                intersect_line_plane(DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, point, plane_no)
+            )
+        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, preview_point, point)
+
+    def _handle_snap_timer(self, context, event):
+        if event.type != "TIMER":
+            return False
+        if event.ctrl and not self._is_navigating:
+            self._run_scene_ray_snap(context, event)
+            snap_pt = self.snapping_points[0].get("point") if self.snapping_points else None
+            preview_point = None
+            if DIMDecorator.points and snap_pt is not None:
+                preview_point = self._sane_intersection(
+                    intersect_line_plane(
+                        DIMDecorator.anchor,
+                        DIMDecorator.anchor + DIMDecorator.direction,
+                        snap_pt,
+                        DIMDecorator.direction,
+                    )
+                )
+            DIMDecorator.update(
+                DIMDecorator.anchor, DIMDecorator.direction, DIMDecorator.points, preview_point, snap_pt
+            )
+            tool.Blender.update_viewport()
+        return True
 
     def _add_point(self, context, event):
-        location, normal = self._face_hit(context, event)
-        if location is None:
-            return
-
         if not DIMDecorator.points:
-            # First click: anchor the line, direction fixed by this face's normal.
-            DIMDecorator.update(location.copy(), normal.copy(), [location.copy()], None)
+            # First click: anchor the line, direction fixed by this face's
+            # normal — always a plain face hit, CTRL isn't meaningful yet
+            # since there's no starting plane/direction to be parallel to.
+            location, normal = self._face_hit(context, event)
+            if location is None:
+                return
+            DIMDecorator.update(location.copy(), normal.copy(), [location.copy()], None, DIMDecorator.cursor)
             return
 
-        intersection = intersect_line_plane(
-            DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, location, normal
+        point, plane_no = self._get_plane(context, event)
+        if point is None:
+            return
+
+        intersection = self._sane_intersection(
+            intersect_line_plane(DIMDecorator.anchor, DIMDecorator.anchor + DIMDecorator.direction, point, plane_no)
         )
         if intersection is None:
-            self.report({"ERROR"}, "No collision point found — that face's plane never crosses the line.")
+            self.report(
+                {"ERROR"}, "No collision point found — that face's plane never crosses the line (or only far away)."
+            )
             return
 
         # Inserted at its position along the line, not appended — a point
         # landing between two existing ones splits that segment in two.
         new_points, _idx = DIMDecorator.sorted_insert(DIMDecorator.points, intersection)
-        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, new_points, None)
+        DIMDecorator.update(DIMDecorator.anchor, DIMDecorator.direction, new_points, None, DIMDecorator.cursor)
 
     def modal(self, context, event):
+        if self._handle_snap_timer(context, event):
+            return {"RUNNING_MODAL"}
+
         if event.type in {"ESC", "RET", "NUMPAD_ENTER"}:
             if DIMDecorator.points:
                 # Keep what's built so far (if it has at least one segment)
@@ -4024,23 +4105,27 @@ class DIMTool(bpy.types.Operator):
                 tool.Blender.update_viewport()
                 return {"RUNNING_MODAL"}
             context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
             return {"CANCELLED"}
 
         if event.type == "RIGHTMOUSE":
             # Hard cancel, matching the other tools' RIGHTMOUSE convention —
             # unlike ESC/ENTER above, this discards any in-progress string
             # outright rather than committing it first.
-            DIMDecorator.update(None, None, [], None)
+            DIMDecorator.update(None, None, [], None, None)
             context.window.cursor_set("DEFAULT")
+            self._remove_snap_timer(context)
             tool.Blender.update_viewport()
             return {"CANCELLED"}
 
         if event.type in {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE"}:
             return {"PASS_THROUGH"}
 
-        if event.type == "MOUSEMOVE":
-            self._update_preview(context, event)
-            tool.Blender.update_viewport()
+        if event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}:
+            self.mousemove_count += 1
+            if self.mousemove_count > 3:
+                self._update_preview(context, event)
+                tool.Blender.update_viewport()
 
         if event.type == "LEFTMOUSE" and event.value == "PRESS":
             self._add_point(context, event)
@@ -4051,7 +4136,7 @@ class DIMTool(bpy.types.Operator):
 
 class XYZTool(bpy.types.Operator, PolylineOperator):
     bl_idname = "bim.xyz_tool"
-    bl_label = "XYZ"
+    bl_label = "XYZ Point"
     bl_description = (
         "Click to place a point and read its true X, Y, Z coordinates in metres "
         "(false-origin corrected). CTRL snaps to vertices and edges. Points stay "
@@ -4170,7 +4255,7 @@ class DeleteLastXYZWidget(bpy.types.Operator):
 
 class ZTool(bpy.types.Operator, PolylineOperator):
     bl_idname = "bim.z_tool"
-    bl_label = "Z"
+    bl_label = "Elevation"
     bl_description = (
         "Click to place a point and read its true Z elevation in metres "
         "(false-origin corrected). CTRL snaps to vertices and edges. Points stay "
@@ -4307,15 +4392,15 @@ class DeleteLastLaserWidget(bpy.types.Operator):
 
 class DeleteLastBMeasureWidget(bpy.types.Operator):
     bl_idname = "bim.delete_last_bmeasure_widget"
-    bl_label = "Delete Last B Measure Widget"
-    bl_description = "Delete the most recently placed B Measure widget"
+    bl_label = "Delete Last Measure XYZ Widget"
+    bl_description = "Delete the most recently placed Measure XYZ widget"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
         if BMeasureDecorator.widgets:
             return True
-        cls.poll_message_set("No B Measure widgets to delete.")
+        cls.poll_message_set("No Measure XYZ widgets to delete.")
         return False
 
     def execute(self, context):
@@ -4326,15 +4411,15 @@ class DeleteLastBMeasureWidget(bpy.types.Operator):
 
 class DeleteLastDimWidget(bpy.types.Operator):
     bl_idname = "bim.delete_last_dim_widget"
-    bl_label = "Delete Last DIM Widget"
-    bl_description = "Delete the most recently placed DIM dimension string"
+    bl_label = "Delete Last Aligned Dimension Widget"
+    bl_description = "Delete the most recently placed Aligned Dimension string"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
         if DIMDecorator.widgets:
             return True
-        cls.poll_message_set("No DIM widgets to delete.")
+        cls.poll_message_set("No Aligned Dimension widgets to delete.")
         return False
 
     def execute(self, context):
@@ -4346,7 +4431,10 @@ class DeleteLastDimWidget(bpy.types.Operator):
 class AllWidgetsOff(bpy.types.Operator):
     bl_idname = "bim.all_widgets_off"
     bl_label = "ALL OFF"
-    bl_description = "Delete every placed Laser, B Measure, DIM, XYZ and Z widget, and turn off their viewport overlays"
+    bl_description = (
+        "Delete every placed Laser, Measure XYZ, Aligned Dimension, XYZ Point and "
+        "Elevation widget, and turn off their viewport overlays"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
