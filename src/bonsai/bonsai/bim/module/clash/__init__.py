@@ -64,6 +64,7 @@ classes = (
     operator.ExportClashSets,
     operator.HideClash,
     operator.ImportClashSets,
+    operator.LoadExecutedClash,
     operator.LoadSmartGroupsForActiveClashSet,
     operator.OpenClashView,
     operator.ReloadClashView,

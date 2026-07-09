@@ -176,6 +176,9 @@ class BIM_PT_ifcclash(Panel):
         row.operator("bim.execute_blender_clash", icon="MESH_DATA")
 
         row = layout.row()
+        row.operator("bim.load_executed_clash", icon="IMPORT")
+
+        row = layout.row()
         if clash_set.clashes_loaded:
             row.column().label(text=f"{len(clash_set.clashes)} Clashes Found", icon="PIVOT_CURSOR")
 

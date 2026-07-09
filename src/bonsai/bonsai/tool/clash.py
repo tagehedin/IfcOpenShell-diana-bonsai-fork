@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Union
 
 import bpy
@@ -38,6 +39,14 @@ class Clash(bonsai.core.tool.Clash):
     @classmethod
     def get_clash_props(cls) -> BIMClashProperties:
         return bpy.context.scene.BIMClashProperties
+
+    @classmethod
+    def get_clash_json_path(cls, clash_set_name: str) -> Path:
+        """Where ExecuteBlenderClash writes (and LoadExecutedClash reads) a clash
+        set's results: ``<ifc-or-blend-file-dir>/clashes/<clash_set_name>.json``."""
+        ifc_path = tool.Blender.get_bim_props().ifc_file
+        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
+        return base / "clashes" / f"{clash_set_name}.json"
 
     ClashSourceGroup = Literal["a", "b", "c", "d", "e", "f", "g", "h"]
     CLASH_SOURCE_GROUP_LITERALS = ("a", "b", "c", "d", "e", "f", "g", "h")

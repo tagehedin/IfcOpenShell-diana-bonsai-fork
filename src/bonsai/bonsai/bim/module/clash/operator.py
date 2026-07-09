@@ -691,9 +691,7 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
         props = tool.Clash.get_clash_props()
         clash_set = props.active_clash_set
         if clash_set:
-            ifc_path = tool.Blender.get_bim_props().ifc_file
-            base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
-            abs_path = base / "clashes" / f"{clash_set.name}.json"
+            abs_path = tool.Clash.get_clash_json_path(clash_set.name)
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             self.filepath = str(abs_path)
             return self.execute(context)
@@ -738,6 +736,40 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
             self.report({"INFO"}, "Blender Clash completed and results are loaded.")
         else:
             self.report({"INFO"}, f"Blender Clash results saved to '{Path(self.filepath).name}'.")
+        return {"FINISHED"}
+
+
+class LoadExecutedClash(bpy.types.Operator):
+    bl_idname = "bim.load_executed_clash"
+    bl_label = "Load Executed Clash"
+    bl_description = "Load a previously executed Blender Clash's results from disk"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        props = tool.Clash.get_clash_props()
+        clash_set = props.active_clash_set
+        if not clash_set:
+            cls.poll_message_set("No active clash set.")
+            return False
+        path = tool.Clash.get_clash_json_path(clash_set.name)
+        if not path.exists():
+            cls.poll_message_set(f"No clash results file found at '{path}'.")
+            return False
+        return True
+
+    def execute(self, context):
+        clash_set = tool.Clash.get_clash_props().active_clash_set
+        path = tool.Clash.get_clash_json_path(clash_set.name)
+        if not path.exists():
+            # Guards the race window between poll() (which already checked this)
+            # and the click actually landing — e.g. the file gets deleted in
+            # between — rather than letting open() inside load_clash_sets raise.
+            self.report({"ERROR"}, "File not found")
+            return {"CANCELLED"}
+        tool.Clash.load_clash_sets(str(path))
+        tool.Clash.import_active_clashes()
+        self.report({"INFO"}, f"Loaded clash results from '{path.name}'.")
         return {"FINISHED"}
 
 
@@ -1105,9 +1137,7 @@ class SmartClashGroup(bpy.types.Operator):
         props = tool.Clash.get_clash_props()
         if not props.active_clash_set:
             return False
-        ifc_path = tool.Blender.get_bim_props().ifc_file
-        base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
-        return (base / "clashes" / f"{props.active_clash_set.name}.json").exists()
+        return tool.Clash.get_clash_json_path(props.active_clash_set.name).exists()
 
     def execute(self, context):
         from ifcclash import ifcclash
