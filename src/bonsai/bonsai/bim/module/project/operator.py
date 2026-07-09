@@ -4681,14 +4681,18 @@ class LaserTool(bpy.types.Operator):
         y_axis = y_axis.normalized()
         x_axis = y_axis.cross(face_normal).normalized()
 
-        # Face bounding box along x/y axes, centred on face centroid
-        centroid = sum(verts, Vector()) / len(verts)
-        x_projs = [(v - centroid).dot(x_axis) for v in verts]
-        y_projs = [(v - centroid).dot(y_axis) for v in verts]
-        x_start = centroid + min(x_projs) * x_axis
-        x_end = centroid + max(x_projs) * x_axis
-        y_start = centroid + min(y_projs) * y_axis
-        y_end = centroid + max(y_projs) * y_axis
+        # Face bounding box along x/y axes, centred on the hit point (location)
+        # so the red/green rulers cross exactly where you clicked — same
+        # reference point the blue (normal) ray below already uses. Previously
+        # centred on the face centroid instead, which visibly misaligned the
+        # red/green lines from the actual measured point whenever the hit
+        # wasn't at the face's centroid.
+        x_projs = [(v - location).dot(x_axis) for v in verts]
+        y_projs = [(v - location).dot(y_axis) for v in verts]
+        x_start = location + min(x_projs) * x_axis
+        x_end = location + max(x_projs) * x_axis
+        y_start = location + min(y_projs) * y_axis
+        y_end = location + max(y_projs) * y_axis
 
         axes = [
             (x_start, x_end, self._COLORS[0]),
