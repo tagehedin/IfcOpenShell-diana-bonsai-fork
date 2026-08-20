@@ -1349,11 +1349,15 @@ class DecorationsHandler:
                     else:
                         unselected_edges.append(edge_indices)
 
-                self.draw_batch("LINES", verts, transparent_color(unselected_elements_color, 0.5), unselected_edges)
+                self.draw_batch(
+                    "LINES", verts, tool.Blender.transparent_color(unselected_elements_color, 0.5), unselected_edges
+                )
                 self.draw_batch("LINES", verts, selected_elements_color, selected_edges)
                 self.draw_batch("POINTS", unselected_vertices, unselected_elements_color)
                 self.draw_batch("POINTS", selected_vertices, selected_elements_color)
-                tool.Blender.draw_bmesh_face_tris(bm, verts, transparent_color(special_elements_color), self.draw_batch)
+                tool.Blender.draw_bmesh_face_tris(
+                    bm, verts, tool.Blender.transparent_color(special_elements_color), self.draw_batch
+                )
             else:
                 line_verts, verts, edges_indices, tris = _get_cached_world_draw_data(obj)
                 color = selected_elements_color if obj in context.selected_objects else special_elements_color
@@ -1361,7 +1365,7 @@ class DecorationsHandler:
                 self.draw_batch(
                     "TRIS",
                     verts,
-                    transparent_color(special_elements_color),
+                    tool.Blender.transparent_color(special_elements_color),
                     tris,
                     cache_key=(obj.session_uid, "tris"),
                 )

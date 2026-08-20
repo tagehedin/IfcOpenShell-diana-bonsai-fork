@@ -275,6 +275,16 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
             now - ClashDecorator._clip_stable_since < ClashDecorator._CLIP_IDLE_S
         )
         if not clip_moving:
+            if clip_key != ClashDecorator._stable_clip_key:
+                # New settle point: drop cached batches from the previous
+                # position. Only the current draw_key is ever drawn, so
+                # anything else left behind is dead weight — without this,
+                # every distinct clip plane resting position visited during
+                # a session leaves its batches behind forever (never freed
+                # except by set_clash_objects()/uninstall()), which grows
+                # unbounded and drags down viewport performance the longer
+                # the same clash/group stays active.
+                ClashDecorator._batch_cache = {k: v for k, v in ClashDecorator._batch_cache.items() if k[1] == clip_key}
             ClashDecorator._stable_clip_key = clip_key
             draw_key = clip_key
             draw_planes = clip_planes
@@ -302,13 +312,22 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         if selected_edges:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
 
-        for group, highlights in self.group_highlights.items():
-            if not self.show_groups.get(group, True):
-                continue
-            rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
-            color = (*rgb, 0.15)
-            for highlight in highlights:
-                self.draw_highlighted_object(highlight, color, draw_planes, draw_key)
+        if self.group_highlights:
+            # ALWAYS depth test: this geometry is drawn coincident with the
+            # real scene mesh it represents (same surface, zero offset), so
+            # with normal depth testing it z-fights unpredictably against
+            # that mesh and gets lost behind nearer real geometry. Matches
+            # the treatment the intersection volume already gets below.
+            previous_depth_test = gpu.state.depth_test_get()
+            gpu.state.depth_test_set("ALWAYS")
+            for group, highlights in self.group_highlights.items():
+                if not self.show_groups.get(group, True):
+                    continue
+                rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
+                color = (*rgb, 0.15)
+                for highlight in highlights:
+                    self.draw_highlighted_object(highlight, color, draw_planes, draw_key)
+            gpu.state.depth_test_set(previous_depth_test)
         if self.show_volume:
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")

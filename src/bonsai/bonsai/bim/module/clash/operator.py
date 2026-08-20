@@ -1262,9 +1262,19 @@ class SelectSmartGroup(bpy.types.Operator):
 
         # `global_ids` is a_global_id, b_global_id, a_global_id, b_global_id, ...
         global_ids = list(selected_smart_group.global_ids)
-        for i in range(0, len(global_ids) - 1, 2):
+        total = len(global_ids) // 2
+        print(f"\n[Bonsai Clash] Activating smart group '{selected_smart_group.name}' ({total} pair(s))...")
+        _t0 = time.time()
+
+        positions = []
+        resolved_any = False
+        for pi, i in enumerate(range(0, len(global_ids) - 1, 2)):
+            print(f"[Bonsai Clash]   [{pi + 1}/{total}] {global_ids[i].name} vs {global_ids[i + 1].name}")
+
             a_highlight, a_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i].name)
             b_highlight, b_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i + 1].name)
+            print(f"[Bonsai Clash]     A: {'found' if a_highlight else 'not found'} ({global_ids[i].name})")
+            print(f"[Bonsai Clash]     B: {'found' if b_highlight else 'not found'} ({global_ids[i + 1].name})")
 
             if a_product:
                 products.append(a_product)
@@ -1277,21 +1287,35 @@ class SelectSmartGroup(bpy.types.Operator):
             group_highlights[g1].append(a_highlight)
             group_highlights[g2].append(b_highlight)
 
+            print(f"[Bonsai Clash]     Resolving geometry...")
+            _tg = time.time()
             geometry_a = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(a_highlight))
             geometry_b = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(b_highlight))
-            if geometry_a and geometry_b:
-                intersections.append(SelectClash.compute_intersection_geometry(geometry_a, geometry_b))
+            print(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
+            if geometry_a:
+                positions.extend(geometry_a[0])
+                resolved_any = True
+            if geometry_b:
+                positions.extend(geometry_b[0])
+                resolved_any = True
 
+            if geometry_a and geometry_b:
+                print(f"[Bonsai Clash]     Computing intersection volume...")
+                _ti = time.time()
+                intersections.append(SelectClash.compute_intersection_geometry(geometry_a, geometry_b))
+                print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+            else:
+                print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
+
+        if not resolved_any:
+            print(f"[Bonsai Clash] No clashes resolved — nothing to display.")
+            return {"FINISHED"}
+
+        print(f"[Bonsai Clash]   Installing decorator...")
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
-
-        positions = []
-        for highlights in group_highlights.values():
-            for highlight in highlights:
-                geometry = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(highlight))
-                if geometry:
-                    positions.extend(geometry[0])
+        print(f"[Bonsai Clash] Done in {time.time() - _t0:.2f}s\n")
 
         if self.move_camera and positions:
             target = sum(positions, Vector()) / len(positions)

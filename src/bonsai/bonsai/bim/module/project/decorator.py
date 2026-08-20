@@ -269,7 +269,7 @@ class ClippingPlaneDecorator:
             ]
             self.draw_batch("LINES", arrow, selected_elements_color, [(0, 1), (1, 2), (1, 3), (1, 4), (1, 5)])
             self.draw_batch("LINES", verts, selected_elements_color, edges)
-            self.draw_batch("TRIS", verts, transparent_color(selected_elements_color, 0.15), tris)
+            self.draw_batch("TRIS", verts, tool.Blender.transparent_color(selected_elements_color, 0.15), tris)
 
 
 class LaserDecorator(tool.Blender.ViewportDecorator):
