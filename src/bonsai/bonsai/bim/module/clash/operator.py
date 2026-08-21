@@ -972,8 +972,7 @@ class SelectClash(bpy.types.Operator):
         from collections import defaultdict
 
         products: list[ifcopenshell.entity_instance] = []
-        group_highlights: dict = defaultdict(list)
-        intersections: list = []
+        pair_highlights: dict = defaultdict(list)
         first_clash = None
 
         total = len(clash_props)
@@ -1016,8 +1015,6 @@ class SelectClash(bpy.types.Operator):
             pair = clash.get("pair", "ab")
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
-            group_highlights[g1].append(highlights[0])
-            group_highlights[g2].append(highlights[1])
 
             print(f"[Bonsai Clash]     Resolving geometry...")
             _tg = time.time()
@@ -1026,13 +1023,16 @@ class SelectClash(bpy.types.Operator):
             ]
             print(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
 
+            intersection = None
             if geometries[0] and geometries[1]:
                 print(f"[Bonsai Clash]     Computing intersection volume...")
                 _ti = time.time()
-                intersections.append(self.compute_intersection_geometry(geometries[0], geometries[1]))
+                intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
                 print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
             else:
                 print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
+
+            pair_highlights[g1 + g2].append({"a": highlights[0], "b": highlights[1], "intersection": intersection})
 
         if first_clash is None:
             print(f"[Bonsai Clash] No clashes resolved — nothing to display.")
@@ -1041,7 +1041,7 @@ class SelectClash(bpy.types.Operator):
         print(f"[Bonsai Clash]   Installing decorator...")
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
+        ClashDecorator.set_clash_objects(dict(pair_highlights))
         target = Vector(first_clash["p1"])
         if self.move_camera:
             tool.Clash.look_at(target, target + Vector((5, 5, 5)))
@@ -1250,8 +1250,7 @@ class SelectSmartGroup(bpy.types.Operator):
         from collections import defaultdict
 
         products: list[ifcopenshell.entity_instance] = []
-        group_highlights: dict = defaultdict(list)
-        intersections: list = []
+        pair_highlights: dict = defaultdict(list)
 
         # Build a guid→pair lookup from active clash set results
         pair_lookup: dict[str, str] = {}
@@ -1284,8 +1283,6 @@ class SelectSmartGroup(bpy.types.Operator):
             pair = pair_lookup.get(f"{global_ids[i].name}-{global_ids[i+1].name}", "ab")
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
-            group_highlights[g1].append(a_highlight)
-            group_highlights[g2].append(b_highlight)
 
             print(f"[Bonsai Clash]     Resolving geometry...")
             _tg = time.time()
@@ -1299,13 +1296,16 @@ class SelectSmartGroup(bpy.types.Operator):
                 positions.extend(geometry_b[0])
                 resolved_any = True
 
+            intersection = None
             if geometry_a and geometry_b:
                 print(f"[Bonsai Clash]     Computing intersection volume...")
                 _ti = time.time()
-                intersections.append(SelectClash.compute_intersection_geometry(geometry_a, geometry_b))
+                intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
                 print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
             else:
                 print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
+
+            pair_highlights[g1 + g2].append({"a": a_highlight, "b": b_highlight, "intersection": intersection})
 
         if not resolved_any:
             print(f"[Bonsai Clash] No clashes resolved — nothing to display.")
@@ -1314,7 +1314,7 @@ class SelectSmartGroup(bpy.types.Operator):
         print(f"[Bonsai Clash]   Installing decorator...")
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
-        ClashDecorator.set_clash_objects(dict(group_highlights), intersections)
+        ClashDecorator.set_clash_objects(dict(pair_highlights))
         print(f"[Bonsai Clash] Done in {time.time() - _t0:.2f}s\n")
 
         if self.move_camera and positions:

@@ -79,11 +79,14 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         ("draw_text", "POST_PIXEL"),
         ("draw_geometry", "POST_VIEW"),
     )
-    group_highlights: dict = {}  # {"a": [highlight, ...], "b": [...], ...}
+    # {"cd": [{"a": highlight, "b": highlight, "intersection": (positions, tris) | None}, ...], ...}
+    # Keyed by 2-letter pair (e.g. "cd") so highlights and the intersection volume for
+    # one clash can all be gated together on both member groups being visible.
+    pair_highlights: dict = {}
     group_colors: dict = {}  # {"a": (r,g,b), ...}
     show_groups: dict = {}  # {"a": True, ...}
-    c_highlights: list = []  # boolean intersection volumes
     show_volume = True
+    show_all_intersections = False  # bypass per-pair group gating for intersections only
     _geom_cache: dict = {}  # highlight -> (positions, triangle_indices) world-space, unclipped
     _batch_cache: dict = {}  # (highlight, clip_key) -> GPUBatch
     _last_clip_key: tuple = ()  # clip_key from the previous frame
@@ -100,13 +103,13 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
         cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
         cls.show_volume = props.show_volume_highlight
+        cls.show_all_intersections = props.show_all_intersections
         super().install(context)
 
     @classmethod
     def uninstall(cls):
         super().uninstall()
-        cls.group_highlights = {}
-        cls.c_highlights = []
+        cls.pair_highlights = {}
         cls._batch_cache = {}
         cls._last_clip_key = ()
         cls._clip_stable_since = 0.0
@@ -115,26 +118,30 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         # survives uninstall so re-activation skips mesh resolution.
 
     @classmethod
-    def set_clash_objects(cls, group_highlights_dict: dict, intersections=None) -> None:
+    def set_clash_objects(cls, pair_highlights_dict: dict) -> None:
         """Set the objects (or linked-element references) to highlight for one or more clashes.
 
-        Each entry in ``a_list``/``b_list`` may be ``None``, a ``bpy.types.Object``
-        (the whole object's geometry is highlighted), or a ``(bpy.types.Object, guid)``
-        tuple identifying a single element's geometry within a linked model's
-        chunked mesh.
-
-        ``intersections``, if given, is a list of static
-        ``(positions, triangle_indices)`` tuples in world space describing each
-        clash's overlapping volume.
+        ``pair_highlights_dict`` maps a 2-letter pair key (e.g. ``"cd"``) to a list of
+        per-clash entries, each a dict with keys ``"a"``, ``"b"`` (highlights - each
+        either ``None``, a ``bpy.types.Object``, or a ``(bpy.types.Object, guid)`` tuple
+        identifying a single element's geometry within a linked model's chunked mesh)
+        and ``"intersection"`` (a static ``(positions, triangle_indices)`` tuple in
+        world space describing the clash's overlapping volume, or ``None``).
         """
         cls._geom_cache.clear()
         cls._batch_cache.clear()
         cls._stable_clip_key = ()
-        cls.group_highlights = {
-            g: [h for x in highlights if (h := cls._normalize_highlight(x)) is not None]
-            for g, highlights in group_highlights_dict.items()
+        cls.pair_highlights = {
+            pair: [
+                {
+                    "a": cls._normalize_highlight(entry.get("a")),
+                    "b": cls._normalize_highlight(entry.get("b")),
+                    "intersection": entry.get("intersection"),
+                }
+                for entry in entries
+            ]
+            for pair, entries in pair_highlights_dict.items()
         }
-        cls.c_highlights = [g for g in (intersections or []) if g is not None]
 
     @staticmethod
     def _normalize_highlight(value):
@@ -312,32 +319,39 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         if selected_edges:
             self.draw_batch("LINES", selected_vertices, special_elements_color, selected_edges)
 
-        if self.group_highlights:
+        if self.pair_highlights:
             # ALWAYS depth test: this geometry is drawn coincident with the
             # real scene mesh it represents (same surface, zero offset), so
             # with normal depth testing it z-fights unpredictably against
-            # that mesh and gets lost behind nearer real geometry. Matches
-            # the treatment the intersection volume already gets below.
+            # that mesh and gets lost behind nearer real geometry.
             previous_depth_test = gpu.state.depth_test_get()
             gpu.state.depth_test_set("ALWAYS")
-            for group, highlights in self.group_highlights.items():
-                if not self.show_groups.get(group, True):
-                    continue
-                rgb = self.group_colors.get(group, (0.5, 0.5, 0.5))
-                color = (*rgb, 0.15)
-                for highlight in highlights:
-                    self.draw_highlighted_object(highlight, color, draw_planes, draw_key)
-            gpu.state.depth_test_set(previous_depth_test)
-        if self.show_volume:
-            previous_depth_test = gpu.state.depth_test_get()
-            gpu.state.depth_test_set("ALWAYS")
-            for i, raw_geometry in enumerate(self.c_highlights):
-                key = (("__c__", i), draw_key)
-                if key not in ClashDecorator._batch_cache:
-                    draw_geom = (
-                        _clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes) if draw_planes else raw_geometry
-                    )
-                    self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
-                else:
-                    self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
+            for pair, entries in self.pair_highlights.items():
+                g1 = pair[0] if len(pair) >= 1 else "a"
+                g2 = pair[1] if len(pair) >= 2 else "b"
+                # Both member groups of the pair must be visible for this pair's
+                # highlights (and, unless overridden below, its intersection) to
+                # show - turning off either C or D hides everything belonging to
+                # the CD pair, not just that group's own highlight.
+                both_visible = self.show_groups.get(g1, True) and self.show_groups.get(g2, True)
+                color_a = (*self.group_colors.get(g1, (0.5, 0.5, 0.5)), 0.15)
+                color_b = (*self.group_colors.get(g2, (0.5, 0.5, 0.5)), 0.15)
+                for idx, entry in enumerate(entries):
+                    if both_visible:
+                        if entry["a"] is not None:
+                            self.draw_highlighted_object(entry["a"], color_a, draw_planes, draw_key)
+                        if entry["b"] is not None:
+                            self.draw_highlighted_object(entry["b"], color_b, draw_planes, draw_key)
+                    raw_geometry = entry["intersection"]
+                    if self.show_volume and raw_geometry is not None and (both_visible or self.show_all_intersections):
+                        key = (("__c__", pair, idx), draw_key)
+                        if key not in ClashDecorator._batch_cache:
+                            draw_geom = (
+                                _clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes)
+                                if draw_planes
+                                else raw_geometry
+                            )
+                            self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
+                        else:
+                            self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
             gpu.state.depth_test_set(previous_depth_test)

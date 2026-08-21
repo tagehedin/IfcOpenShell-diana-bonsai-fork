@@ -69,6 +69,13 @@ def volume_visibility_update(self: "BIMClashProperties", context: bpy.types.Cont
     tool.Blender.update_all_viewports(context)
 
 
+def show_all_intersections_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    ClashDecorator.show_all_intersections = self.show_all_intersections
+    tool.Blender.update_all_viewports(context)
+
+
 def ensure_group_colors(props: "BIMClashProperties") -> None:
     existing = {item.name for item in props.group_highlight_colors}
     for name in GROUP_NAMES:
@@ -400,6 +407,12 @@ class BIMClashProperties(PropertyGroup):
     last_selected_clash_index: IntProperty(name="Last Selected Clash Index", default=-1)
     group_highlight_colors: CollectionProperty(name="Group Colors", type=BIMGroupColor)
     show_volume_highlight: BoolProperty(name="Show Volume", default=True, update=volume_visibility_update)
+    show_all_intersections: BoolProperty(
+        name="Show All Intersections",
+        description="Show every intersection volume regardless of clash group visibility",
+        default=False,
+        update=show_all_intersections_update,
+    )
     use_link_color_override: BoolProperty(
         name="Override Link Colors",
         description="Switch viewport to per-link solid colors to distinguish models during clash review",
@@ -436,6 +449,7 @@ class BIMClashProperties(PropertyGroup):
         saved_views: bpy.types.bpy_prop_collection_idprop[BIMSavedView]
         group_highlight_colors: bpy.types.bpy_prop_collection_idprop[BIMGroupColor]
         show_volume_highlight: bool
+        show_all_intersections: bool
         export_path: str
 
     @property

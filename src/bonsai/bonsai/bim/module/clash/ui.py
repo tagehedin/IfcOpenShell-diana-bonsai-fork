@@ -214,6 +214,8 @@ class BIM_PT_ifcclash(Panel):
             row = layout.row(align=True)
             icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
             row.prop(props, "show_volume_highlight", text="Intersection Volume", icon=icon_v, toggle=True)
+            row = layout.row(align=True)
+            row.prop(props, "show_all_intersections", text="Show All Intersections", icon="OVERLAY", toggle=True)
 
             row = layout.row()
             row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")
