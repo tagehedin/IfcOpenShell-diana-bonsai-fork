@@ -1824,10 +1824,14 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
             # needlessly invalidated.
             return data.get("detect_pipe_duct_profiles", True) != self.detect_pipe_duct_profiles
 
-        if should_clear_cache() and blend_filepath.exists():
-            os.remove(blend_filepath)
+        needs_rebuild = should_clear_cache() or not blend_filepath.exists()
 
-        if not blend_filepath.exists():
+        if needs_rebuild:
+            # Rebuild into a temp path and only replace the existing cache once the
+            # subprocess has actually succeeded - if it crashes partway (for any
+            # reason), the previous working cache is left intact instead of being
+            # deleted upfront with nothing to replace it.
+            tmp_blend_filepath = blend_filepath.with_suffix(".tmp.blend")
             pprops = tool.Project.get_project_props()
             gprops = tool.Georeference.get_georeference_props()
 
@@ -1862,7 +1866,7 @@ def run():
         print(f"Failed to load linked project: {{e}}")
         sys.exit(1)
     # Use str instead of as_posix to avoid issues with Windows shared paths.
-    bpy.ops.wm.save_as_mainfile(filepath=r"{str(blend_filepath)}")
+    bpy.ops.wm.save_as_mainfile(filepath=r"{str(tmp_blend_filepath)}")
 
 try:
     run()
@@ -1879,11 +1883,6 @@ except Exception as e:
                 [
                     bpy.app.binary_path,
                     "-b",
-                    # Force a guaranteed-blank scene rather than the user's own default
-                    # startup file - otherwise, if that startup file was ever saved while
-                    # a link's geometry was loaded, every rebuild starts from that frozen
-                    # scene state and duplicates its objects on top of it.
-                    "--factory-startup",
                     # Explicitly ask to enable Bonsai for this Blender instance
                     # as Bonsai may be just enabled and user preferences are not saved.
                     "--addons",
@@ -1894,10 +1893,17 @@ except Exception as e:
                     "1",
                 ]
             )
-            if run.returncode == 1:
+            if run.returncode == 1 or not tmp_blend_filepath.exists() or tmp_blend_filepath.stat().st_mtime < t:
                 print("An error occurred while processing your IFC.")
-                if not blend_filepath.exists() or blend_filepath.stat().st_mtime < t:
+                if tmp_blend_filepath.exists():
+                    os.remove(tmp_blend_filepath)
+                if not blend_filepath.exists():
                     return {"CANCELLED"}
+                # else: fall through and reuse the still-intact previous cache
+            else:
+                if blend_filepath.exists():
+                    os.remove(blend_filepath)
+                tmp_blend_filepath.rename(blend_filepath)
 
         self.set_model_origin_from_link()
         self.set_georeferencing_indicator()
