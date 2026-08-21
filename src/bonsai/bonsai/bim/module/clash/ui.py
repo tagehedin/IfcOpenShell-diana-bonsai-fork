@@ -159,6 +159,27 @@ class BIM_PT_ifcclash(Panel):
             draw_clash_set_group(group)
             layout.separator()
 
+        if clash_set.clashes_loaded:
+            row = layout.row(align=True)
+            icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
+            row.prop(props, "show_volume_highlight", text="Intersection Volume", icon=icon_v, toggle=True)
+            row = layout.row(align=True)
+            row.prop(props, "show_all_intersections", text="Show All Intersections", icon="OVERLAY", toggle=True)
+
+            row = layout.row()
+            row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")
+            if props.use_link_color_override:
+                box = layout.box()
+                for item in props.link_color_overrides:
+                    display = item.name.split("/")[-1].split("\\")[-1]
+                    row = box.row(align=True)
+                    row.prop(item, "enabled", text="")
+                    sub = row.row(align=True)
+                    sub.active = item.enabled
+                    sub.label(text=display)
+                    sub.prop(item, "color", text="")
+            layout.separator()
+
         row = layout.row()
         row.prop(props, "should_create_clash_snapshots")
 
@@ -210,25 +231,6 @@ class BIM_PT_ifcclash(Panel):
             op = row.operator("bim.select_clash", text="Activate Clash", icon="RESTRICT_SELECT_OFF")
             op.move_camera = False
             row.operator("bim.hide_clash", text="Close Clash View")
-
-            row = layout.row(align=True)
-            icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
-            row.prop(props, "show_volume_highlight", text="Intersection Volume", icon=icon_v, toggle=True)
-            row = layout.row(align=True)
-            row.prop(props, "show_all_intersections", text="Show All Intersections", icon="OVERLAY", toggle=True)
-
-            row = layout.row()
-            row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")
-            if props.use_link_color_override:
-                box = layout.box()
-                for item in props.link_color_overrides:
-                    display = item.name.split("/")[-1].split("\\")[-1]
-                    row = box.row(align=True)
-                    row.prop(item, "enabled", text="")
-                    sub = row.row(align=True)
-                    sub.active = item.enabled
-                    sub.label(text=display)
-                    sub.prop(item, "color", text="")
         else:
             row.label(text="Clashes Are Not Loaded", icon="PIVOT_CURSOR")
 

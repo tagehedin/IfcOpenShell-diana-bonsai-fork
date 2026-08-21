@@ -213,9 +213,12 @@ _DEFAULT_LINK_COLORS = [
 
 
 def _apply_link_colors(context: bpy.types.Context, props: "BIMClashProperties") -> None:
-    if not context.screen:
-        return
     proj_props = tool.Project.get_project_props()
+    # Iterate every screen (workspace), not just context.screen - shading mode is a
+    # per-viewport-area setting, and the "current" screen at the moment this update
+    # callback fires doesn't necessarily match whichever workspace/viewport the user
+    # is actually looking at, so only touching context.screen silently misses every
+    # other open workspace's 3D viewport.
     if props.use_link_color_override:
         color_map = {o.name: o for o in props.link_color_overrides}
         for link in proj_props.links:
@@ -228,22 +231,32 @@ def _apply_link_colors(context: bpy.types.Context, props: "BIMClashProperties") 
                 handle.color = (c[0], c[1], c[2], 1.0)
             else:
                 handle.color = (1.0, 1.0, 1.0, 1.0)
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                for space in area.spaces:
-                    if space.type == "VIEW_3D":
-                        space.shading.type = "SOLID"
-                        space.shading.color_type = "OBJECT"
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                if area.type == "VIEW_3D":
+                    for space in area.spaces:
+                        if space.type == "VIEW_3D":
+                            # Only write shading.type if it's actually changing - a
+                            # redundant write still fires Bonsai's own
+                            # viewport_shading_changed_callback (bim/handler.py,
+                            # subscribed via msgbus on any write, not just real
+                            # changes), which unconditionally forces color_type
+                            # back to MATERIAL on SOLID shading, undoing the next
+                            # line below on the following redraw.
+                            if space.shading.type != "SOLID":
+                                space.shading.type = "SOLID"
+                            space.shading.color_type = "OBJECT"
     else:
         for link in proj_props.links:
             handle = tool.Project.get_link_empty_handle(link)
             if handle:
                 handle.color = (1.0, 1.0, 1.0, 1.0)
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                for space in area.spaces:
-                    if space.type == "VIEW_3D":
-                        space.shading.color_type = "MATERIAL"
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                if area.type == "VIEW_3D":
+                    for space in area.spaces:
+                        if space.type == "VIEW_3D":
+                            space.shading.color_type = "MATERIAL"
     tool.Blender.update_all_viewports(context)
 
 
