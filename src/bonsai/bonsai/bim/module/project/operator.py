@@ -3316,11 +3316,12 @@ class HideQueriedLinkedElement(bpy.types.Operator):
 
     def run_unhide_all(self) -> set["rna_enums.OperatorReturnItems"]:
         props = tool.Project.get_project_props()
-        link = props.active_link
-        if not link:
-            self.report({"INFO"}, "No linked model is currently selected.")
+        if not props.links:
+            self.report({"INFO"}, "No linked models are loaded.")
             return {"FINISHED"}
-        tool.Project.Link.unhide_all_elements(link)
+        for link in props.links:
+            if link.is_loaded:
+                tool.Project.Link.unhide_all_elements(link)
         self.report({"INFO"}, "All linked model geometry is unhidden.")
         return {"FINISHED"}
 
@@ -3330,13 +3331,48 @@ class HideQueriedLinkedElement(bpy.types.Operator):
         if not obj:
             self.report({"INFO"}, "No object is queried.")
             return {"FINISHED"}
-        link = props.active_link
+        # Derive the link from the queried object itself, not props.active_link -
+        # that's just whichever row is selected in the separate Links UI list,
+        # which querying an element in the viewport never syncs.
+        link = tool.Project.get_link_by_object(obj)
         if not link:
-            self.report({"INFO"}, "No linked model is currently selected.")
+            self.report({"INFO"}, "Could not determine which linked model the queried object belongs to.")
             return {"FINISHED"}
         guid = props.queried_guid
+        print(f"[Hide All Except] Queried object: {obj.name!r} ({guid}) -> link: {link.name!r}")
         tool.Project.Link.hide_all_elements_except(link, obj, guid)
         self.report({"INFO"}, "All other linked model geometry is now hidden.")
+        return {"FINISHED"}
+
+
+class HideQueriedElementIfcClass(bpy.types.Operator):
+    bl_idname = "bim.hide_queried_element_ifc_class"
+    bl_label = "Hide IFC Class"
+    bl_description = "Hide every element of the queried element's IFC class within its linked model"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context) -> set["rna_enums.OperatorReturnItems"]:
+        from bonsai.bim.module.project.data import LinksData
+
+        props = tool.Project.get_project_props()
+        obj = props.queried_obj
+        if not obj:
+            self.report({"INFO"}, "No object is queried.")
+            return {"FINISHED"}
+        ifc_class = LinksData.linked_data.get("attributes", {}).get("IFC Class")
+        if not ifc_class:
+            self.report({"INFO"}, "Could not determine the queried element's IFC class.")
+            return {"FINISHED"}
+        link = tool.Project.get_link_by_object(obj)
+        if not link:
+            self.report({"INFO"}, "Could not determine which linked model the queried object belongs to.")
+            return {"FINISHED"}
+        print(
+            f"[Hide IFC Class] Queried object: {obj.name!r} ({props.queried_guid}, class={ifc_class!r}) "
+            f"-> searching link: {link.name!r}"
+        )
+        count = tool.Project.Link.hide_elements_by_class(link, ifc_class, obj["db"])
+        self.report({"INFO"}, f"Hid {count} {ifc_class} element(s).")
         return {"FINISHED"}
 
 

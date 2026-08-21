@@ -132,6 +132,8 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Unhide All")
         op.hotkey = "A_H"
+        row = layout.row(align=True)
+        row.operator("bim.hide_queried_element_ifc_class", text="Hide IFC Class")
 
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Image Scaling")

@@ -90,6 +90,22 @@ class Project(bonsai.core.tool.Project):
             link.empty_handle = empty
 
     @classmethod
+    def get_link_by_object(cls, obj: bpy.types.Object) -> Link | None:
+        """Find which loaded Link a linked-model chunk object belongs to, by
+        matching its library against each link's instance collection library -
+        NOT via ``props.active_link``, which is just whichever row happens to be
+        selected in the Links UI list and has no relation to what's actually
+        been queried/clicked on in the viewport."""
+        if not obj.library:
+            return None
+        props = tool.Project.get_project_props()
+        for link in props.links:
+            handle = tool.Project.get_link_empty_handle(link)
+            if handle and (col := handle.instance_collection) and col.library == obj.library:
+                return link
+        return None
+
+    @classmethod
     def calculate_link_matrix(cls, link: Link) -> Matrix:
         filepath = Path(tool.Ifc.resolve_uri(link.filepath))
         with open(filepath.with_suffix(".ifc.cache.json"), "r") as f:
@@ -936,13 +952,73 @@ class Project(bonsai.core.tool.Project):
             obj["hidden_indices"] = hidden_indices
 
         @classmethod
+        def iter_link_chunk_objects(cls, col: bpy.types.Collection) -> Iterator[bpy.types.Object]:
+            """Recursively walk a link's instance collection tree, yielding every
+            object - chunk objects live in per-storey sub-collections (e.g.
+            "Plan 10", created by the geometry-baking pass), not directly in the
+            top-level collection, so a plain ``col.objects`` misses all of them."""
+            yield from col.objects
+            for child in col.children:
+                yield from cls.iter_link_chunk_objects(child)
+
+        @classmethod
+        def hide_elements_by_class(cls, link: Link, ifc_class: str, db_filepath: str) -> int:
+            """Hide every element of the given IFC class within one linked model.
+
+            Batched per chunk object rather than looping ``hide_linked_element``
+            once per matching guid: that would recompute ``guid_ids`` (a numpy
+            array rebuilt from an ID-property) and re-read/re-write
+            ``hidden_indices`` once per element, and issue one
+            ``vertex_group.add()`` call per element instead of one per chunk -
+            all avoidable when a chunk has many matches (e.g. hiding every
+            IfcSpace in a large model). Returns the number of elements hidden.
+            """
+            import sqlite3
+
+            handle = tool.Project.get_link_empty_handle(link)
+            assert handle
+            col = handle.instance_collection
+            assert col
+
+            db = sqlite3.connect(db_filepath)
+            c = db.cursor()
+            c.execute("SELECT global_id FROM elements WHERE ifc_class = ?", (ifc_class,))
+            target_guids = {row[0] for row in c.fetchall()}
+            db.close()
+
+            hidden_count = 0
+            for obj_ in cls.iter_link_chunk_objects(col):
+                if "guids" not in obj_:
+                    continue
+                guids: list[str] = obj_["guids"]
+                already_hidden = set(obj_.get("hidden_indices") or [])
+                matching_indices = [i for i, g in enumerate(guids) if g in target_guids and i not in already_hidden]
+                if not matching_indices:
+                    continue
+
+                guid_ids = cls.get_linked_element_guid_ids(obj_, skip_hidden=False)
+                assert isinstance(mesh := obj_.data, bpy.types.Mesh)
+                all_verts: set[int] = set()
+                for index in matching_indices:
+                    guid_end_index = guid_ids[index]
+                    guid_start_index = index and guid_ids[index - 1]
+                    for polygon in mesh.polygons[guid_start_index:guid_end_index]:
+                        all_verts.update(polygon.vertices)
+
+                vertex_group = cls.setup_hide_modifier(obj_, "hide_selected")
+                vertex_group.add(list(all_verts), 1.0, "REPLACE")
+                obj_["hidden_indices"] = sorted(already_hidden | set(matching_indices))
+                hidden_count += len(matching_indices)
+            return hidden_count
+
+        @classmethod
         def unhide_all_elements(cls, link: Link) -> None:
             obj = tool.Project.get_link_empty_handle(link)
             assert obj
             col = obj.instance_collection
             assert col
 
-            for obj_ in col.objects:
+            for obj_ in cls.iter_link_chunk_objects(col):
                 obj_.hide_viewport = False
 
                 if "hidden_indices" not in obj_:
@@ -958,7 +1034,7 @@ class Project(bonsai.core.tool.Project):
             col = handle.instance_collection
             assert col
 
-            for obj_ in col.objects:
+            for obj_ in cls.iter_link_chunk_objects(col):
                 if "guids" not in obj_:
                     continue
                 if obj_ != queried_obj:
