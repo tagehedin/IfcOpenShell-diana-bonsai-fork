@@ -33,7 +33,6 @@ requirements:
     - occt
     - libxml2
     - cgal-cpp
-    - hdf5
     - eigen
     - mpfr
     - nlohmann_json
@@ -282,11 +281,6 @@ about:
     </tr>
     <tr>
       <td>ifcwrap</td>
-      <td>Internal library for IfcOpenShell</td>
-      <td>LGPL-3.0-or-later*</td>
-    </tr>
-    <tr>
-      <td>qtviewer</td>
       <td>Internal library for IfcOpenShell</td>
       <td>LGPL-3.0-or-later*</td>
     </tr>

@@ -27,11 +27,13 @@ dependencies = [
 
 [project.optional-dependencies]
 advanced = [
+  # `express` module - only for generating schemas.
   "networkx",
 ]
 dev = [
   "pytest",
   "tabulate",
+  "types-networkx",
 ]
 
 [project.urls]
@@ -46,6 +48,6 @@ include = ["ifcopenshell*"]
 
 [tool.ruff]
 extend = "../../pyproject.toml"
-lint.select = [
-  "F401",  # unused imports
+lint.extend-select = [
+  "unused-import",  # unused imports
 ]

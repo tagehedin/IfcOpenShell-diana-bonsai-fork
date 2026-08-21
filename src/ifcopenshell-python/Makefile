@@ -1,7 +1,10 @@
 SHELL := sh
 IS_STABLE:=FALSE
 VERSION:=$(shell cat ../../VERSION)
+VERSION_BASE:=$(shell sed -E 's/[[:alpha:]]+[0-9]+$$//' ../../VERSION)
+VERSION_PYTHON:=$(shell sed 's/alpha/a/' ../../VERSION)
 VERSION_DATE:=$(shell date '+%y%m%d')
+VERSION_DAILY:=$(VERSION_BASE)a$(VERSION_DATE)
 PYVERSION:=py311
 PLATFORM:=linux64
 
@@ -55,7 +58,7 @@ PLATFORMTAG:=win_amd64
 endif
 
 BINARY_VERSION:=0.8.6
-BUILD_COMMIT:=3e7b739
+BUILD_COMMIT:=e333c1c
 IOS_URL:=https://s3.amazonaws.com/ifcopenshell-builds/ifcopenshell-python-$(PYNUMBER)-v$(BINARY_VERSION)-$(BUILD_COMMIT)-$(PLATFORM).zip
 IFCCONVERT_URL:=https://s3.amazonaws.com/ifcopenshell-builds/IfcConvert-v$(BINARY_VERSION)-$(BUILD_COMMIT)-$(PLATFORM).zip
 
@@ -79,11 +82,6 @@ test-parallel:
 test-mathutils:
 	pytest -p no:pytest-blender test/util/test_shape_builder.py
 
-
-.PHONY: qa
-qa:
-	black .
-	pylint ./* --output-format=colorized --disable all --enable E
 
 .PHONY: license
 license:
@@ -143,19 +141,19 @@ endif
 	cp ../../README.md build/
 	cp pyproject.toml build/
 ifeq ($(IS_STABLE), TRUE)
-	$(SED) 's/version = "0.0.0"/version = "$(VERSION)"/' build/pyproject.toml
-	$(SED) 's/version = "0.0.0"/version = "$(VERSION)"/' build/ifcopenshell/__init__.py
+	$(SED) 's/version = "0.0.0"/version = "$(VERSION_PYTHON)"/' build/pyproject.toml
+	$(SED) 's/version = "0.0.0"/version = "$(VERSION_PYTHON)"/' build/ifcopenshell/__init__.py
 else
-	$(SED) 's/version = "0.0.0"/version = "$(VERSION)a$(VERSION_DATE)"/' build/pyproject.toml
-	$(SED) 's/version = "0.0.0"/version = "$(VERSION)-alpha$(VERSION_DATE)"/' build/ifcopenshell/__init__.py
+	$(SED) 's/version = "0.0.0"/version = "$(VERSION_DAILY)"/' build/pyproject.toml
+	$(SED) 's/version = "0.0.0"/version = "$(VERSION_DAILY)"/' build/ifcopenshell/__init__.py
 endif
 
 	cd build && $(PYTHON) -m venv env && . env/$(VENV_ACTIVATE) && $(PIP) install build
 	cd build && . env/$(VENV_ACTIVATE) && $(PYTHON) -m build
 
 ifeq ($(IS_STABLE), TRUE)
-	mv build/dist/ifcopenshell-*.whl dist/ifcopenshell-$(VERSION)-$(PYVERSION)-none-$(PLATFORMTAG).whl
+	mv build/dist/ifcopenshell-*.whl dist/ifcopenshell-$(VERSION_PYTHON)-$(PYVERSION)-none-$(PLATFORMTAG).whl
 else
-	cp build/dist/ifcopenshell-*.whl dist/ifcopenshell-$(VERSION)a$(VERSION_DATE)-$(PYVERSION)-none-$(PLATFORMTAG).whl
+	cp build/dist/ifcopenshell-*.whl dist/ifcopenshell-$(VERSION_DAILY)-$(PYVERSION)-none-$(PLATFORMTAG).whl
 endif
 	rm -rf build

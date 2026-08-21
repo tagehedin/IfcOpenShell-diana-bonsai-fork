@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -43,6 +43,7 @@ jobs:
           sudo apt update
           sudo apt-get install --no-install-recommends -y \
             cmake \
+            bison \
             gcc \
             g++ \
             libboost-date-time-dev \
@@ -61,13 +62,23 @@ jobs:
             libocct-ocaf-dev \
             libocct-visualization-dev \
             libpcre3-dev \
+            libpcre2-dev \
             libtbb-dev \
             libxml2-dev \
             libxi-dev \
             occt-misc \
             tcl-dev \
-            tk-dev \
-            swig
+            tk-dev
+
+      - name: Build SWIG
+        # IfcOpenShell requires SWIG 4.1+, ubuntu-22.04 ships 4.0.2.
+        run: |
+          sudo apt-get remove --purge -y swig swig4.0
+          git clone https://github.com/swig/swig --branch v4.2.1 --depth 1
+          cmake -S swig -B swig/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build swig/build -j "$(nproc)"
+          sudo cmake --install swig/build
+          swig -version
 
       - name: Configure minimal IfcOpenShell
         run: |
@@ -85,7 +96,7 @@ jobs:
           cmake --build build-ifcopenshell --target install -j "$(nproc)"
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: 3.11
 
@@ -120,7 +131,7 @@ jobs:
           PY
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: 3.12
 

@@ -4,7 +4,7 @@
 
 #include <boost/range/combine.hpp>
 
-using namespace ifcopenshell::geometry;
+using namespace ifcopenshell::geom;
 
 namespace {
 	// std::lerp when upgrading to C++ 20
@@ -35,7 +35,7 @@ bool has_intersection(const std::set<T, Cmp>& A,
 
 }
 
-taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_, const IfcUtil::IfcBaseClass* inst, const taxonomy::function_item::ptr& fn, std::vector<cross_section>& cross_sections, Logger& logger)
+taxonomy::loft::ptr ifcopenshell::geom::make_loft(const ifcopenshell::geom::settings& settings, const express::base inst, const taxonomy::function_item::ptr& fn, std::vector<cross_section>& cross_sections, logger& logger)
 {
 	std::sort(cross_sections.begin(), cross_sections.end());
 
@@ -46,20 +46,20 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 	// @todo currently only the case is handled where directrix returns a function_item
 	// @todo this "if" statement is not really required because the function returns at the start if the Directrix is not a function_item function
 	if (fn) {
-		function_item_evaluator evaluator(settings_, fn);
+		function_item_evaluator evaluator(settings, fn);
 		double start = std::max(0., cross_sections.front().dist_along);
 		double end = std::min(fn->length(), cross_sections.back().dist_along);
 
 		if (end - start < 1.e-9) {
-			Logger::Root().Warning("GEO", 40, "Empty sweep domain with start at " + std::to_string(cross_sections.front().dist_along) + " end at " + std::to_string(cross_sections.back().dist_along) + " and curve domain length " + std::to_string(fn->length()), inst);
+			logger.warning("GEO", 40, "Empty sweep domain with start at " + std::to_string(cross_sections.front().dist_along) + " end at " + std::to_string(cross_sections.back().dist_along) + " and curve domain length " + std::to_string(fn->length()), inst);
 			return nullptr;
 		}
 
 		auto curve_length = end - start;
-		auto param_type = settings_.get<ifcopenshell::geometry::settings::FunctionStepType>().get();
-		auto param = settings_.get<ifcopenshell::geometry::settings::FunctionStepParam>().get();
+		auto param_type = settings.get<ifcopenshell::geom::settings::FunctionStepType>().get();
+		auto param = settings.get<ifcopenshell::geom::settings::FunctionStepParam>().get();
 		size_t num_steps = 0;
-		if (param_type == ifcopenshell::geometry::settings::FunctionStepMethod::MAXSTEPSIZE) {
+		if (param_type == ifcopenshell::geom::settings::FunctionStepMethod::MAXSTEPSIZE) {
 			// parameter is max step size
 			num_steps = (size_t)std::ceil(curve_length / param);
 		} else {
@@ -78,7 +78,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 			while (dist_along > *(profile_index + 1)) {
 				profile_index++;
 				if (profile_index == longitudes.end()) {
-					// @todo handle this? 
+					// @todo handle this?
 				}
 			}
 
@@ -98,12 +98,12 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 				(profile_index + 1 < longitudes.end()) &&
 				(relative_dist_along >= 1.e-9 || offset_a.cwiseAbs().maxCoeff() > 0. || rotation_a);
 
-			boost::optional<Eigen::Matrix3d> interpolated_rotation;
+			std::optional<Eigen::Matrix3d> interpolated_rotation;
 
 			if (should_interpolate) {
 				taxonomy::geom_item::ptr profile_b;
 				Eigen::Vector3d offset_b;
-				boost::optional<Eigen::Matrix3d> rotation_b;
+				std::optional<Eigen::Matrix3d> rotation_b;
 				if ((profile_index + 1 < longitudes.end())) {
 					profile_b = cross_sections[std::distance(longitudes.begin(), profile_index) + 1].section_geometry;
 					offset_b = cross_sections[std::distance(longitudes.begin(), profile_index) + 1].offset;
@@ -130,7 +130,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 						auto profile_b_f = std::static_pointer_cast<taxonomy::face>(profile_b);
 
 						if (profile_a_f->children.size() != profile_b_f->children.size()) {
-							Logger::Root().Warning("GEO", 41, "Mismatching number of face boundaries: " +
+							logger.warning("GEO", 41, "Mismatching number of face boundaries: " +
 								std::to_string(profile_a_f->children.size()) + " vs " +
 								std::to_string(profile_b_f->children.size()),
 								inst
@@ -158,14 +158,14 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 						}
 						interpolated->matrix->components() = lerp(m4a, m4b, relative_dist_along);
 					}
-					
+
 					auto interpolated_offset = lerp(offset_a, offset_b, relative_dist_along);
-                    if (rotation_a.has_value() && rotation_b.has_value() ) {
-                            // @todo we don't support an overridden rotation on only one of the placements
+                    if (rotation_a == rotation_b && rotation_a) {
+                        // @todo we don't support an overridden rotation on only one of the placements
                         // in which case we would need to lerp with the rotation component below in m4b.
                         interpolated_rotation = lerp(*rotation_a, *rotation_b, relative_dist_along);
                     } else if (rotation_a != rotation_b) {
-                        logger.Error("GEO", 42, "Direction vectors on cross section placements only supported when used consistently");
+                        logger.error("GEO", 42, "Direction vectors on cross section placements only supported when used consistently");
 					}
 
 					taxonomy::loop::ptr w1, w2;
@@ -176,12 +176,12 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 						boost::tie(w1, w2) = tmp_;
 
 						if (w1->closed != w2->closed) {
-							logger.Warning("GEO", 43, "Mismatching closed property on loops", inst);
+							logger.warning("GEO", 43, "Mismatching closed property on loops", inst);
 							return nullptr;
                         }
 
-						if (w1->tags.is_initialized() != w2->tags.is_initialized()) {
-							logger.Warning("GEO", 44, "Mismatching availability tags on loops", inst);
+						if (w1->tags.has_value() != w2->tags.has_value()) {
+							logger.warning("GEO", 44, "Mismatching availability tags on loops", inst);
 							return nullptr;
                         }
 
@@ -190,7 +190,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
                             std::set<std::string> tags_seen;
                             for (const auto& t : *w1->tags) {
 								if (tags_seen.find(t) != tags_seen.end()) {
-									logger.Warning("GEO", 45, "Duplicate tag '" + t + "' on loft profile", inst);
+									logger.warning("GEO", 45, "Duplicate tag '" + t + "' on loft profile", inst);
 									return nullptr;
 								}
 								tags_seen.insert(t);
@@ -202,7 +202,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
                             std::set<std::string> tags_seen;
                             for (const auto& t : *w2->tags) {
                                 if (tags_seen.find(t) != tags_seen.end()) {
-                                    logger.Warning("GEO", 46, "Duplicate tag '" + t + "' on loft profile", inst);
+                                    logger.warning("GEO", 46, "Duplicate tag '" + t + "' on loft profile", inst);
                                     return nullptr;
                                 }
                                 tags_seen.insert(t);
@@ -211,26 +211,26 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 
 						std::map<std::string, taxonomy::point3::ptr> tag_to_point_on_w1, tag_to_point_on_w2;
 
-						auto loop_to_points = [](const taxonomy::loop::ptr& loop, const boost::optional<std::vector<std::string>>& input_tags) -> std::pair<std::vector<taxonomy::point3::ptr>, std::vector<std::set<std::string>>> {
+						auto loop_to_points = [](const taxonomy::loop::ptr& loop, const std::optional<std::vector<std::string>>& input_tags) -> std::pair<std::vector<taxonomy::point3::ptr>, std::vector<std::set<std::string>>> {
                             std::vector<taxonomy::point3::ptr> points;
                             std::vector<std::set<std::string>> tags;
                             std::vector<std::string>::const_iterator tag_it;
-                            
-							if (!loop->closed.get_value_or(false)) {
-                                points = {boost::get<taxonomy::point3::ptr>(loop->children[0]->start)};
+
+							if (!loop->closed.value_or(false)) {
+                                points = {std::get<taxonomy::point3::ptr>(loop->children[0]->start)};
                                 if (input_tags) {
                                     tags = {{input_tags->front()}};
                                     tag_it = ++input_tags->begin();
                                 }
 							}
 							for (auto& e : loop->children) {
-								const auto& p1_ = boost::get<taxonomy::point3::ptr>(e->start);
-								const auto& p2_ = boost::get<taxonomy::point3::ptr>(e->end);
-                                if (input_tags && p1_->ccomponents() == p2_->ccomponents()) {
+								const auto& p1 = std::get<taxonomy::point3::ptr>(e->start);
+								const auto& p2 = std::get<taxonomy::point3::ptr>(e->end);
+                                if (input_tags && p1->ccomponents() == p2->ccomponents()) {
                                     tags.back().insert(*tag_it);
                                     ++tag_it;
                                 } else {
-                                    points.push_back(p2_);
+                                    points.push_back(p2);
                                     if (input_tags) {
                                         tags.emplace_back();
                                         tags.back().insert(*tag_it);
@@ -239,7 +239,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
                                 }
 							}
                             if (!input_tags) {
-                                if (loop->closed.get_value_or(false)) {
+                                if (loop->closed.value_or(false)) {
 									// close polygon by referencing first point
 									points.push_back(points.front());
                                 }
@@ -303,20 +303,20 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 
 							for (auto& p1_tags : w1_tags) {
                                 if (!has_intersection(p1_tags, w2_tags_combined)) {
-                                    logger.Warning("GEO", 47, "No matching tags found on loft profiles: " + join_tags(p1_tags) + " not in " + join_tags(w2_tags_combined), inst);
+                                    logger.warning("GEO", 47, "No matching tags found on loft profiles: " + join_tags(p1_tags) + " not in " + join_tags(w2_tags_combined), inst);
 									return nullptr;
 								}
 							}
 
 							for (auto& p2_tags : w2_tags) {
                                 if (!has_intersection(p2_tags, w1_tags_combined)) {
-                                    logger.Warning("GEO", 48, "No matching tags found on loft profiles: " + join_tags(p2_tags) + " not in " + join_tags(w1_tags_combined), inst);
+                                    logger.warning("GEO", 48, "No matching tags found on loft profiles: " + join_tags(p2_tags) + " not in " + join_tags(w1_tags_combined), inst);
                                     return nullptr;
 								}
                             }
 						} else {
                             if (w1->children.size() != w2->children.size()) {
-                                logger.Warning("GEO", 49, "Mismatching number of edges: " +
+                                logger.warning("GEO", 49, "Mismatching number of edges: " +
                                                     std::to_string(w1->children.size()) + " vs " +
                                                     std::to_string(w2->children.size()),
                                                 inst);
@@ -334,10 +334,10 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
                                     continue;
                                 }
 
-                                const auto& p1_ = tag_to_point_on_w1[t];
-                                const auto& p2_ = tag_to_point_on_w2[t];
+                                const auto& tagged_point_on_w1 = tag_to_point_on_w1[t];
+                                const auto& tagged_point_on_w2 = tag_to_point_on_w2[t];
 
-                                auto p3 = (lerp(p1_->ccomponents(), p2_->ccomponents(), relative_dist_along) + interpolated_offset).eval();
+                                auto p3 = (lerp(tagged_point_on_w1->ccomponents(), tagged_point_on_w2->ccomponents(), relative_dist_along) + interpolated_offset).eval();
 
                                 std::set<std::string> tags_for_this_point_on_subsequent_profile = {t};
 
@@ -352,7 +352,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
                                 for (auto& x : tags_for_this_point_on_subsequent_profile) {
 									points.push_back(taxonomy::make<taxonomy::point3>(p3));
                                     common_tags_vec.push_back(x);
-                                }     
+                                }
                             }
                         } else {
                             for (auto tmp__ : boost::combine(w1_points, w2_points)) {
@@ -365,13 +365,13 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 						/*
 						// This is handled in the loop_to_points() function above
                         if (!points.empty()) {
-							if (!w1->closed.get_value_or(true) && !w2->closed.get_value_or(true)) {
+							if (!w1->closed.value_or(true) && !w2->closed.value_or(true)) {
                                 // open polygon, add last point
-                                auto& p1 = boost::get<taxonomy::point3::ptr>(w1->children.back()->end);
-                                auto& p2 = boost::get<taxonomy::point3::ptr>(w2->children.back()->end);
+                                auto& p1 = std::get<taxonomy::point3::ptr>(w1->children.back()->end);
+                                auto& p2 = std::get<taxonomy::point3::ptr>(w2->children.back()->end);
                                 auto p3 = (lerp(p1->ccomponents(), p2->ccomponents(), relative_dist_along) + interpolated_offset).eval();
                                 points.push_back(taxonomy::make<taxonomy::point3>(p3));
-                            } else if (w1->closed.get_value_or(true) && w2->closed.get_value_or(true)) {
+                            } else if (w1->closed.value_or(true) && w2->closed.value_or(true)) {
                                 // close polygon by referencing first point
                                 // @todo add a closed=true|false to polygon_from_points()?
                                 points.push_back(points.front());
@@ -396,7 +396,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 
 			auto m4 = evaluator.evaluate(dist_along);
 			/* {
-				std::wcout << "#" << pwf->instance->data().id() << " " << dist_along << ": " << m4.col(3).row(2).value() << std::endl;
+				std::wcout << "#" << pwf->instance.data().id() << " " << dist_along << ": " << m4.col(3).row(2).value() << std::endl;
 			}*/
 
 			Eigen::Matrix4d m4b = Eigen::Matrix4d::Identity();
@@ -431,6 +431,7 @@ taxonomy::loft::ptr ifcopenshell::geometry::make_loft(const Settings& settings_,
 			auto m = (m4b * loft->children.back()->matrix->ccomponents()).eval();
 			loft->children.back()->matrix->components() = m;
 		}
+
 	}
 
 	return loft;

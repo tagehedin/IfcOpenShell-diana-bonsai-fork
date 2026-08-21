@@ -1889,6 +1889,7 @@ class DumbWallJoiner:
         # Get the ATEND connection from wall1 to use it in wall2
         relating_element = None
         connections = element1.ConnectedTo
+        relating_connection, description = ..., ...
         for conn in connections:
             if conn.is_a("IfcRelConnectsPathElements") and conn.RelatingConnectionType == "ATEND":
                 relating_element = conn.RelatedElement
@@ -1903,6 +1904,7 @@ class DumbWallJoiner:
                 description = conn.Description
                 bonsai.core.geometry.remove_connection(tool.Geometry, connection=conn)
         if relating_element:
+            assert relating_connection is not ... and description is not ...
             ifcopenshell.api.geometry.connect_path(
                 tool.Ifc.get(),
                 relating_element=relating_element,
@@ -2484,7 +2486,7 @@ class GizmoWallEdition(bpy.types.GizmoGroup, gizmo.BaseParametricGizmoGroup):
         return (far, near)
 
     def _update_dimension_gizmo_positions(
-        self, context: bpy.types.Context, mw: Matrix, props: "BIMWallProperties"  # noqa: ARG002
+        self, context: bpy.types.Context, mw: Matrix, props: "BIMWallProperties"
     ) -> None:
         """Re-position length / height / height_end dimensions to the camera-facing
         Y-side of the wall every frame. Mirrors the door & stair pattern: when the
@@ -2840,7 +2842,7 @@ def _perpendicular_wall_params(
     return clamped_x, abs(cursor_local_y), side_sign
 
 
-def _commit_pending_wall_edits_for_selection(context: bpy.types.Context) -> None:  # noqa: ARG001
+def _commit_pending_wall_edits_for_selection(context: bpy.types.Context) -> None:
     """Thin wall-scoped alias for ``tool.Parametric.commit_pending_edits_for_selection``.
 
     Encapsulates the ``names=("wall",)`` filter so the registry name is

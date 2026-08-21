@@ -25,7 +25,7 @@ import time
 import ifcopenshell.ifcopenshell_wrapper as W
 
 try:
-    from OCC.Core import AIS  # noqa: F401
+    from OCC.Core import AIS  # ruff: ignore[unused-import]
 
     USE_OCCT_HANDLE = False
 except ImportError:
@@ -34,12 +34,6 @@ except ImportError:
 
 from collections import OrderedDict, defaultdict
 from collections.abc import Iterable
-
-try:
-    QString = unicode
-except NameError:
-    # Python 3
-    QString = str
 
 os.environ["QT_API"] = "pyqt5"
 try:
@@ -145,8 +139,7 @@ class configuration:
             config.set(
                 "snippets",
                 "print all wall ids",
-                self.config_encode(
-                    """
+                self.config_encode("""
 ###########################################################################
 # A simple script that iterates over all walls in the current model       #
 # and prints their Globally unique IDs (GUIDS) to the console window      #
@@ -154,15 +147,13 @@ class configuration:
 
 for wall in model.by_type("IfcWall"):
     print ("wall with global id: "+str(wall.GlobalId))
-""".lstrip()
-                ),
+""".lstrip()),
             )
 
             config.set(
                 "snippets",
                 "print properties of current selection",
-                self.config_encode(
-                    """
+                self.config_encode("""
 ###########################################################################
 # A simple script that iterates over all IfcPropertySets of the currently #
 # selected object and prints them to the console                          #
@@ -180,8 +171,7 @@ if selection:
              for prop in relDefinesByProperties.RelatingPropertyDefinition.HasProperties:
                  print ("{:<20} :{}".format(prop.Name,prop.NominalValue.wrappedValue))
          print ("\\n")
-""".lstrip()
-                ),
+""".lstrip()),
             )
             with open(conf_file, "w") as configfile:
                 config.write(configfile)
@@ -307,7 +297,7 @@ class application(QtWidgets.QApplication):
                     s = get_supertype(t)
                     if s:
                         add(s)
-                    s2, t2 = map(QString, (s, t))
+                    s2, t2 = map(str, (s, t))
                     if t2 not in items:
                         itm = items[t2] = QtWidgets.QTreeWidgetItem(items.get(s2, self), [t2])
                         itm.setData(0, QtCore.Qt.UserRole, t2)
@@ -317,7 +307,7 @@ class application(QtWidgets.QApplication):
                     add(t)
 
             for p in products:
-                t = QString(p.is_a())
+                t = str(p.is_a())
                 itm = items[p] = QtWidgets.QTreeWidgetItem(items.get(t, self), [p.Name or "<no name>"])
                 itm.setData(0, QtCore.Qt.UserRole, t)
                 self.children[t].append(p)
@@ -370,10 +360,7 @@ class application(QtWidgets.QApplication):
                         if hasattr(value_str, "wrappedValue"):
                             value_str = value_str.wrappedValue
 
-                        if isinstance(value_str, unicode):
-                            value_str = value_str.encode("utf-8")
-                        else:
-                            value_str = str(value_str)
+                        value_str = str(value_str)
 
                         if hasattr(value, "is_a"):
                             type_str = " <i>(%s)</i>" % value.is_a()
@@ -467,7 +454,6 @@ class application(QtWidgets.QApplication):
             qtViewer3d.__init__(self, widget)
             self.ais_to_product = {}
             self.product_to_ais = {}
-            self.counter = 0
             self.window = widget
             self.thread = None
 
@@ -492,11 +478,11 @@ class application(QtWidgets.QApplication):
                 ais = display_shape(shape, viewer_handle=v)
                 product = f[shape.data.id]
 
-                if USE_OCCT_HANDLE:
-                    ais.GetObject().SetSelectionPriority(self.counter)
-                self.ais_to_product[self.counter] = product
+                # Keyed by the AIS object itself (its __eq__/__hash__ track the
+                # underlying OCCT instance) instead of AIS_InteractiveObject.SetSelectionPriority(),
+                # which no longer exists on general AIS objects in modern pythonocc-core (#1098).
+                self.ais_to_product[ais] = product
                 self.product_to_ais[product] = ais
-                self.counter += 1
 
                 QtWidgets.QApplication.processEvents()
 
@@ -577,8 +563,9 @@ class application(QtWidgets.QApplication):
             v.InitSelected()
             if v.MoreSelected():
                 ais = v.SelectedInteractive()
-                inst = self.ais_to_product[ais.GetObject().SelectionPriority()]
-                self.instanceSelected.emit(inst)
+                inst = self.ais_to_product.get(ais)
+                if inst is not None:
+                    self.instanceSelected.emit(inst)
 
     class window(QtWidgets.QMainWindow):
 

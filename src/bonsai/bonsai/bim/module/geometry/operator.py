@@ -751,11 +751,12 @@ class UpdateRepresentation(bpy.types.Operator, tool.Ifc.Operator):
         if has_openings and not self.apply_openings:
             # Meshlike things with openings can only be updated without openings applied.
             if self.from_ui:
-                self.report({"ERROR"}, f"Object '{obj.name}' has openings - representation cannot be updated.")
+                self.report(
+                    {"ERROR"},
+                    f"Object '{obj.name}' has openings. "
+                    "ALT+click the button to bake the openings into the new representation.",
+                )
             return
-
-        if not product.is_a("IfcGridAxis"):
-            tool.Geometry.clear_cache(product)
 
         if product.is_a("IfcGridAxis"):
             # Grid geometry does not follow the "representation" paradigm and needs to be treated specially
@@ -984,7 +985,7 @@ def lock_error_message(name: str) -> str:
 
 
 def calc_delete_is_batch(ifc_file: ifcopenshell.file, context: bpy.types.Context) -> bool:
-    total_elements = len(tool.Ifc.get().wrapped_data.entity_names())
+    total_elements = len(tool.Ifc.get().entity_names())
     total_polygons = sum([len(o.data.polygons) for o in context.selected_objects if o.type == "MESH"])
     # These numbers are a bit arbitrary, but basically batching is only
     # really necessary on large models and large geometry removals.
@@ -4242,6 +4243,7 @@ class EditRepresentationItemShapeAspect(bpy.types.Operator, tool.Ifc.Operator):
         if props.representation_item_shape_aspect == "NEW":
             active_representation = tool.Geometry.get_active_representation(obj)
             # find IfcProductRepresentationSelect based on current representation
+            product_shape = None
             if hasattr(element, "Representation"):  # IfcProduct
                 product_shape = element.Representation
             else:  # IfcTypeProduct
@@ -4251,6 +4253,7 @@ class EditRepresentationItemShapeAspect(bpy.types.Operator, tool.Ifc.Operator):
             previous_shape_aspect_id = props.active_item.shape_aspect_id
             # will be None if item didn't had a shape aspect
             previous_shape_aspect = tool.Ifc.get_entity_by_id(previous_shape_aspect_id)
+            assert product_shape is not None
             shape_aspect = tool.Geometry.create_shape_aspect(
                 product_shape, active_representation, [representation_item], previous_shape_aspect
             )
@@ -4642,6 +4645,8 @@ class AddSweptAreaSolidItem(bpy.types.Operator, tool.Ifc.Operator):
             curve = builder.rectangle(size=Vector((0.5, 0.5)) / unit_scale)
         elif self.shape == "CYLINDER":
             curve = builder.circle(radius=0.25 / unit_scale)
+        else:
+            assert False, self.shape
         item = builder.extrude(
             curve,
             magnitude=0.5 / unit_scale,
@@ -4881,6 +4886,31 @@ class OverrideMoveSelect(bpy.types.Operator):
                     part_obj = tool.Ifc.get_object(part)
                     part_obj.select_set(True)
                 self.new_active_obj = obj
+            return {"FINISHED"}
+
+        # Get arrays
+        ifc_file = tool.Ifc.get()
+        array_parents_to_move: list[bpy.types.Object] = []
+        for obj in list(context.selected_objects):
+            element = tool.Ifc.get_entity(obj)
+            if not element:
+                continue
+            pset = ifcopenshell.util.element.get_pset(element, "BBIM_Array")
+            if not pset:
+                continue
+            parent_element = ifc_file.by_guid(pset["Parent"])
+            parent_obj = tool.Ifc.get_object(parent_element)
+            if parent_obj not in array_parents_to_move:
+                array_parents_to_move.append(parent_obj)
+            if element.GlobalId != pset["Parent"]:
+                obj.select_set(False)
+
+        if array_parents_to_move:
+            for parent_obj in array_parents_to_move:
+                parent_element = tool.Ifc.get_entity(parent_obj)
+                for array_obj in tool.Array.get_all_objects(parent_element):
+                    array_obj.select_set(True)
+                self.new_active_obj = parent_obj
             return {"FINISHED"}
 
         # Get nests

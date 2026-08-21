@@ -20,10 +20,14 @@
 import math
 
 import pytest
+
 import ifcopenshell
+import ifcopenshell.api.aggregate
 import ifcopenshell.api.alignment
+import ifcopenshell.api.context
+import ifcopenshell.api.spatial
 import ifcopenshell.api.unit
-import numpy as np
+import ifcopenshell.util.unit
 
 
 def test_create_representation():
@@ -53,7 +57,7 @@ def test_create_representation():
         (12799.99998062693, 89.99999997234107, 0.9999875002340269, -0.004999937569813611),
     ]
 
-    file = ifcopenshell.file(schema="IFC4X3_ADD2")
+    file = ifcopenshell.file(schema="IFC4X3")
     file.header.file_description.description = ["ViewDefinition [Alignment-basedView]"]
 
     project = file.createIfcProject(GlobalId=ifcopenshell.guid.new(), Name="FHWA Alignment")

@@ -31,7 +31,7 @@ import ifcopenshell.util.unit
 import ifcpatch
 
 try:
-    import sqlite3  # noqa: F401
+    import sqlite3  # ruff: ignore[unused-import]
 except:
     print("No SQLite support")
 

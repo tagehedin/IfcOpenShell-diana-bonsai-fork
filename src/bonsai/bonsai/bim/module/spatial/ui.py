@@ -128,6 +128,7 @@ class BIM_PT_spatial_decomposition(Panel):
         row.operator("bim.collapse_all_storeys", icon="TRIA_RIGHT", text="Collapse Storeys")
         row.operator("bim.import_storeys_from_link", icon="LINKED", text="Import from Link")
 
+        ifc_definition_id = None
         if self.props.active_container:
             ifc_definition_id = self.props.active_container.ifc_definition_id
             row = self.layout.row(align=True)
@@ -178,6 +179,7 @@ class BIM_PT_spatial_decomposition(Panel):
 
         if not self.props.active_container:
             return
+        assert ifc_definition_id is not None
 
         container_has_elements = bool(self.props.total_elements)
         if container_has_elements:

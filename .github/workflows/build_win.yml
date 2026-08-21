@@ -27,12 +27,12 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Checkout Build Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: IfcOpenShell/build-outputs
           path: ${{ matrix.deps_dir }}
@@ -48,7 +48,11 @@ jobs:
         run: |
           cd ${{ matrix.deps_dir }}
           Get-ChildItem -Path . -Filter 'cache-*.zip' | ForEach-Object {
-            7z x $_.FullName
+            Write-Host "Extracting $($_.Name)"
+            7z x -bso0 -bsp0 $_.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract $($_.Name) with 7z exit code $LASTEXITCODE."
+            }
           }
 
       - name: ccache
@@ -58,6 +62,20 @@ jobs:
           # Windows ccache needs ~1GB
           # and with default 500MB some cache gets deleted, leading to misses.
           max-size: 5000MB
+
+      - name: Set up Python for connector build
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # Build the Autodesk connector before the C++ build: build-all-win.py
+      # bundles it next to BonsaiViewer.exe while archiving the executables.
+      # bonsaiviewer-autodesk is a Rust connector; packaging/build.py runs
+      # `cargo build --release` and stages the binary + connector.json into
+      # dist/autodesk/.
+      - name: Build Autodesk connector
+        working-directory: src/bonsaiviewer-autodesk
+        run: python packaging/build.py
 
       - name: Run Build Script And Pack .zip Archives
         shell: cmd

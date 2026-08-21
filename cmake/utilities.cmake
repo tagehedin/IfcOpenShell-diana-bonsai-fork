@@ -41,6 +41,122 @@ macro(SET_INSTALL_RPATHS _target _paths)
     set_target_properties(${_target} PROPERTIES INSTALL_RPATH "${${_target}_rpaths}")
 endmacro()
 
+macro(SET_INSTALL_SELF_RPATH _target)
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+        SET_INSTALL_RPATHS(${_target} "${CMAKE_INSTALL_LIBDIR}")
+    elseif(APPLE)
+        SET_INSTALL_RPATHS(${_target} "@loader_path")
+    else()
+        SET_INSTALL_RPATHS(${_target} "$ORIGIN")
+    endif()
+endmacro()
+
+function(ifcopenshell_plugin_target TARGET)
+    # Plug-ins are loaded by exact filename and should not receive a platform library prefix.
+    set_target_properties(${TARGET} PROPERTIES PREFIX "")
+    if((NOT WIN32) AND BUILD_SHARED_LIBS AND NOT WASM_BUILD AND NOT CREATE_BUNDLE AND NOT CMAKE_INSTALL_RPATH AND COMMAND SET_INSTALL_SELF_RPATH)
+        SET_INSTALL_SELF_RPATH(${TARGET})
+    endif()
+endfunction()
+
+function(ifcopenshell_wasm_plugin_link_options TARGET REGISTRATION_SYMBOL)
+    ifcopenshell_plugin_target(${TARGET})
+
+    if(NOT WASM_BUILD)
+        return()
+    endif()
+
+    cmake_parse_arguments(PLUGIN "" "OPTIMIZATION" "" ${ARGN})
+    if(NOT PLUGIN_OPTIMIZATION)
+        set(PLUGIN_OPTIMIZATION -O1)
+    endif()
+
+    set(plugin_symbols
+        ifcopenshell_plugin_abi_v1
+        ifcopenshell_plugin_metadata_v1
+        ${REGISTRATION_SYMBOL}
+    )
+
+    target_link_options(${TARGET} PRIVATE "SHELL:-s SIDE_MODULE=2" ${PLUGIN_OPTIMIZATION})
+    foreach(symbol IN LISTS plugin_symbols)
+        target_link_options(${TARGET} PRIVATE "LINKER:--export=${symbol}")
+    endforeach()
+endfunction()
+
+function(ifcopenshell_deploy_qt_runtime TARGET)
+    if(NOT IFCOPENSHELL_DEPLOY_QT_RUNTIME)
+        return()
+    endif()
+
+    if(NOT TARGET ${TARGET})
+        message(FATAL_ERROR "Cannot deploy Qt runtime for unknown target '${TARGET}'.")
+    endif()
+
+    get_target_property(target_type ${TARGET} TYPE)
+    if(NOT target_type STREQUAL "EXECUTABLE")
+        message(FATAL_ERROR "Qt runtime deployment target '${TARGET}' is not an executable.")
+    endif()
+
+    if(NOT DEFINED QT_DEFAULT_MAJOR_VERSION)
+        if(DEFINED QT_VERSION)
+            set(QT_DEFAULT_MAJOR_VERSION ${QT_VERSION})
+        else()
+            set(QT_DEFAULT_MAJOR_VERSION 6)
+        endif()
+    endif()
+
+    if(NOT TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::Core)
+        set(qt_find_args Qt${QT_DEFAULT_MAJOR_VERSION} COMPONENTS Core REQUIRED)
+        if(DEFINED QT_DIR AND NOT QT_DIR STREQUAL "")
+            list(APPEND qt_find_args PATHS ${QT_DIR})
+        endif()
+        find_package(${qt_find_args})
+    endif()
+
+    if(COMMAND _qt_internal_setup_deploy_support)
+        if(NOT DEFINED QT_CMAKE_EXPORT_NAMESPACE AND TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::Core)
+            set(QT_CMAKE_EXPORT_NAMESPACE Qt${QT_DEFAULT_MAJOR_VERSION})
+        endif()
+
+        if(QT_DEFAULT_MAJOR_VERSION EQUAL 6 AND TARGET Qt6::Core)
+            get_target_property(qt_core_type Qt6::Core TYPE)
+            if(qt_core_type STREQUAL "SHARED_LIBRARY")
+                set(QT6_IS_SHARED_LIBS_BUILD ON)
+            else()
+                set(QT6_IS_SHARED_LIBS_BUILD OFF)
+            endif()
+        endif()
+
+        _qt_internal_setup_deploy_support()
+    endif()
+
+    set(deploy_args
+        TARGET ${TARGET}
+        OUTPUT_SCRIPT deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+
+    if(NOT IFCOPENSHELL_DEPLOY_QT_TRANSLATIONS)
+        list(APPEND deploy_args NO_TRANSLATIONS)
+    endif()
+
+    list(APPEND deploy_args ${ARGN})
+
+    if(COMMAND qt_generate_deploy_app_script)
+        qt_generate_deploy_app_script(${deploy_args})
+    elseif(COMMAND qt6_generate_deploy_app_script)
+        qt6_generate_deploy_app_script(${deploy_args})
+    else()
+        message(WARNING
+            "Qt runtime deployment requested for '${TARGET}', but this Qt version "
+            "does not provide qt_generate_deploy_app_script()."
+        )
+        return()
+    endif()
+
+    install(SCRIPT ${deploy_script})
+endfunction()
+
 # Get a list of all OPTION flags from the CMakeLists.txt and store in an output LIST
 function(get_all_option_flags output_list)
     # Read the contents of the CMakeLists.txt

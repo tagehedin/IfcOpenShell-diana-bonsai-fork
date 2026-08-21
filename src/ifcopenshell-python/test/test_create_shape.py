@@ -47,21 +47,8 @@ class TestGeomSettings:
                 settings.set(settings.USE_PYTHON_OPENCASCADE, True)
             assert "USE_PYTHON_OPENCASCADE = False" in repr(settings)
 
-    def test_serializer_settings(self):
-        settings = ifcopenshell.geom.serializer_settings()
-        assert set(get_args(ifcopenshell.geom.SERIALIZER_SETTING)) == set(
-            settings.setting_names()
-        ), "Also need to update IfcPython.i, if new settings were added/removed."
-
-        # Only for settings.
-        assert "use-python-opencascade" not in settings.setting_names()
-        with pytest.raises(AttributeError):
-            settings.get(settings.USE_PYTHON_OPENCASCADE)
-        with pytest.raises(RuntimeError):
-            settings.get("use-python-opencascade")
-        with pytest.raises(RuntimeError):
-            settings.set("use-python-opencascade", True)
-        assert "USE_PYTHON_OPENCASCADE" not in repr(settings)
+        settings.set("base-uri", "https://example.test/")
+        assert settings.get("base-uri") == "https://example.test/"
 
 
 class TestTriangulationAttributes(test.bootstrap.IFC4):
@@ -216,9 +203,56 @@ def test_iterator():
         assert iterator.initialize()
 
 
+@pytest.mark.parametrize("num_threads", [1, 2])
+def test_iterator_get_transfers_ownership(num_threads):
+    settings = ifcopenshell.geom.settings()
+    iterator = ifcopenshell.geom.iterator(settings, fn, num_threads)
+    assert iterator.initialize()
+
+    element = iterator.get()
+    element_id = element.id
+    with pytest.raises(RuntimeError, match="already been retrieved"):
+        iterator.get()
+
+    iterator.next()
+    assert element.id == element_id
+
+
+@pytest.mark.parametrize("num_threads", [1, 2])
+def test_iterator_get_native_transfers_ownership(num_threads):
+    settings = ifcopenshell.geom.settings()
+    iterator = ifcopenshell.geom.iterator(settings, fn, num_threads)
+    assert iterator.initialize()
+
+    element = iterator.get_native()
+    element_id = element.id
+    with pytest.raises(RuntimeError, match="already been retrieved"):
+        iterator.get_native()
+
+    iterator.next()
+    assert element.id == element_id
+
+
+@pytest.mark.parametrize("num_threads", [1, 2])
+def test_iterator_native_output_is_retrieved_with_get(num_threads):
+    settings = ifcopenshell.geom.settings()
+    settings.set("iterator-output", W.NATIVE)
+    iterator = ifcopenshell.geom.iterator(settings, fn, num_threads)
+    assert iterator.initialize()
+
+    with pytest.raises(RuntimeError, match=r"use get\(\) instead"):
+        iterator.get_native()
+
+    element = iterator.get()
+    element_id = element.id
+    iterator.next()
+    assert element.id == element_id
+
+
 def test_logging():
+    assert ifcopenshell.logger
     logger = ifcopenshell.logger()
-    logger.OutputFormat(logger.FMT_INMEMORY)
+    logger.output_format(logger.FMT_INMEMORY)
     settings = ifcopenshell.geom.settings()
     f = ifcopenshell.open(fn)
     col = f.by_type("IfcColumn")[0]

@@ -38,7 +38,6 @@ import ifcopenshell.api.sequence
 import ifcopenshell.api.spatial
 import ifcopenshell.api.style
 import ifcopenshell.api.type
-import ifcopenshell.api.feature
 import ifcopenshell.guid
 import ifcopenshell.util.element as subject
 import test.bootstrap
@@ -1243,6 +1242,22 @@ class TestReplaceAttributeIFC4(test.bootstrap.IFC4):
         rel.RelatedObjects = [old]
         subject.replace_attribute(rel, old, new)
         assert rel.RelatedObjects == (new,)
+
+    def test_replacing_into_a_set_deduplicates_the_survivor(self):
+        old = self.file.createIfcWall()
+        new = self.file.createIfcWall()
+        rel = self.file.createIfcRelAggregates()
+        rel.RelatedObjects = [old, new]
+        subject.replace_attribute(rel, old, new)
+        assert rel.RelatedObjects == (new,)
+
+    def test_replacing_into_a_list_keeps_legitimate_duplicates(self):
+        p1 = self.file.createIfcCartesianPoint((0.0, 0.0, 0.0))
+        p2 = self.file.createIfcCartesianPoint((1.0, 0.0, 0.0))
+        p3 = self.file.createIfcCartesianPoint((2.0, 0.0, 0.0))
+        polyline = self.file.createIfcPolyline([p1, p2, p3, p1])
+        subject.replace_attribute(polyline, p2, p3)
+        assert polyline.Points == (p1, p3, p3, p1)
 
 
 class TestHasElementReferenceIFC4(test.bootstrap.IFC4):

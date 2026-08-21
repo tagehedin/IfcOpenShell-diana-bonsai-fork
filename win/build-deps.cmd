@@ -92,6 +92,7 @@ IF %VS_VER%==2008 set PATH=C:\Windows\Microsoft.NET\Framework\v3.5;%PATH%
 
 :: User-configurable build options
 IF NOT DEFINED IFCOS_INSTALL_PYTHON set IFCOS_INSTALL_PYTHON=TRUE
+IF NOT DEFINED IFCOS_INSTALL_QT6 set IFCOS_INSTALL_QT6=TRUE
 
 IF NOT DEFINED IFCOS_NUM_BUILD_PROCS set IFCOS_NUM_BUILD_PROCS=%NUMBER_OF_PROCESSORS%
 
@@ -104,7 +105,7 @@ set MSBUILD_CMD=MSBuild.exe /nologo %MSBUILD_MULTIPROC%
 echo.
 
 :: Check that required tools are in PATH
-FOR %%i IN (powershell git cmake) DO (
+FOR %%i IN (powershell git cmake 7z) DO (
     where.exe %%i 1> NUL 2> NUL || call cecho.cmd 0 12 "Required tool `'%%i`' not installed or not added to PATH" && goto :ErrorAndPrintUsage
 )
 
@@ -153,6 +154,10 @@ echo   - Download and install Python.
 echo     Set to something other than TRUE if you wish to use an already installed version of Python.
 echo     But then you'll need to set PYTHONHOME env variable to your Python installation before running run-cmake.bat
 echo     to your Python installation path.
+call cecho.cmd 0 13 "* IFCOS_INSTALL_QT6`t= %IFCOS_INSTALL_QT6%"
+echo   - Download and install Qt6 using aqtinstall.
+echo     Set to something other than TRUE if you wish to use an already installed version of Qt6.
+echo     But then you'll need to set QT_DIR env variable to your Qt6 installation before running run-cmake.bat.
 call cecho.cmd 0 13 "* IFCOS_NUM_BUILD_PROCS`t= %IFCOS_NUM_BUILD_PROCS%"
 echo   - How many MSBuild.exe processes may be run in parallel.
 echo     Defaults to NUMBER_OF_PROCESSORS. Used also by other IfcOpenShell build scripts.
@@ -177,9 +182,12 @@ echo.
 cd "%DEPS_DIR%"
 
 :: VERSIONS
-:: Don't use HDF5 1.13.0, because it has a broken cmake package path.
-set HDF5_VERSION=1_13_1
 set OCCT_VERSION=7.8.1
+IF DEFINED QT6_VERSION (
+    echo Using overridden QT6_VERSION: '%QT6_VERSION%'
+) else (
+    set QT6_VERSION=6.8.3
+)
 IF DEFINED PYTHON_VERSION (
     echo Using overridden PYTHON_VERSION: '%PYTHON_VERSION%'
 ) else (
@@ -202,11 +210,10 @@ IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
 :: This is consolidated at the beginning of the script so that the script can be partially
 :: executed by jumping (using goto) to different labels.
 if defined GEN_SHORTHAND echo GEN_SHORTHAND=%GEN_SHORTHAND%>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
-echo HDF5_VERSION=%HDF5_VERSION%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+echo QT6_VERSION=%QT6_VERSION%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
     echo PYTHONHOME=%PYTHONHOME%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
 )
-
 
 :nuget
 set DEPENDENCY_NAME=nuget
@@ -337,7 +344,7 @@ popd
 
 IF EXIST "%INSTALL_DIR%\mpfr" (
     echo Found existing "%INSTALL_DIR%\mpfr", skipping
-    goto :HDF5
+    goto :Boost
 )
 
 set DEPENDENCY_NAME=mpfr
@@ -369,39 +376,6 @@ IF NOT EXIST lib\%VS_PLATFORM%\%DEBUG_OR_RELEASE%\mpfr.lib GOTO :Error
 IF NOT EXIST "%INSTALL_DIR%\mpfr". mkdir "%INSTALL_DIR%\mpfr"
 copy lib\%VS_PLATFORM%\%DEBUG_OR_RELEASE%\* "%INSTALL_DIR%\mpfr"
 IF NOT %ERRORLEVEL%==0 GOTO :Error
-popd
-
-:HDF5
-
-set DEPENDENCY_NAME=hdf5
-set DEPENDENCY_DIR=%DEPS_DIR%\hdf5-%HDF5_VERSION%
-set HDF5_CMAKE_ZIP=hdf5-%HDF5_VERSION%.zip
-set DEPENDENCY_INSTALL_NAME=HDF5-%HDF5_VERSION%-win%ARCH_BITS%
-set HDF5_INSTALL_NAME=%DEPENDENCY_INSTALL_NAME%
-set NEXT_DEPENDENCY_LABEL=Boost
-
-call :CheckInstallation
-if %ERRORLEVEL%==200 GOTO %NEXT_DEPENDENCY_LABEL%
-
-if "%ARCH_BITS%"=="64" set ARCH_BITS_64=64
-call :DownloadFile ^
-    https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-%HDF5_VERSION%.zip ^
-    "%DEPS_DIR%" %HDF5_CMAKE_ZIP%
-IF NOT %ERRORLEVEL%==0 GOTO :Error
-call :ExtractArchive %HDF5_CMAKE_ZIP% "%DEPS_DIR%" "%DEPS_DIR%\hdf5-%HDF5_VERSION%"
-IF NOT %ERRORLEVEL%==0 GOTO :Error
-if exist "%DEPS_DIR%\hdf5-hdf5-%HDF5_VERSION%" ren "%DEPS_DIR%\hdf5-hdf5-%HDF5_VERSION%" "hdf5-%HDF5_VERSION%"
-pushd "%DEPENDENCY_DIR%"
-call :RunCMake -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%\%HDF5_INSTALL_NAME%" ^
-               -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF -DBUILD_TESTING=OFF ^
-               -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DHDF5_BUILD_UTILS=OFF ^
-               -DHDF5_BUILD_CPP_LIB=ON
-IF NOT %ERRORLEVEL%==0 GOTO :Error
-call :BuildCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" %DEBUG_OR_RELEASE%
-IF NOT %ERRORLEVEL%==0 GOTO :Error
-call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" %DEBUG_OR_RELEASE%
-IF NOT %ERRORLEVEL%==0 GOTO :Error
-call :MarkInstallation
 popd
 
 :: Note all of the dependencies have appropriate label so that user can easily skip something if wanted
@@ -598,7 +572,7 @@ IF NOT "%IFCOS_INSTALL_PYTHON%"=="TRUE" (
 
 :: nuget doesn't support providing architecture for packages.
 IF /I NOT "%TARGET_ARCH%"=="x64" IF /I NOT "%TARGET_ARCH%"=="arm64" (
-    call cecho.cmd 0 12 "Automatic insallation of Python for x86 builds is not supported,"
+    call cecho.cmd 0 12 "Automatic installation of Python for x86 builds is not supported,"
     call cecho.cmd 0 12 "please install Python %PYTHON_VERSION% manually and ensure that it is available in PATH."
     call cecho.cmd 0 12 "https://www.python.org/ftp/python/%PYTHON_VERSION%/%PYTHON_INSTALLER%"
     goto :Error
@@ -619,7 +593,7 @@ IF /I "%TARGET_ARCH%"=="x64" (
 
 :SWIG
 set DEPENDENCY_NAME=SWIG
-set SWIG_VERSION=4.2.1
+set SWIG_VERSION=4.4.1
 set DEPENDENCY_DIR=%DEPS_DIR%\swig-%SWIG_VERSION%
 set DEPENDENCY_INSTALL_DIR=%INSTALL_DIR%\swig-%SWIG_VERSION%
 echo SWIG_INSTALL_DIR=%DEPENDENCY_INSTALL_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
@@ -660,6 +634,8 @@ IF NOT %ERRORLEVEL%==0 GOTO :Error
 call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" Release
 IF NOT %ERRORLEVEL%==0 GOTO :Error
 robocopy "%INSTALL_DIR%\swigwin\bin" "%INSTALL_DIR%\swigwin" /move /e
+
+goto :Successful
 
 :cgal
 
@@ -725,7 +701,7 @@ set ROCKSDB_VERSION=9.11.2
 set ROCKSDB_ZIP=rocksdb-%ROCKSDB_VERSION%.zip
 set DEPENDENCY_DIR=%DEPS_DIR%\%DEPENDENCY_NAME%-%ROCKSDB_VERSION%
 set DEPENDENCY_INSTALL_NAME=%DEPENDENCY_NAME%
-set NEXT_DEPENDENCY_LABEL=Successful
+set NEXT_DEPENDENCY_LABEL=qt6
 
 call :CheckInstallation
 if %ERRORLEVEL%==200 GOTO %NEXT_DEPENDENCY_LABEL%
@@ -763,6 +739,173 @@ IF NOT %ERRORLEVEL%==0 GOTO :Error
 call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" %BUILD_CFG%
 IF NOT %ERRORLEVEL%==0 GOTO :Error
 call :MarkInstallation
+
+:qt6
+set DEPENDENCY_NAME=qt6
+
+set QT6_MSVC_YEAR=%VS_VER%
+IF /I "%VS_TOOLSET%"=="v141" set QT6_MSVC_YEAR=2017
+IF /I "%VS_TOOLSET%"=="v142" set QT6_MSVC_YEAR=2019
+IF /I "%VS_TOOLSET%"=="v143" set QT6_MSVC_YEAR=2022
+IF /I "%VS_TOOLSET%"=="v145" set QT6_MSVC_YEAR=2026
+
+set QT6_ARCH=
+set QT6_INSTALL_SUFFIX=
+set QT6_HOST_ARCH=
+set QT6_HOST_INSTALL_SUFFIX=
+IF /I "%TARGET_ARCH%"=="x64" (
+    set QT6_ARCH=win64_msvc%QT6_MSVC_YEAR%_64
+    set QT6_INSTALL_SUFFIX=msvc%QT6_MSVC_YEAR%_64
+)
+IF /I "%TARGET_ARCH%"=="arm64" (
+    set QT6_ARCH=win64_msvc%QT6_MSVC_YEAR%_arm64_cross_compiled
+    set QT6_INSTALL_SUFFIX=msvc%QT6_MSVC_YEAR%_arm64
+    REM Qt publishes Windows ARM64 packages as cross-compiled Qt. Even on the
+    REM windows-11-arm runner, Qt CMake requires host tools such as moc/rcc.
+    REM Use the x64 host tools; Windows 11 on Arm runs them through x64
+    REM emulation while cl.exe still builds ARM64 binaries against target Qt.
+    set QT6_HOST_ARCH=win64_msvc%QT6_MSVC_YEAR%_64
+    set QT6_HOST_INSTALL_SUFFIX=msvc%QT6_MSVC_YEAR%_64
+)
+
+IF "%QT6_ARCH%"=="" (
+    call cecho.cmd 0 12 "Automatic Qt6 installation is only supported for x64 and arm64 builds."
+    GOTO :Error
+)
+
+set DEPENDENCY_INSTALL_NAME=qt6-%QT6_VERSION%-%QT6_INSTALL_SUFFIX%
+set QT6_AQT_OUTPUT_DIR=%INSTALL_DIR%\%DEPENDENCY_INSTALL_NAME%
+set QT6_INSTALL_DIR=%QT6_AQT_OUTPUT_DIR%\%QT6_VERSION%\%QT6_INSTALL_SUFFIX%
+set QT_DIR=%QT6_INSTALL_DIR%
+set QT6_HOST_AQT_OUTPUT_DIR=
+set QT6_HOST_INSTALL_DIR=
+set QT_HOST_PATH=
+IF NOT "%QT6_HOST_INSTALL_SUFFIX%"=="" (
+    set QT6_HOST_AQT_OUTPUT_DIR=%INSTALL_DIR%\qt6-%QT6_VERSION%-%QT6_HOST_INSTALL_SUFFIX%
+    set QT6_HOST_INSTALL_DIR=%INSTALL_DIR%\qt6-%QT6_VERSION%-%QT6_HOST_INSTALL_SUFFIX%\%QT6_VERSION%\%QT6_HOST_INSTALL_SUFFIX%
+    set QT_HOST_PATH=%INSTALL_DIR%\qt6-%QT6_VERSION%-%QT6_HOST_INSTALL_SUFFIX%\%QT6_VERSION%\%QT6_HOST_INSTALL_SUFFIX%
+)
+set QT6_CONFIG_DLL=Qt6Core.dll
+IF /I "%BUILD_CFG%"=="Debug" (
+    set QT6_CONFIG_DLL=Qt6Cored.dll
+)
+set NEXT_DEPENDENCY_LABEL=Successful
+
+IF NOT "%IFCOS_INSTALL_QT6%"=="TRUE" (
+    call cecho.cmd 0 13 "IFCOS_INSTALL_QT6 not 'TRUE', skipping installation of Qt6."
+    goto :Successful
+)
+
+echo QT6_INSTALL_DIR=%QT6_INSTALL_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+echo QT_DIR=%QT_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+IF DEFINED QT6_HOST_INSTALL_DIR (
+    echo QT6_HOST_INSTALL_DIR=%QT6_HOST_INSTALL_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+    echo QT_HOST_PATH=%QT_HOST_PATH%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+)
+
+set QT6_TARGET_INSTALLED=FALSE
+IF EXIST "%QT6_INSTALL_DIR%\lib\cmake\Qt6\Qt6Config.cmake" IF EXIST "%QT6_INSTALL_DIR%\bin\%QT6_CONFIG_DLL%" IF EXIST "%QT6_INSTALL_DIR%\lib\cmake\Qt6Svg\Qt6SvgConfig.cmake" set QT6_TARGET_INSTALLED=TRUE
+set QT6_HOST_INSTALLED=TRUE
+IF DEFINED QT6_HOST_INSTALL_DIR (
+    set QT6_HOST_INSTALLED=FALSE
+    IF EXIST "%QT6_HOST_INSTALL_DIR%\lib\cmake\Qt6\Qt6Config.cmake" IF EXIST "%QT6_HOST_INSTALL_DIR%\bin\moc.exe" IF EXIST "%QT6_HOST_INSTALL_DIR%\bin\rcc.exe" IF EXIST "%QT6_HOST_INSTALL_DIR%\lib\cmake\Qt6Svg\Qt6SvgConfig.cmake" set QT6_HOST_INSTALLED=TRUE
+)
+
+IF "%QT6_TARGET_INSTALLED%"=="TRUE" IF "%QT6_HOST_INSTALLED%"=="TRUE" (
+    echo Found existing "%QT6_INSTALL_DIR%" for %BUILD_CFG%, skipping
+    IF DEFINED QT6_HOST_INSTALL_DIR echo Found existing Qt host tools at "%QT6_HOST_INSTALL_DIR%", skipping
+    call :MarkInstallation
+    goto :Successful
+)
+
+set AQT_PYTHON=python
+IF "%IFCOS_INSTALL_PYTHON%"=="TRUE" IF EXIST "%PYTHONHOME%\python.exe" set AQT_PYTHON="%PYTHONHOME%\python.exe"
+
+%AQT_PYTHON% -m pip install --upgrade aqtinstall
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+
+IF NOT "%QT6_TARGET_INSTALLED%"=="TRUE" (
+    REM Keep the install lean by filtering archives: qtbase provides
+    REM Core/Gui/Widgets (and the Qt6::CorePrivate target), qtsvg provides
+    REM Qt6::Svg. Both are base-Qt archives, not add-on modules.
+    %AQT_PYTHON% -m aqt install-qt windows desktop %QT6_VERSION% %QT6_ARCH% -O "%QT6_AQT_OUTPUT_DIR%" --archives qtbase qtsvg
+    IF ERRORLEVEL 1 GOTO :Error
+)
+
+IF DEFINED QT6_HOST_INSTALL_DIR (
+    IF NOT "%QT6_HOST_INSTALLED%"=="TRUE" (
+        REM windeployqt runs from the host Qt when cross-compiling ARM64, so the
+        REM host Qt needs qtsvg too to deploy the Bonsai Viewer's Qt6Svg dependency.
+        %AQT_PYTHON% -m aqt install-qt windows desktop %QT6_VERSION% %QT6_HOST_ARCH% -O "%QT6_HOST_AQT_OUTPUT_DIR%" --archives qtbase qtsvg
+        IF ERRORLEVEL 1 GOTO :Error
+    )
+)
+
+IF NOT EXIST "%QT6_INSTALL_DIR%\lib\cmake\Qt6\Qt6Config.cmake" (
+    call cecho.cmd 0 12 "Qt6 installation did not produce Qt6Config.cmake at %QT6_INSTALL_DIR%."
+    GOTO :Error
+)
+
+IF NOT EXIST "%QT6_INSTALL_DIR%\bin\%QT6_CONFIG_DLL%" (
+    call cecho.cmd 0 12 "Qt6 installation did not produce %BUILD_CFG% runtime %QT6_CONFIG_DLL% at %QT6_INSTALL_DIR%\bin."
+    GOTO :Error
+)
+
+IF NOT EXIST "%QT6_INSTALL_DIR%\lib\cmake\Qt6Svg\Qt6SvgConfig.cmake" (
+    call cecho.cmd 0 12 "Qt6 installation did not produce the Qt6 Svg module at %QT6_INSTALL_DIR%."
+    GOTO :Error
+)
+
+IF DEFINED QT6_HOST_INSTALL_DIR (
+    IF NOT EXIST "%QT6_HOST_INSTALL_DIR%\lib\cmake\Qt6\Qt6Config.cmake" (
+        call cecho.cmd 0 12 "Qt6 host installation did not produce Qt6Config.cmake at %QT6_HOST_INSTALL_DIR%."
+        GOTO :Error
+    )
+    IF NOT EXIST "%QT6_HOST_INSTALL_DIR%\bin\moc.exe" (
+        call cecho.cmd 0 12 "Qt6 host installation did not produce moc.exe at %QT6_HOST_INSTALL_DIR%\bin."
+        GOTO :Error
+    )
+    IF NOT EXIST "%QT6_HOST_INSTALL_DIR%\bin\rcc.exe" (
+        call cecho.cmd 0 12 "Qt6 host installation did not produce rcc.exe at %QT6_HOST_INSTALL_DIR%\bin."
+        GOTO :Error
+    )
+)
+
+call :MarkInstallation
+goto :Successful
+
+:manifold
+set DEPENDENCY_NAME=manifold
+set MANIFOLD_VERSION=3.2.1
+set DEPENDENCY_DIR=%DEPS_DIR%\manifold-%MANIFOLD_VERSION%
+set DEPENDENCY_INSTALL_DIR=%INSTALL_DIR%\manifold-%MANIFOLD_VERSION%
+echo MANIFOLD_ROOT=%DEPENDENCY_INSTALL_DIR%>>"%~dp0\%BUILD_DEPS_CACHE_PATH%"
+
+IF EXIST "%DEPENDENCY_INSTALL_DIR%" (
+    echo Found existing "%DEPENDENCY_INSTALL_DIR%", skipping
+    goto :Eigen
+)
+
+call :GitCloneAndCheckoutRevision https://github.com/elalish/manifold.git "%DEPENDENCY_DIR%" v%MANIFOLD_VERSION%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+cd "%DEPENDENCY_DIR%"
+git reset --hard
+
+call :RunCMake -DCMAKE_INSTALL_PREFIX="%DEPENDENCY_INSTALL_DIR%" ^
+               -DBUILD_SHARED_LIBS=OFF ^
+               -DMANIFOLD_PAR=OFF ^
+               -DMANIFOLD_CROSS_SECTION=OFF ^
+               -DMANIFOLD_PYBIND=OFF ^
+               -DMANIFOLD_JSBIND=OFF ^
+               -DMANIFOLD_CBIND=OFF ^
+               -DMANIFOLD_TEST=OFF ^
+               -DMANIFOLD_EXPORT=OFF ^
+               -DMANIFOLD_DOWNLOADS=OFF
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :BuildSolution "%DEPENDENCY_DIR%\%BUILD_DIR%\manifold.sln" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
+call :InstallCMakeProject "%DEPENDENCY_DIR%\%BUILD_DIR%" %BUILD_CFG%
+IF NOT %ERRORLEVEL%==0 GOTO :Error
 
 :: :tbb
 :: set DEPENDENCY_NAME=tbb
@@ -954,7 +1097,7 @@ exit /b 0
 :: if %ERRORLEVEL%==200 GOTO %NEXT_DEPENDENCY_LABEL%
 :: ```
 :CheckInstallation
-%PWSH_TOOLS% check_installation %DEPENDENCY_NAME% "%INSTALL_DIR%\%DEPENDENCY_INSTALL_NAME%"
+%PWSH_TOOLS% check_installation "%DEPENDENCY_NAME%" "%INSTALL_DIR%\%DEPENDENCY_INSTALL_NAME%"
 set RET=%ERRORLEVEL%
 if %RET%==200 echo Found existing "%INSTALL_DIR%\%DEPENDENCY_INSTALL_NAME%" for %BUILD_CFG%, skipping && exit /b 200
 if %RET% NEQ 404 GOTO :Error
@@ -985,9 +1128,11 @@ echo  2. Install Git and make sure 'git' is accessible from PATH.
 echo   - https://git-for-windows.github.io/
 echo  3. Install CMake and make sure 'cmake' is accessible from PATH.
 echo   - http://www.cmake.org/
-echo  4. Visual Studio 2013 or newer with C++ toolset.
+echo  4. Install 7-Zip and make sure '7z' is accessible from PATH.
+echo   - https://www.7-zip.org/
+echo  5. Visual Studio 2013 or newer with C++ toolset.
 echo   - https://www.visualstudio.com/
-echo  5. Run this batch script with Visual Studio environment variables set.
+echo  6. Run this batch script with Visual Studio environment variables set.
 echo   - https://msdn.microsoft.com/en-us/library/ms229859(v=vs.110).aspx
 echo.
 echo NB: This script needs to be ran from the directory directly containing it.

@@ -17,12 +17,21 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import pytest
+
 import ifcopenshell.api.alignment
 import ifcopenshell.api.context
 import ifcopenshell.api.unit
 from ifcopenshell.api.alignment._add_segment_to_layout import _add_segment_to_layout
 
+try:
+    ifcopenshell.file(schema="IFC4X3")
+    IFC4X3_AVAILABLE = True
+except RuntimeError:
+    IFC4X3_AVAILABLE = False
 
+
+@pytest.mark.skipif(not IFC4X3_AVAILABLE, reason="IFC4X3 not available")
 def test_add_segment_to_layout():
     file = ifcopenshell.file(schema="IFC4X3")
     project = file.createIfcProject(GlobalId=ifcopenshell.guid.new(), Name="Test")
@@ -39,9 +48,9 @@ def test_add_segment_to_layout():
 
     alignment = ifcopenshell.api.alignment.create(file, "")
 
-    referent_nest = ifcopenshell.api.alignment.get_referent_nest(file, alignment)
+    stationing_nest = ifcopenshell.api.alignment.get_stationing_nest(file, alignment)
     assert (
-        len(referent_nest.RelatedObjects) == 1
+        len(stationing_nest.RelatedObjects) == 1
     )  # the alignment creates the stationing nest and it has one referent to defined the stationing for the alignment
 
     horizontal_alignment = ifcopenshell.api.alignment.get_horizontal_layout(alignment)
@@ -75,8 +84,8 @@ def test_add_segment_to_layout():
     assert len(horizontal_alignment.IsNestedBy) == 1
     segment_nest = ifcopenshell.api.alignment.get_alignment_segment_nest(horizontal_alignment)
     assert len(segment_nest.RelatedObjects) == 2
-    referent_nest = ifcopenshell.api.alignment.get_referent_nest(file, alignment)
-    assert len(referent_nest.RelatedObjects) == 1  # test this a second time to make sure that it is still true
+    stationing_nest = ifcopenshell.api.alignment.get_stationing_nest(file, alignment)
+    assert len(stationing_nest.RelatedObjects) == 1  # test this a second time to make sure that it is still true
 
 
 test_add_segment_to_layout()

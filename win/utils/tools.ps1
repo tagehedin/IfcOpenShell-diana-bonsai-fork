@@ -35,15 +35,7 @@ function mark_based_on_artifacts {
         [string]$installation_dir
     )
 
-    if ($dependency_name -eq "hdf5") {
-        if ($env:BUILD_CFG -eq "Debug") {
-            $artifact = "lib\libhdf5_D.lib"
-        }
-        else {
-            $artifact = "lib\libhdf5.lib"
-        }
-    }
-    elseif ($dependency_name -eq "opencollada") {
+    if ($dependency_name -eq "opencollada") {
         if ($env:BUILD_CFG -eq "Debug") {
             $artifact = "lib\opencollada\OpenCOLLADAFrameworkd.lib"
         }
@@ -63,6 +55,11 @@ function mark_based_on_artifacts {
         else {
             $artifact = "lib\rocksdb.lib"
         }
+    }
+    elseif ($dependency_name -eq "qt6") {
+        # Qt has a nested install layout, so build-deps.cmd validates its
+        # Release/Debug artifacts before marking the installation.
+        return
     }
     else {
         throw "Unexpected dependency name '$dependency_name'."
@@ -109,10 +106,10 @@ function check_installation {
 
 
 # Dependencies Release/Debug configs compatibility:
-# - hdf5: incompatible
 # - OpenCASCADE: incompatible
 # - rocksdb: incompatible
 # - opencollada: incompatible
+# - Qt6: compatible when both Release and Debug artifacts are installed
 # - zstd: compatible
 
 function setup_build_cfg {
@@ -144,7 +141,10 @@ function extract_file {
         return
     }
     . $cecho 0 13 "Extracting $dependency_name into '$destination_dir' from '$filename'."
-    7za x "$filename" -o"$destination_dir"
+    7z x -bso0 -bsp0 "$filename" -o"$destination_dir"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to extract '$filename' for '$dependency_name' with 7z exit code $LASTEXITCODE."
+    }
 }
 
 

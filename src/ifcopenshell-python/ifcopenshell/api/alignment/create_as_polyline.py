@@ -46,6 +46,8 @@ def _create_layout(file: ifcopenshell.file, alignment: entity_instance, points: 
     ifcopenshell.api.nest.assign_object(file, related_objects=alignment_layouts, relating_object=alignment)
 
     start_dist_along = 0.0
+    gradient = None
+    dir = None
     for p1, p2 in zip(points, points[1:]):
         x1, y1, z1 = p1.Coordinates
         x2, y2, z2 = p2.Coordinates
@@ -85,6 +87,7 @@ def _create_layout(file: ifcopenshell.file, alignment: entity_instance, points: 
         start_dist_along += length
 
     # zero length segment
+    assert dir is not None
     hsegment = file.createIfcAlignmentSegment(
         ifcopenshell.guid.new(),
         DesignParameters=file.createIfcAlignmentHorizontalSegment(
@@ -100,6 +103,7 @@ def _create_layout(file: ifcopenshell.file, alignment: entity_instance, points: 
     ifcopenshell.api.nest.assign_object(file, related_objects=[hsegment], relating_object=alignment_layouts[0])
 
     if include_vertical:
+        assert gradient is not None
         vsegment = file.createIfcAlignmentSegment(
             ifcopenshell.guid.new(),
             DesignParameters=file.createIfcAlignmentVerticalSegment(
@@ -126,6 +130,11 @@ def create_as_polyline(
 
     The IfcAlignment is aggreated to IfcProject
 
+    The stationing referent created from start_station has Name "<alignment name> <station>"
+    (e.g. "MyAlignment 49+00.00"), the same convention update_key_point_referents() and
+    create() use for their own referents, so every referent nested under an alignment is
+    identifiable by name alone.
+
     :param file:
     :param name: name assigned to IfcAlignment.Name
     :param points: sequence of points defining the polyline
@@ -140,8 +149,8 @@ def create_as_polyline(
     _create_polyline_representation(file, alignment, points)
 
     # define stationing
-    name = ifcopenshell.util.alignment.station_as_string(file, start_station)
-    referent = ifcopenshell.api.alignment.add_stationing_referent(file, alignment, 0.0, start_station, name, alignment)
+    referent_name = f"{alignment.Name} {ifcopenshell.util.alignment.station_as_string(file, start_station)}"
+    referent = ifcopenshell.api.alignment.add_stationing_referent(file, referent_name, alignment, 0.0, start_station)
 
     # IFC 4.1.4.1.1 Alignment Aggregation To Project
     project = file.by_type("IfcProject")[0]

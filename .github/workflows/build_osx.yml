@@ -10,10 +10,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos
-            runner: macos-14
-            arch: x64
-            oldarch: 
+          # x64 (Intel cross-compile) dropped while wgpu Qt is required:
+          # the runner is arm64 so `brew --prefix qt` returns the arm64
+          # prefix; we'd need a separate x86_64 Qt install under
+          # /usr/local to cross-build BonsaiViewer. Revisit if Intel-Mac
+          # demand resurfaces.
           - os: macos
             runner: macos-14
             arch: arm64
@@ -21,12 +22,12 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Checkout Build Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: IfcOpenShell/build-outputs
           path: ./build
@@ -34,14 +35,27 @@ jobs:
           lfs: true
           token: ${{ secrets.BUILD_REPO_TOKEN }}
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
       - name: Install Dependencies
         run: |
           brew update
           # preinstalled: xz, cmake
           brew install git bison autoconf automake libffi findutils
+          # qt brings in Qt6 + Svg; nix/build-all.py honours pre-set
+          # QT_DIR so BonsaiViewer doesn't try to aqtinstall (which is
+          # Linux-only).
+          brew install qt
           echo "$(brew --prefix findutils)/libexec/gnubin" >> $GITHUB_PATH
           # Mac is using bison 2.5 by default, but we need 3.5+ for swig.
           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+
+      # The bonsaiviewer-autodesk connector is a Rust crate; the "Package
+      # .zip archives" step below runs `cargo build --release` via
+      # packaging/build.py. Match the dedicated connector workflow's stable
+      # toolchain, rather than whatever Rust the runner image happens to ship.
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install aws cli
         run: |
@@ -50,7 +64,7 @@ jobs:
       - name: Unpack Dependencies
         run: |
           cd build
-          python ../nix/cache_dependencies.py unpack
+          uv run ../nix/cache_dependencies.py unpack
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
@@ -77,8 +91,21 @@ jobs:
             /usr/local/bin/brew install gettext openssl
           fi
           set -o pipefail
+          export QT_DIR="$(brew --prefix qt)"
+          # --shared mirrors build_rocky.yml after 27249770e: builds
+          # IfcOpenShell as shared libs so each plug-in dylib references
+          # libIfcParse / libIfcGeom via @rpath instead of statically
+          # embedding them — the dominant size win for BonsaiViewer.app
+          # (per-plugin libs go from ~30-50 MB to a few MB).
+          #
+          # IfcOpenShell-Python is back on after the ifcwrap rpath fix:
+          # INSTALL_RPATH "$ORIGIN" is a Linux-ism that macOS dyld bakes
+          # in as a literal string, so `@rpath/ifcopenshell.document.rdb
+          # .dylib` failed to resolve at import time. ifcwrap now sets
+          # INSTALL_RPATH to "@loader_path" on Apple.
           CXXFLAGS="-O3" CFLAGS="-O3 ${DARWIN_C_SOURCE}" ADD_COMMIT_SHA=1 BUILD_CFG=Release \
-            python3 ./nix/build-all.py -v --diskcleanup ${MAC_INTEL} \
+            BUILD_BONSAIVIEWER=ON QT_DIR="${QT_DIR}" \
+            uv run ./nix/build-all.py -v --diskcleanup --ifcopenshell-shared ${MAC_INTEL} \
             | tee build.log
 
       - name: Upload Build Logs
@@ -95,7 +122,7 @@ jobs:
       - name: Pack Dependencies
         run: |
           cd build
-          python ../nix/cache_dependencies.py pack
+          uv run ../nix/cache_dependencies.py pack
 
       - name: Commit and Push Changes to Build Repository
         run: |
@@ -109,8 +136,28 @@ jobs:
       - name: Package .zip archives
         run: |
           VERSION=v`cat VERSION`
+          # packaging/build.py stages the connector binary + connector.json
+          # into dist/autodesk/; the .app loop below copies that folder into
+          # the bundle. Same on-disk shape as the Linux and Windows builds.
+          uv run src/bonsaiviewer-autodesk/packaging/build.py
+          autodesk_connector_dir="$PWD/src/bonsaiviewer-autodesk/dist/autodesk"
+          test -d "$autodesk_connector_dir"
+
           cd ./build/`uname`/*/10.15/install/ifcopenshell
-          mkdir ~/output
+          mkdir -p ~/output
+          install_root="$PWD"
+
+          stage_runtime_payload() {
+              dest="$1"
+              while IFS= read -r runtime_file; do
+                  cp -L "$runtime_file" "$dest/"
+              done < <(
+                  for runtime_dir in "$install_root/bin" "$install_root/lib" "$install_root/lib64"; do
+                      [ -d "$runtime_dir" ] || continue
+                      find "$runtime_dir" -type f \( -name "*.so" -o -name "*.so.*" -o -name "*.dylib" -o -name "*.dll" \)
+                  done
+              )
+          }
 
           ls -d python-* | while read py_version; do
               postfix=`echo ${py_version: -1} | sed s/[0-9]//`
@@ -125,18 +172,42 @@ jobs:
               fi
               [ -d ifcopenshell/__pycache__ ] && rm -rf ifcopenshell/__pycache__
               find ifcopenshell -name "*.pyc" -delete
-              zip -r -qq ifcopenshell-${py_version_major}-${VERSION}-${GITHUB_SHA:0:7}-macos${{ matrix.oldarch }}64.zip ifcopenshell/*
+              stage_runtime_payload ifcopenshell
+              zip -r -qq ifcopenshell-${py_version_major}-${VERSION}-${GITHUB_SHA:0:7}-macos${{ matrix.oldarch }}64.zip ifcopenshell
               mv *.zip ~/output
               popd > /dev/null
           done
 
-          cd bin
-          rm *.zip || true
-          ls | while read exe; do
-              zip -qq -r ${exe}-${VERSION}-${GITHUB_SHA:0:7}-macos${{ matrix.oldarch }}64.zip $exe
+          find "$install_root/bin" -maxdepth 1 -type f -perm /111 ! -name "*.zip" ! -name "*.so" ! -name "*.so.*" ! -name "*.dylib" ! -name "*.dll" | while read exe_path; do
+              exe=`basename "$exe_path"`
+              package_dir="$install_root/.package-${exe}"
+              rm -rf "$package_dir"
+              mkdir -p "$package_dir"
+              cp "$exe_path" "$package_dir/"
+              stage_runtime_payload "$package_dir"
+              pushd "$package_dir" > /dev/null
+              zip -qq -r "$HOME/output/${exe}-${VERSION}-${GITHUB_SHA:0:7}-macos${{ matrix.oldarch }}64.zip" .
+              popd > /dev/null
+              rm -rf "$package_dir"
           done
-          mv *.zip ~/output
-          cd ..
+
+          # .app bundles (e.g. BonsaiViewer.app) live at the install-prefix
+          # root because their install rule uses `BUNDLE DESTINATION "."` —
+          # that's the layout Qt's macdeployqt expects. macdeployqt has
+          # already embedded the Qt frameworks inside each bundle during
+          # install/strip, so the only thing left to stage is the connector.
+          find "$install_root" -maxdepth 1 -type d -name "*.app" | while read app_path; do
+              app=`basename "$app_path" .app`
+              if [ "$app" = "BonsaiViewer" ]; then
+                  # ConnectorDiscovery looks in applicationDirPath()/connectors,
+                  # which for a bundle is Contents/MacOS.
+                  mkdir -p "$app_path/Contents/MacOS/connectors"
+                  cp -a "$autodesk_connector_dir" "$app_path/Contents/MacOS/connectors/"
+              fi
+              pushd "$install_root" > /dev/null
+              zip -qq -r "$HOME/output/${app}-${VERSION}-${GITHUB_SHA:0:7}-macos${{ matrix.oldarch }}64.zip" "$(basename "$app_path")"
+              popd > /dev/null
+          done
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6

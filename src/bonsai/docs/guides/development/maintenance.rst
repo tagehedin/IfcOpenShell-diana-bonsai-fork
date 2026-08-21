@@ -44,8 +44,6 @@ When a new Blender version is released and supported:
 
    * - File
      - What to update
-   * - ``.github/workflows/ci-bonsai.yml``
-     - ``pyver`` matrix
    * - ``.github/workflows/ci-bonsai-daily.yml``
      - Blender download URL
 
@@ -61,6 +59,10 @@ When Blender ships with a new Python version:
      - What to update
    * - ``.github/workflows/ci-lint.yaml``
      - ``MIN_BLENDER_PY_VERSION``
+   * - ``.github/workflows/ci-bonsai.yml``
+     - ``pyver`` matrix
+   * - ``.github/workflows/ci-bonsai-daily.yml``
+     - ``pyver`` matrix
    * - ``.github/scripts/publish-bonsai-releases.py``
      - ``CURRENT_PYTHON_VERSION``
    * - ``src/bonsai/Makefile``
@@ -74,6 +76,10 @@ Release
 Notes:
 
 - Typically all packages are released at once using the same version schema
+- ``VERSION`` uses Python/PEP 440-compatible spelling. For example, an alpha
+  release may be ``0.9.0alpha0`` (canonicalized to ``0.9.0a0``); build scripts
+  derive numeric-only and SemVer forms such as ``0.9.0`` and
+  ``0.9.0-alpha0`` where required.
 - The ``README.md`` badges can serve as a visual reference for what versions have been released
 - Corrective Release (if needed after a standard release):
 

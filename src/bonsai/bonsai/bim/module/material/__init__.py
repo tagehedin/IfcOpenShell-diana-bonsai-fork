@@ -57,6 +57,7 @@ classes = (
     operator.RemoveMaterial,
     operator.RemoveMaterialSet,
     operator.RemoveProfile,
+    operator.RenameMaterial,
     operator.ReorderMaterialSetItem,
     operator.PickMaterialByObject,
     operator.SelectByMaterial,
