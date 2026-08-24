@@ -101,6 +101,8 @@ class BIM_PT_ifcclash(Panel):
             if color_item := color_map.get(group):
                 icon = "HIDE_OFF" if color_item.show_highlight else "HIDE_ON"
                 row.prop(color_item, "show_highlight", text="", icon=icon, toggle=True)
+                icon_own = "RESTRICT_SELECT_OFF" if color_item.show_own_objects else "RESTRICT_SELECT_ON"
+                row.prop(color_item, "show_own_objects", text="", icon=icon_own, toggle=True)
                 row.prop(color_item, "color", text="")
             row.label(text=f"Group {group.upper()}:", icon="OUTLINER_OB_POINTCLOUD")
             row.operator("bim.add_clash_source_from_link", icon="LINKED", text="").group = group

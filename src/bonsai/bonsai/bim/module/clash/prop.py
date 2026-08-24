@@ -62,6 +62,13 @@ def group_show_update(self: "BIMGroupColor", context: bpy.types.Context) -> None
     tool.Blender.update_all_viewports(context)
 
 
+def group_show_own_objects_update(self: "BIMGroupColor", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    ClashDecorator.show_own_objects[self.name] = self.show_own_objects
+    tool.Blender.update_all_viewports(context)
+
+
 def volume_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
     from bonsai.bim.module.clash.decorator import ClashDecorator
 
@@ -134,11 +141,26 @@ class BIMGroupColor(PropertyGroup):
         default=(1.0, 1.0, 1.0),
         update=group_color_update,
     )
-    show_highlight: BoolProperty(name="Show", default=True, update=group_show_update)
+    show_highlight: BoolProperty(
+        name="Show",
+        description="Show this group's clash pairs. Turning this off hides both sides of every "
+        "pair this group is part of, and (unless Show All Intersections is on) their intersections",
+        default=True,
+        update=group_show_update,
+    )
+    show_own_objects: BoolProperty(
+        name="Show Own Objects",
+        description="Show this group's own highlighted objects, independently of the pair's "
+        "overall visibility. Turning this off hides only this group's side of each clash pair "
+        "it's part of - the other group's objects and any intersection volume stay visible",
+        default=True,
+        update=group_show_own_objects_update,
+    )
 
     if TYPE_CHECKING:
         color: tuple[float, float, float]
         show_highlight: bool
+        show_own_objects: bool
 
 
 class ClashSource(PropertyGroup):

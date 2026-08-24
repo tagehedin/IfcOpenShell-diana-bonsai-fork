@@ -84,7 +84,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
     # one clash can all be gated together on both member groups being visible.
     pair_highlights: dict = {}
     group_colors: dict = {}  # {"a": (r,g,b), ...}
-    show_groups: dict = {}  # {"a": True, ...}
+    show_groups: dict = {}  # {"a": True, ...} - pair-level gate: off hides both sides + intersections
+    show_own_objects: dict = {}  # {"a": True, ...} - solo gate: off hides only this group's own objects
     show_volume = True
     show_all_intersections = False  # bypass per-pair group gating for intersections only
     _geom_cache: dict = {}  # highlight -> (positions, triangle_indices) world-space, unclipped
@@ -102,6 +103,7 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         ensure_group_colors(props)
         cls.group_colors = {item.name: tuple(item.color) for item in props.group_highlight_colors}
         cls.show_groups = {item.name: item.show_highlight for item in props.group_highlight_colors}
+        cls.show_own_objects = {item.name: item.show_own_objects for item in props.group_highlight_colors}
         cls.show_volume = props.show_volume_highlight
         cls.show_all_intersections = props.show_all_intersections
         super().install(context)
@@ -338,9 +340,9 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
                 color_b = (*self.group_colors.get(g2, (0.5, 0.5, 0.5)), 0.15)
                 for idx, entry in enumerate(entries):
                     if both_visible:
-                        if entry["a"] is not None:
+                        if entry["a"] is not None and self.show_own_objects.get(g1, True):
                             self.draw_highlighted_object(entry["a"], color_a, draw_planes, draw_key)
-                        if entry["b"] is not None:
+                        if entry["b"] is not None and self.show_own_objects.get(g2, True):
                             self.draw_highlighted_object(entry["b"], color_b, draw_planes, draw_key)
                     raw_geometry = entry["intersection"]
                     if self.show_volume and raw_geometry is not None and (both_visible or self.show_all_intersections):
