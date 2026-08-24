@@ -1524,7 +1524,10 @@ class OverrideDuplicateMoveLinked(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return len(context.selected_objects) > 0
+        if len(context.selected_objects) > 0:
+            return True
+        cls.poll_message_set("Select at least one object to duplicate.")
+        return False
 
     def execute(self, context):
         return OverrideDuplicateMove.execute_duplicate_operator(self, context, linked=True)
@@ -1551,7 +1554,10 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return len(context.selected_objects) > 0
+        if len(context.selected_objects) > 0:
+            return True
+        cls.poll_message_set("Select at least one object to duplicate.")
+        return False
 
     def execute(self, context):
         return OverrideDuplicateMove.execute_duplicate_operator(self, context, linked=False)
@@ -3448,10 +3454,12 @@ class DirectProfileEdit(bpy.types.Operator, tool.Ifc.Operator):
     def poll(cls, context):
         # Only allow in OBJECT or EDIT modes
         if context.mode not in ("OBJECT", "EDIT_MESH", "EDIT_CURVE"):
+            cls.poll_message_set("Only available in Object or Edit mode.")
             return False
 
         # Must have an active object
         if not context.active_object:
+            cls.poll_message_set("No active object selected.")
             return False
 
         # In edit mode, we're good to go (we'll exit)
@@ -3463,6 +3471,7 @@ class DirectProfileEdit(bpy.types.Operator, tool.Ifc.Operator):
 
         # Only mesh and curve objects are editable
         if obj.type not in ("MESH", "CURVE"):
+            cls.poll_message_set("Only mesh or curve objects can be profile edited.")
             return False
 
         return True
@@ -4814,7 +4823,10 @@ class OverrideMoveSelect(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return len(context.selected_objects) > 0
+        if len(context.selected_objects) > 0:
+            return True
+        cls.poll_message_set("Select at least one object to move.")
+        return False
 
     def execute(self, context):
         # Deep magick from the dawn of time

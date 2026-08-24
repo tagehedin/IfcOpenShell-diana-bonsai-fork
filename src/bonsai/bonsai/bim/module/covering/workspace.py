@@ -159,7 +159,10 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
 
     @classmethod
     def poll(cls, context):
-        return tool.Ifc.get()
+        if not tool.Ifc.get():
+            cls.poll_message_set("You need to open or create an IFC project first.")
+            return False
+        return True
 
     @classmethod
     def description(cls, context, operator):
@@ -208,3 +211,5 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
             and AuthoringData.data["active_material_usage"] == "LAYER3"
         ):
             bpy.ops.bim.regen_selected_covering_object()
+        else:
+            self.report({"INFO"}, "Select a layered covering to regenerate.")

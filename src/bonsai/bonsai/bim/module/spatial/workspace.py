@@ -134,7 +134,10 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
 
     @classmethod
     def poll(cls, context):
-        return tool.Ifc.get()
+        if not tool.Ifc.get():
+            cls.poll_message_set("Open or start an IFC project first.")
+            return False
+        return True
 
     @classmethod
     def description(cls, context, operator):
@@ -168,7 +171,7 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
         if not AuthoringData.is_loaded:
             AuthoringData.load()
         if not bpy.context.selected_objects:
-            return
+            return self.report({"INFO"}, "Select an object first to load/unload its boundaries.")
         if AuthoringData.data["has_visible_boundaries"]:
             bpy.ops.bim.hide_boundaries()
         else:

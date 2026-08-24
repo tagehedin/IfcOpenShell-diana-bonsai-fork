@@ -94,7 +94,10 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
 
     @classmethod
     def poll(cls, context):
-        return tool.Ifc.get()
+        if not tool.Ifc.get():
+            cls.poll_message_set("Please create or load a project first.")
+            return False
+        return True
 
     @classmethod
     def description(cls, context, operator):

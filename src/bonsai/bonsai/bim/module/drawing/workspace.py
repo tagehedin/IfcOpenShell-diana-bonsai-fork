@@ -290,7 +290,14 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
             return {"CANCELLED"}
 
         self.props = tool.Drawing.get_annotation_props()
-        getattr(self, f"hotkey_{self.hotkey}")()
+        hotkey_func = getattr(self, f"hotkey_{self.hotkey}", None)
+        if hotkey_func is None:
+            # Several shortcuts (S_C/S_F/S_K/S_M/S_O/S_Q/S_R/S_V/S_X/S_Y/A_D/A_E/A_O) are bound
+            # in AnnotationTool.bl_keymap but have no handler here - they're only implemented by
+            # BimTool's Hotkey (model/workspace.py), which this keymap was likely copied from.
+            self.report({"INFO"}, "This shortcut isn't used by the Annotation Tool.")
+            return {"CANCELLED"}
+        hotkey_func()
 
     def invoke(self, context, event):
         # https://blender.stackexchange.com/questions/276035/how-do-i-make-operators-remember-their-property-values-when-called-from-a-hotkey
@@ -309,6 +316,10 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
             return
 
         related_objects = bpy.context.selected_objects
+        if not related_objects:
+            self.report({"INFO"}, "Select the objects you want to tag first.")
+            return
+
         created_objects = []
 
         for related_object in related_objects:
@@ -345,10 +356,17 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
             bpy.ops.bim.edit_text_popup()
 
     def hotkey_S_G(self):
-        for obj in bpy.context.selected_objects:
+        selected_objects = bpy.context.selected_objects
+        if not selected_objects:
+            self.report({"INFO"}, "Select the tag annotations you want to readjust.")
+            return
+
+        found_annotation = False
+        for obj in selected_objects:
             element = tool.Ifc.get_entity(obj)
             if not element or not element.is_a("IfcAnnotation"):
                 continue
+            found_annotation = True
 
             annotation_type = ifcopenshell.util.element.get_predefined_type(element)
             if annotation_type not in tool.Drawing.ANNOTATION_TYPES_SUPPORT_SETUP:
@@ -363,3 +381,6 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
 
             rotation_mode = tool.Drawing.get_annotation_props().tag_rotation_mode
             tool.Drawing.setup_annotation_object(obj, annotation_type, related_object, rotation_mode)
+
+        if not found_annotation:
+            self.report({"INFO"}, "None of the selected objects are tag annotations.")

@@ -1465,6 +1465,10 @@ class Hotkey(bpy.types.Operator, tool.Ifc.Operator):
         if AuthoringData.data["active_class"] in ("IfcOpeningElement",):
             if len(bpy.context.selected_objects) == 2:
                 bpy.ops.bim.clone_opening()
+            else:
+                self.report({"ERROR"}, "Select exactly 2 objects: the opening to clone, and its target element.")
+        else:
+            self.report({"ERROR"}, "The active object must be an opening to clone.")
 
     def hotkey_S_U(self):
         if not bpy.context.selected_objects:

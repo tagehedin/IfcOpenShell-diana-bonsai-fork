@@ -3764,14 +3764,17 @@ class FlipClippingPlane(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.active_object
+        obj = context.active_object
+        if not obj or obj not in tool.Project.get_project_props().clipping_planes_objs:
+            cls.poll_message_set("Select a Clipping Plane object before flipping.")
+            return False
+        return True
 
     def execute(self, context):
         obj = context.active_object
-        if obj in tool.Project.get_project_props().clipping_planes_objs:
-            obj.rotation_euler[0] += radians(180)
-            obj.rotation_euler[0] %= radians(360)
-            context.view_layer.update()
+        obj.rotation_euler[0] += radians(180)
+        obj.rotation_euler[0] %= radians(360)
+        context.view_layer.update()
         return {"FINISHED"}
 
 

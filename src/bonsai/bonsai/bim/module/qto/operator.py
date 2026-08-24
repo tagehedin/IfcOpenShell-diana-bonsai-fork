@@ -170,7 +170,10 @@ class PerformQuantityTakeOff(bpy.types.Operator, tool.Ifc.Operator):
 
     @classmethod
     def poll(cls, context):
-        return tool.Ifc.get()
+        if not tool.Ifc.get():
+            cls.poll_message_set("Open or create an IFC project first.")
+            return False
+        return True
 
     def _execute(self, context):
         import ifc5d.qto
