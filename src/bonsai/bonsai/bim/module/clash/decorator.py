@@ -21,6 +21,7 @@ import time
 import blf
 import bpy
 import gpu
+from bpy.app.handlers import persistent
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
@@ -357,3 +358,25 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
                         else:
                             self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
             gpu.state.depth_test_set(previous_depth_test)
+
+
+@persistent
+def free_gpu_resources_on_exit(*args):
+    """Explicitly release ClashDecorator._batch_cache's GPUBatch objects
+    before Blender begins shutdown, instead of relying on Python's
+    interpreter-teardown garbage collection to eventually drop their
+    refcount to zero. GPU resources must be freed while a valid GPU context
+    is still bound; letting that happen implicitly during interpreter
+    shutdown is exactly the kind of ordering that can leave the underlying
+    GPU buffer un-freed even though the Python wrapper object is gone.
+
+    ClashDecorator is the only decorator in the whole addon with a
+    persistent, session-long GPUBatch cache (every other decorator creates
+    and discards its batches within the same frame) - and since the clash
+    intersection cache made it practical to activate thousands of clashes
+    at once, this is the one place that class of leak is actually reachable
+    at real scale. Uninstall (called only if a clash view is still active)
+    already clears _batch_cache correctly - this just guarantees it runs
+    even if the user quits without clicking "Close Clash View" first."""
+    if ClashDecorator.is_installed:
+        ClashDecorator.uninstall()

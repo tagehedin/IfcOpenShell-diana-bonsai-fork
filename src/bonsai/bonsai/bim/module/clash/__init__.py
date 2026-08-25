@@ -19,7 +19,7 @@
 import bpy
 from bpy.app.handlers import persistent
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 
 @persistent
@@ -102,6 +102,7 @@ def register():
     bpy.types.Scene.BIMClashProperties = bpy.props.PointerProperty(type=prop.BIMClashProperties)
     bpy.app.handlers.load_post.append(_init_group_colors)
     bpy.app.handlers.load_post.append(_reload_icons_if_needed)
+    bpy.app.handlers.exit_pre.append(decorator.free_gpu_resources_on_exit)
     _init_group_colors()
     _reload_icons_if_needed()
 
@@ -112,4 +113,6 @@ def unregister():
         bpy.app.handlers.load_post.remove(_init_group_colors)
     if _reload_icons_if_needed in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_reload_icons_if_needed)
+    if decorator.free_gpu_resources_on_exit in bpy.app.handlers.exit_pre:
+        bpy.app.handlers.exit_pre.remove(decorator.free_gpu_resources_on_exit)
     del bpy.types.Scene.BIMClashProperties
