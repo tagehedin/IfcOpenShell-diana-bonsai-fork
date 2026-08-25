@@ -18,7 +18,7 @@
 
 import bpy
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 classes = (
     operator.BIM_OT_add_aggregate,
@@ -47,5 +47,7 @@ def register():
 
 
 def unregister():
+    for dec in (decorator.AggregateDecorator, decorator.AggregateModeDecorator):
+        dec.uninstall()
     del bpy.types.Object.BIMObjectAggregateProperties
     del bpy.types.Scene.BIMAggregateProperties

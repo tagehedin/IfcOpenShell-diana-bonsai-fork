@@ -18,7 +18,7 @@
 
 import bpy
 
-from . import operator, prop, ui, workspace
+from . import decorator, operator, prop, ui, workspace
 
 classes = (
     operator.ShowLoads,
@@ -103,6 +103,7 @@ def register():
 
 
 def unregister():
+    decorator.LoadsDecorator.uninstall()
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.StructuralTool)
     del bpy.types.Scene.BIMStructuralProperties

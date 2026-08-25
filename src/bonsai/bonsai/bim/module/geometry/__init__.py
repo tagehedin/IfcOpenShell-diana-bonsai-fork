@@ -20,7 +20,7 @@ import bpy
 import ifcopenshell.util.element
 from bpy.app.handlers import persistent
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 classes = (
     operator.AddCurvelikeItem,
@@ -217,6 +217,7 @@ def register():
 
 
 def unregister():
+    decorator.ItemDecorator.uninstall()
     bpy.app.handlers.depsgraph_update_pre.remove(block_scale)
 
     bpy.types.VIEW3D_MT_object.remove(ui.object_menu)

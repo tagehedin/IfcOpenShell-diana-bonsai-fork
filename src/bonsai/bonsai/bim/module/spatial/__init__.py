@@ -19,7 +19,7 @@
 import bpy
 from bpy.app.handlers import persistent
 
-from . import operator, prop, ui, workspace
+from . import decorator, operator, prop, ui, workspace
 
 classes = (
     operator.AssignContainer,
@@ -122,6 +122,7 @@ def register():
 
 
 def unregister():
+    decorator.GridDecorator.uninstall()
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.SpatialTool)
     if _on_load_post in bpy.app.handlers.load_post:

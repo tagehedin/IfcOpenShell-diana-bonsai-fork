@@ -166,6 +166,27 @@ def unregister():
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.ExploreTool)
     tool.Autosave.cancel_timer()
+    # Uninstall every viewport decorator FIRST, before any of the properties they
+    # read (Scene.BIMProjectProperties/MeasureToolSettings, addon prefs) are torn
+    # down below - a decorator still installed at that point keeps firing its
+    # draw_handler_add callback on every viewport redraw and crashes reading a
+    # property that no longer exists. Reachable via Blender's Extensions "Update"
+    # (unregister-old -> replace files -> register-new, all without a process
+    # restart), not just add-on disable - .uninstall() is safe to call
+    # unconditionally even when never installed (confirmed: draw_handler_remove on
+    # a null handle raises ValueError, which every uninstall() already catches).
+    for dec in (
+        decorator.LaserDecorator,
+        decorator.BMeasureDecorator,
+        decorator.DIMDecorator,
+        decorator.XYZDecorator,
+        decorator.ZDecorator,
+        decorator.AllToolsTextDecorator,
+        decorator.MeasureDecorator,
+        decorator.ProjectDecorator,
+        decorator.ClippingPlaneDecorator,
+    ):
+        dec.uninstall()
     del bpy.types.Scene.BIMProjectProperties
     del bpy.types.Scene.MeasureToolSettings
     bpy.app.handlers.load_post.remove(decorator.check_outdated_links_on_load)

@@ -18,7 +18,7 @@
 
 import bpy
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 classes = (
     operator.AddGeoreferencing,
@@ -49,4 +49,5 @@ def register():
 
 
 def unregister():
+    decorator.GeoreferenceDecorator.uninstall()
     del bpy.types.Scene.BIMGeoreferenceProperties

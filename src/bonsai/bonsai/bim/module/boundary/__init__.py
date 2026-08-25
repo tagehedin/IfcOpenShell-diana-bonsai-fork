@@ -18,7 +18,7 @@
 
 import bpy
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 classes = (
     operator.AddBoundary,
@@ -54,5 +54,10 @@ def register():
 
 
 def unregister():
+    # Uninstall before deleting the properties it reads - see project/__init__.py's
+    # unregister() for the full rationale (Blender's Extensions "Update" can
+    # unregister/register in-place without a process restart, and a still-installed
+    # decorator keeps firing its draw_handler_add callback during that window).
+    decorator.BoundaryDecorator.uninstall()
     del bpy.types.Scene.BIMBoundaryProperties
     del bpy.types.Object.BIMBoundaryProperties

@@ -23,7 +23,7 @@ from pathlib import Path
 import bpy
 import pyradiance
 
-from . import list, operator, prop, ui
+from . import decorator, list, operator, prop, ui
 
 
 def get_pyradiance_path():
@@ -68,5 +68,6 @@ def register():
 
 
 def unregister():
+    decorator.SolarDecorator.uninstall()
     del bpy.types.Scene.BIMRadianceExporeterProperies
     del bpy.types.Scene.BIMSolarProperties

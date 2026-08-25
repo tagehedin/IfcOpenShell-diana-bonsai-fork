@@ -72,6 +72,11 @@ def register():
 
 
 def unregister():
+    # Uninstall before deleting the properties it reads - see project/__init__.py's
+    # unregister() for the full rationale (Blender's Extensions "Update" can
+    # unregister/register in-place without a process restart, and a still-installed
+    # decorator keeps firing its draw_handler_add callback during that window).
+    decorator.SystemDecorator.uninstall()
     del bpy.types.Scene.BIMSystemProperties
     del bpy.types.Scene.BIMZoneProperties
     bpy.app.handlers.load_post.remove(decorator.toggle_decorations_on_load)

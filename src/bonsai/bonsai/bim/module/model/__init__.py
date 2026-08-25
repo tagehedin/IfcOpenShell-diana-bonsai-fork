@@ -403,6 +403,32 @@ def unregister():
     decorator.MEPSystemPathDecorator.uninstall()
     decorator.WallSystemPathDecorator.uninstall()
 
+    # Every other viewport decorator in this module - uninstall unconditionally
+    # (safe even if never installed: draw_handler_remove on a null handle raises
+    # ValueError, which every uninstall() already catches) BEFORE the properties
+    # below are torn down. A decorator still installed at that point keeps firing
+    # its draw callback on every viewport redraw and crashes reading a property
+    # that no longer exists - reachable via Blender's Extensions "Update" (an
+    # in-place unregister/register cycle with no process restart), not just
+    # add-on disable.
+    for dec in (
+        decorator.ProfileDecorator,
+        decorator.PolylineDecorator,
+        decorator.ProductDecorator,
+        decorator.WallAxisDecorator,
+        decorator.SlabDirectionDecorator,
+        decorator.FaceAreaDecorator,
+        decorator.BoundingBoxDecorator,
+        decorator.MEPSegmentExtendPreviewDecorator,
+        decorator.BendPreviewDecorator,
+        decorator.WallFilletPreviewDecorator,
+        decorator.DoorSwingReadonlyDecorator,
+        array.ArrayPreviewDecorator,
+        array.ArraySelectionHighlightDecorator,
+        wall.WallGizmoPreviewDecorator,
+    ):
+        dec.uninstall()
+
     if not bpy.app.background:
         for tool_data in reversed(tools):
             bpy.utils.unregister_tool(tool_data.tool)

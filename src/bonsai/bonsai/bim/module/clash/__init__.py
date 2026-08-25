@@ -108,6 +108,12 @@ def register():
 
 
 def unregister():
+    # Uninstall before any properties/classes are torn down below - see
+    # project/__init__.py's unregister() for the full rationale (Blender's
+    # Extensions "Update" does unregister-old -> register-new in-place, without
+    # a process restart, and a still-installed decorator keeps firing its
+    # draw_handler_add callback against half-removed state in between).
+    decorator.ClashDecorator.uninstall()
     operator.free_preview_collections()
     if _init_group_colors in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_init_group_colors)

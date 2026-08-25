@@ -22,7 +22,7 @@ import bpy
 
 import bonsai.tool as tool
 
-from . import gizmos, handler, operator, prop, ui, workspace
+from . import decoration, gizmos, handler, operator, prop, ui, workspace
 
 classes = (
     operator.ActivateDrawing,
@@ -213,6 +213,12 @@ def register():
 
 
 def unregister():
+    # Uninstall before deleting the properties they read - see project/__init__.py's
+    # unregister() for the full rationale (Blender's Extensions "Update" can
+    # unregister/register in-place without a process restart, and a still-installed
+    # decorator keeps firing its draw_handler_add callback during that window).
+    decoration.DecorationsHandler.uninstall()
+    decoration.CutDecorator.uninstall()
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.AnnotationTool)
     del bpy.types.Scene.DocProperties

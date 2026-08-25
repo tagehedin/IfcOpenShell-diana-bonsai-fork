@@ -18,7 +18,7 @@
 
 import bpy
 
-from . import operator, prop, ui
+from . import decorator, operator, prop, ui
 
 classes = (
     operator.BIM_OT_nest_assign_object,
@@ -42,5 +42,7 @@ def register():
 
 
 def unregister():
+    for dec in (decorator.NestDecorator, decorator.NestModeDecorator):
+        dec.uninstall()
     del bpy.types.Object.BIMObjectNestProperties
     del bpy.types.Scene.BIMNestProperties
