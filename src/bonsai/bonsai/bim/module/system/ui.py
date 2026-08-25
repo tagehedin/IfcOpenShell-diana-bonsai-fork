@@ -462,7 +462,13 @@ class BIM_PT_active_object_zones(Panel):
 
     @classmethod
     def poll(cls, context):
-        return tool.Ifc.get() and context.active_object and tool.Ifc.get_entity(context.active_object)
+        if not (tool.Ifc.get() and context.active_object):
+            return False
+        element = tool.Ifc.get_entity(context.active_object)
+        # Zones are an IfcObjectDefinition concept (HasAssignments) - not every
+        # IFC-linked object qualifies, e.g. an IfcDocumentReference used for
+        # document linking has no such attribute and would crash zones() below.
+        return bool(element) and element.is_a("IfcObjectDefinition")
 
     def draw(self, context):
         if not ActiveObjectZonesData.is_loaded:

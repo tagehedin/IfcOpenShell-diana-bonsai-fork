@@ -93,6 +93,14 @@ class ObjectSystemData:
     def systems(cls):
         results = []
         cls.element = tool.Ifc.get_entity(bpy.context.active_object)
+        # Systems are an IfcObjectDefinition concept (HasAssignments) - not every
+        # IFC-linked object qualifies, e.g. an IfcDocumentReference used for
+        # document linking has no such attribute and would crash the loop below.
+        # Reset cls.element to None (not just an early return here) since
+        # connected_elements()/flow_controls_data() below read the same shared
+        # class attribute and only guard against it being falsy, not wrong-typed.
+        if cls.element and not cls.element.is_a("IfcObjectDefinition"):
+            cls.element = None
         if not cls.element:
             return results
         for system in ifcopenshell.util.system.get_element_systems(cls.element):
@@ -290,6 +298,11 @@ class ActiveObjectZonesData:
         assert obj
         element = tool.Ifc.get_entity(obj)
         assert element
+        if not element.is_a("IfcObjectDefinition"):
+            # Zones are an IfcObjectDefinition concept (HasAssignments) - guard
+            # here too, not just in the panel's poll(), in case this is ever
+            # called from somewhere that doesn't go through that poll() first.
+            return []
         return [
             {
                 "id": z.id(),
