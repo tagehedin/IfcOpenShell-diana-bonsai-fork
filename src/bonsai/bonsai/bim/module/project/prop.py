@@ -27,6 +27,7 @@ from bpy.props import (
     CollectionProperty,
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -328,6 +329,105 @@ class EditedObj(PropertyGroup):
         obj: Union[bpy.types.Object, None]
 
 
+# Measurement widget persistence — Explore Tool's Laser/Measure XYZ/Aligned
+# Dimension/XYZ Point/Elevation tools keep their committed widgets in plain
+# Python class attributes on their decorators (see project/decorator.py),
+# which never survive a Blender restart. These PropertyGroups mirror those
+# widget shapes 1:1 as real bpy.props so they save/load with the .blend;
+# project/decorator.py syncs to them at each decorator's existing commit/
+# delete_last/clear chokepoints, and a load_post handler rebuilds the
+# decorators' in-memory lists from them on file load. All fields here are
+# plain Vectors/floats/strings — never live object references — so this is
+# a pure serialization mirror, not a new data model.
+
+
+class MeasureLaserAxis(PropertyGroup):
+    pt_a: FloatVectorProperty(size=3, subtype="XYZ")
+    pt_b: FloatVectorProperty(size=3, subtype="XYZ")
+    color: FloatVectorProperty(size=3, subtype="COLOR")
+
+    if TYPE_CHECKING:
+        pt_a: tuple[float, float, float]
+        pt_b: tuple[float, float, float]
+        color: tuple[float, float, float]
+
+
+class MeasureLaserWidget(PropertyGroup):
+    origin: FloatVectorProperty(size=3, subtype="XYZ")
+    axes: CollectionProperty(type=MeasureLaserAxis)
+
+    if TYPE_CHECKING:
+        origin: tuple[float, float, float]
+        axes: bpy.types.bpy_prop_collection_idprop[MeasureLaserAxis]
+
+
+class MeasureBMeasureWidget(PropertyGroup):
+    p1: FloatVectorProperty(size=3, subtype="XYZ")
+    p2: FloatVectorProperty(size=3, subtype="XYZ")
+    # Pipe/duct metadata mirrors tool.Raycast.get_pipe_center_radius /
+    # get_duct_center_dims's optional-tuple return - a has_* flag stands in
+    # for "or None" since bpy.props has no native optional/union type.
+    has_p1_pipe: BoolProperty(default=False)
+    p1_pipe_radius: FloatProperty()
+    p1_pipe_axis: FloatVectorProperty(size=3, subtype="XYZ")
+    has_p2_pipe: BoolProperty(default=False)
+    p2_pipe_radius: FloatProperty()
+    p2_pipe_axis: FloatVectorProperty(size=3, subtype="XYZ")
+    has_p1_duct: BoolProperty(default=False)
+    p1_duct_width: FloatProperty()
+    p1_duct_height: FloatProperty()
+    p1_duct_axis: FloatVectorProperty(size=3, subtype="XYZ")
+    p1_duct_ortho: FloatVectorProperty(size=3, subtype="XYZ")
+    has_p2_duct: BoolProperty(default=False)
+    p2_duct_width: FloatProperty()
+    p2_duct_height: FloatProperty()
+    p2_duct_axis: FloatVectorProperty(size=3, subtype="XYZ")
+    p2_duct_ortho: FloatVectorProperty(size=3, subtype="XYZ")
+
+    if TYPE_CHECKING:
+        p1: tuple[float, float, float]
+        p2: tuple[float, float, float]
+        has_p1_pipe: bool
+        p1_pipe_radius: float
+        p1_pipe_axis: tuple[float, float, float]
+        has_p2_pipe: bool
+        p2_pipe_radius: float
+        p2_pipe_axis: tuple[float, float, float]
+        has_p1_duct: bool
+        p1_duct_width: float
+        p1_duct_height: float
+        p1_duct_axis: tuple[float, float, float]
+        p1_duct_ortho: tuple[float, float, float]
+        has_p2_duct: bool
+        p2_duct_width: float
+        p2_duct_height: float
+        p2_duct_axis: tuple[float, float, float]
+        p2_duct_ortho: tuple[float, float, float]
+
+
+class MeasureVec3(PropertyGroup):
+    co: FloatVectorProperty(size=3, subtype="XYZ")
+
+    if TYPE_CHECKING:
+        co: tuple[float, float, float]
+
+
+class MeasureDimWidget(PropertyGroup):
+    points: CollectionProperty(type=MeasureVec3)
+
+    if TYPE_CHECKING:
+        points: bpy.types.bpy_prop_collection_idprop[MeasureVec3]
+
+
+class MeasureLabeledPoint(PropertyGroup):
+    co: FloatVectorProperty(size=3, subtype="XYZ")
+    label: StringProperty()
+
+    if TYPE_CHECKING:
+        co: tuple[float, float, float]
+        label: str
+
+
 BreadcrumbType = Literal["LIBRARY", "CLASS"]
 
 
@@ -517,6 +617,13 @@ class BIMProjectProperties(PropertyGroup):
     clipping_planes: bpy.props.CollectionProperty(type=ObjProperty)
     clipping_planes_active_index: bpy.props.IntProperty(min=0, default=0, max=5)
     edited_objs: bpy.props.CollectionProperty(type=EditedObj)
+    # Persisted mirrors of the Explore Tool measurement decorators' widget
+    # lists - see the comment above MeasureLaserAxis for why these exist.
+    laser_widgets: CollectionProperty(type=MeasureLaserWidget)
+    bmeasure_widgets: CollectionProperty(type=MeasureBMeasureWidget)
+    dim_widgets: CollectionProperty(type=MeasureDimWidget)
+    xyz_points: CollectionProperty(type=MeasureLabeledPoint)
+    z_points: CollectionProperty(type=MeasureLabeledPoint)
 
     @property
     def active_link(self) -> Union[Link, None]:
@@ -617,6 +724,11 @@ class BIMProjectProperties(PropertyGroup):
         clipping_planes: bpy.types.bpy_prop_collection_idprop[ObjProperty]
         clipping_planes_active_index: int
         edited_objs: bpy.types.bpy_prop_collection_idprop[EditedObj]
+        laser_widgets: bpy.types.bpy_prop_collection_idprop[MeasureLaserWidget]
+        bmeasure_widgets: bpy.types.bpy_prop_collection_idprop[MeasureBMeasureWidget]
+        dim_widgets: bpy.types.bpy_prop_collection_idprop[MeasureDimWidget]
+        xyz_points: bpy.types.bpy_prop_collection_idprop[MeasureLabeledPoint]
+        z_points: bpy.types.bpy_prop_collection_idprop[MeasureLabeledPoint]
 
     def get_active_library_breadcrumb(self) -> Union[LibraryBreadcrumb, None]:
         if self.library_breadcrumb:

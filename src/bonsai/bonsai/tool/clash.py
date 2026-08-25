@@ -90,6 +90,30 @@ class Clash(bonsai.core.tool.Clash):
         return clashes.get(f"{a_global_id}-{b_global_id}", None)
 
     @classmethod
+    def write_cached_intersection(cls, clash_prop, geometry: tuple[list[Vector], list[tuple[int, int, int]]]) -> None:
+        """Cache a computed intersection volume onto its ``Clash`` PropertyGroup
+        entry - see the comment above ``has_cached_intersection`` in clash/prop.py.
+        ``clash_prop`` is one row of ``ClashSet.clashes`` (real, persisted)."""
+        positions, triangle_indices = geometry
+        clash_prop.cached_intersection_verts.clear()
+        for pos in positions:
+            v = clash_prop.cached_intersection_verts.add()
+            v.co = pos
+        clash_prop.cached_intersection_tris.clear()
+        for tri in triangle_indices:
+            t = clash_prop.cached_intersection_tris.add()
+            t.v0, t.v1, t.v2 = tri
+        clash_prop.has_cached_intersection = True
+
+    @classmethod
+    def read_cached_intersection(cls, clash_prop) -> tuple[list[Vector], list[tuple[int, int, int]]]:
+        """The read-side counterpart to write_cached_intersection - only call
+        when ``clash_prop.has_cached_intersection`` is True."""
+        positions = [Vector(v.co) for v in clash_prop.cached_intersection_verts]
+        triangle_indices = [(t.v0, t.v1, t.v2) for t in clash_prop.cached_intersection_tris]
+        return positions, triangle_indices
+
+    @classmethod
     def get_clash_set(cls, name: str) -> Union[ifcclash.ClashSet, None]:
         for clash_set in ClashStore.clash_sets:
             if clash_set["name"] == name:
@@ -100,11 +124,34 @@ class Clash(bonsai.core.tool.Clash):
         return ClashStore.clash_sets
 
     @classmethod
-    def import_active_clashes(cls) -> None:
+    def import_active_clashes(cls, reuse_cache: bool = True) -> None:
+        """``reuse_cache=False`` (used by "Execute Blender Clash") always wipes
+        every intersection cache unconditionally - a fresh detection run should
+        be a guaranteed clean slate, not rely on the p1/p2/distance heuristic
+        below. "Load Executed Clash" (the default) re-reads results already on
+        disk rather than recomputing anything, so the heuristic is safe there."""
         props = cls.get_clash_props()
         clash_set = props.active_clash_set
         if not clash_set:
             return
+
+        # Snapshot cached intersections (keyed by GUID pair) before clearing, so a
+        # reload that finds this exact pair's contact point and distance unchanged
+        # can carry its cached intersection over instead of forcing a recompute -
+        # safe because matching p1/p2/distance is strong evidence the underlying
+        # geometry (and thus the intersection volume) hasn't moved either.
+        old_cache: dict[tuple[str, str], tuple] = {}
+        if reuse_cache:
+            for old_clash in clash_set.clashes:
+                if old_clash.has_cached_intersection:
+                    key = (old_clash.a_global_id, old_clash.b_global_id)
+                    old_cache[key] = (
+                        tuple(old_clash.p1),
+                        tuple(old_clash.p2),
+                        old_clash.distance,
+                        tool.Clash.read_cached_intersection(old_clash),
+                    )
+
         clash_set.clashes.clear()
         result = tool.Clash.get_clash_set(clash_set.name)
         assert result is not None
@@ -119,6 +166,18 @@ class Clash(bonsai.core.tool.Clash):
             blender_clash.clash_type = clash["type"]
             blender_clash.clash_pair = clash.get("pair", "ab")
             blender_clash.status = False if not "status" in clash else clash["status"]
+            blender_clash.p1 = clash["p1"]
+            blender_clash.p2 = clash["p2"]
+            blender_clash.distance = clash["distance"]
+
+            old = old_cache.get((blender_clash.a_global_id, blender_clash.b_global_id))
+            if (
+                old is not None
+                and old[0] == tuple(blender_clash.p1)
+                and old[1] == tuple(blender_clash.p2)
+                and old[2] == blender_clash.distance
+            ):
+                tool.Clash.write_cached_intersection(blender_clash, old[3])
         clash_set.clashes_loaded = True
 
     @classmethod

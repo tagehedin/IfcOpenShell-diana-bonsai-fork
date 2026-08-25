@@ -109,6 +109,12 @@ classes = (
     prop.FilterCategory,
     prop.Link,
     prop.EditedObj,
+    prop.MeasureLaserAxis,
+    prop.MeasureLaserWidget,
+    prop.MeasureBMeasureWidget,
+    prop.MeasureVec3,
+    prop.MeasureDimWidget,
+    prop.MeasureLabeledPoint,
     prop.PendingArrayRepair,
     prop.PendingOpeningRecut,
     prop.BIMProjectProperties,
@@ -137,6 +143,7 @@ def register():
     bpy.types.Scene.MeasureToolSettings = bpy.props.PointerProperty(type=prop.MeasureToolSettings)
     bpy.app.handlers.load_post.append(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
+    bpy.app.handlers.load_post.append(decorator.restore_measurement_widgets_on_load)
     bpy.types.TOPBAR_MT_file_import.append(ui.file_import_menu)
     bpy.types.TOPBAR_MT_file.prepend(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.prepend(ui.file_menu)
@@ -163,6 +170,7 @@ def unregister():
     del bpy.types.Scene.MeasureToolSettings
     bpy.app.handlers.load_post.remove(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.remove(decorator.toggle_decorations_on_load)
+    bpy.app.handlers.load_post.remove(decorator.restore_measurement_widgets_on_load)
     bpy.types.TOPBAR_MT_file.remove(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.remove(ui.file_menu)
 

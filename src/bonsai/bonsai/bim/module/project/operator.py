@@ -4443,7 +4443,7 @@ class XYZTool(bpy.types.Operator, PolylineOperator):
             snap_pt = snap.get("point")
             if snap_pt is None:
                 return {"RUNNING_MODAL"}
-            XYZDecorator.points.append((snap_pt.copy(), XYZDecorator.label_text(snap_pt)))
+            XYZDecorator.commit_point(snap_pt.copy())
             XYZDecorator.update(XYZDecorator.points, snap_pt.copy())
             tool.Blender.update_viewport()
 
@@ -4561,7 +4561,7 @@ class ZTool(bpy.types.Operator, PolylineOperator):
             snap_pt = snap.get("point")
             if snap_pt is None:
                 return {"RUNNING_MODAL"}
-            ZDecorator.points.append((snap_pt.copy(), ZDecorator.label_text(snap_pt)))
+            ZDecorator.commit_point(snap_pt.copy())
             ZDecorator.update(ZDecorator.points, snap_pt.copy())
             tool.Blender.update_viewport()
 

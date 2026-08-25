@@ -82,6 +82,8 @@ classes = (
     prop.BIMLinkColorOverride,
     prop.BIMSavedViewPlane,
     prop.BIMSavedView,
+    prop.ClashIntersectionVert,
+    prop.ClashIntersectionTri,
     prop.Clash,
     prop.ClashSource,
     prop.SmartClashGroup,

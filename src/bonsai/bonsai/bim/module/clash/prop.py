@@ -184,6 +184,24 @@ class ClashSource(PropertyGroup):
         mode: Literal["a", "i", "e"]
 
 
+class ClashIntersectionVert(PropertyGroup):
+    co: FloatVectorProperty(size=3, subtype="XYZ")
+
+    if TYPE_CHECKING:
+        co: tuple[float, float, float]
+
+
+class ClashIntersectionTri(PropertyGroup):
+    v0: IntProperty()
+    v1: IntProperty()
+    v2: IntProperty()
+
+    if TYPE_CHECKING:
+        v0: int
+        v1: int
+        v2: int
+
+
 class Clash(PropertyGroup):
     a_global_id: StringProperty(name="A")
     b_global_id: StringProperty(name="B")
@@ -204,6 +222,25 @@ class Clash(PropertyGroup):
         description="Include this clash when visualizing multiple selected clashes at once.",
         default=False,
     )
+    # The 3D clash contact point, its counterpart, and their distance - copied from
+    # the executed-clash JSON at import time (see tool.Clash.import_active_clashes)
+    # so SelectClash can visualize a clash from purely .blend-persisted data, with
+    # no dependency on ClashStore (an in-memory-only cache that's empty until
+    # "Execute Blender Clash" or "Load Executed Clash" runs) or the JSON file on disk.
+    p1: FloatVectorProperty(size=3, subtype="XYZ")
+    p2: FloatVectorProperty(size=3, subtype="XYZ")
+    distance: FloatProperty()
+    # Cache for SelectClash.compute_intersection_geometry()'s result - that boolean
+    # solve (bmesh cleanup, hole-filling, EXACT solver) is the expensive part of
+    # "Activate Clash", not geometry resolution. Persisting it here means it
+    # survives a Blender restart AND is skipped on repeat activations within the
+    # same session. Goes stale if the source geometry is edited without rerunning
+    # clash detection - same staleness contract the clash list itself already has,
+    # not a new risk. Only cleared by rebuilding this collection (fresh detection
+    # or Load Executed Clash), never proactively invalidated.
+    has_cached_intersection: BoolProperty(default=False)
+    cached_intersection_verts: CollectionProperty(type=ClashIntersectionVert)
+    cached_intersection_tris: CollectionProperty(type=ClashIntersectionTri)
 
     if TYPE_CHECKING:
         a_global_id: str
@@ -214,6 +251,12 @@ class Clash(PropertyGroup):
         clash_pair: str  # two-letter pair e.g. "ab", "ac", "dh"
         status: bool
         selected: bool
+        p1: tuple[float, float, float]
+        p2: tuple[float, float, float]
+        distance: float
+        has_cached_intersection: bool
+        cached_intersection_verts: bpy.types.bpy_prop_collection_idprop[ClashIntersectionVert]
+        cached_intersection_tris: bpy.types.bpy_prop_collection_idprop[ClashIntersectionTri]
 
 
 def clashes_loaded_update(self: "ClashSet", context: bpy.types.Context) -> None:

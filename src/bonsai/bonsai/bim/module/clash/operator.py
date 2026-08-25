@@ -654,7 +654,7 @@ class ExecuteIfcClash(bpy.types.Operator, ExportHelper):
                     Path(tmp.name).unlink()
         else:
             tool.Clash.load_clash_sets(self.filepath)
-        tool.Clash.import_active_clashes()
+        tool.Clash.import_active_clashes(reuse_cache=False)
 
         if self.quick_clash:
             assert temp_file is not None
@@ -728,7 +728,7 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
         clasher.export()
 
         tool.Clash.load_clash_sets(self.filepath)
-        tool.Clash.import_active_clashes()
+        tool.Clash.import_active_clashes(reuse_cache=False)
 
         if self.quick_clash:
             assert temp_file is not None
@@ -961,8 +961,6 @@ class SelectClash(bpy.types.Operator):
     def execute(self, context):
         self.props = tool.Clash.get_clash_props()
         assert (active_clash_set := self.props.active_clash_set)
-        clash_set = tool.Clash.get_clash_set(active_clash_set.name)
-        assert clash_set
 
         clash_props = [c for c in active_clash_set.clashes if c.selected]
         if not clash_props:
@@ -973,23 +971,16 @@ class SelectClash(bpy.types.Operator):
 
         products: list[ifcopenshell.entity_instance] = []
         pair_highlights: dict = defaultdict(list)
-        first_clash = None
 
         total = len(clash_props)
         print(f"\n[Bonsai Clash] Activating {total} clash(es) in set '{active_clash_set.name}'...")
         _t0 = time.time()
 
         for ci, clash_prop in enumerate(clash_props):
-            clash = tool.Clash.get_clash(clash_set, clash_prop.a_global_id, clash_prop.b_global_id)
-            if not clash:
-                continue
-            if first_clash is None:
-                first_clash = clash
-
             print(f"[Bonsai Clash]   [{ci + 1}/{total}] {clash_prop.a_global_id} vs {clash_prop.b_global_id}")
 
             highlights: list = [None, None]
-            for i, global_id in enumerate((clash["a_global_id"], clash["b_global_id"])):
+            for i, global_id in enumerate((clash_prop.a_global_id, clash_prop.b_global_id)):
                 side = "A" if i == 0 else "B"
                 try:
                     product = tool.Ifc.get().by_guid(global_id)
@@ -1012,7 +1003,7 @@ class SelectClash(bpy.types.Operator):
                 else:
                     print(f"[Bonsai Clash]     {side}: not found ({global_id})")
 
-            pair = clash.get("pair", "ab")
+            pair = clash_prop.clash_pair or "ab"
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
 
@@ -1025,30 +1016,33 @@ class SelectClash(bpy.types.Operator):
 
             intersection = None
             if geometries[0] and geometries[1]:
-                print(f"[Bonsai Clash]     Computing intersection volume...")
-                _ti = time.time()
-                intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
-                print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                if clash_prop.has_cached_intersection:
+                    intersection = tool.Clash.read_cached_intersection(clash_prop)
+                    print(f"[Bonsai Clash]     Using cached intersection volume")
+                else:
+                    print(f"[Bonsai Clash]     Computing intersection volume...")
+                    _ti = time.time()
+                    intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
+                    print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                    if intersection is not None:
+                        tool.Clash.write_cached_intersection(clash_prop, intersection)
             else:
                 print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
             pair_highlights[g1 + g2].append({"a": highlights[0], "b": highlights[1], "intersection": intersection})
 
-        if first_clash is None:
-            print(f"[Bonsai Clash] No clashes resolved — nothing to display.")
-            return {"FINISHED"}
-
+        first_clash = clash_props[0]
         print(f"[Bonsai Clash]   Installing decorator...")
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(dict(pair_highlights))
-        target = Vector(first_clash["p1"])
+        target = Vector(first_clash.p1)
         if self.move_camera:
             tool.Clash.look_at(target, target + Vector((5, 5, 5)))
-        self.props.p1 = first_clash["p1"]
-        self.props.p2 = first_clash["p2"]
+        self.props.p1 = first_clash.p1
+        self.props.p2 = first_clash.p2
         self.props.active_clash_text = (
-            first_clash["type"].title() + " " + str(round(first_clash["distance"] * 1000)) + "mm"
+            first_clash.clash_type.title() + " " + str(round(first_clash.distance * 1000)) + "mm"
         )
         print(f"[Bonsai Clash] Done in {time.time() - _t0:.2f}s\n")
         return {"FINISHED"}
@@ -1252,12 +1246,19 @@ class SelectSmartGroup(bpy.types.Operator):
         products: list[ifcopenshell.entity_instance] = []
         pair_highlights: dict = defaultdict(list)
 
-        # Build a guid→pair lookup from active clash set results
+        # Build a guid→pair lookup from active clash set results, plus a
+        # guid→Clash-entry lookup (both GUID orders - a smart group's pair
+        # order doesn't necessarily match the original clash's a/b order) so
+        # the intersection cache below can be checked/populated the same way
+        # SelectClash does.
         pair_lookup: dict[str, str] = {}
+        clash_prop_lookup: dict = {}
         if props.active_clash_set and props.active_clash_set.clashes_loaded:
             for clash in props.active_clash_set.clashes:
                 key = f"{clash.a_global_id}-{clash.b_global_id}"
                 pair_lookup[key] = clash.clash_pair
+                clash_prop_lookup[key] = clash
+                clash_prop_lookup[f"{clash.b_global_id}-{clash.a_global_id}"] = clash
 
         # `global_ids` is a_global_id, b_global_id, a_global_id, b_global_id, ...
         global_ids = list(selected_smart_group.global_ids)
@@ -1298,10 +1299,17 @@ class SelectSmartGroup(bpy.types.Operator):
 
             intersection = None
             if geometry_a and geometry_b:
-                print(f"[Bonsai Clash]     Computing intersection volume...")
-                _ti = time.time()
-                intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
-                print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                cached_clash_prop = clash_prop_lookup.get(f"{global_ids[i].name}-{global_ids[i + 1].name}")
+                if cached_clash_prop is not None and cached_clash_prop.has_cached_intersection:
+                    intersection = tool.Clash.read_cached_intersection(cached_clash_prop)
+                    print(f"[Bonsai Clash]     Using cached intersection volume")
+                else:
+                    print(f"[Bonsai Clash]     Computing intersection volume...")
+                    _ti = time.time()
+                    intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
+                    print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                    if intersection is not None and cached_clash_prop is not None:
+                        tool.Clash.write_cached_intersection(cached_clash_prop, intersection)
             else:
                 print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 

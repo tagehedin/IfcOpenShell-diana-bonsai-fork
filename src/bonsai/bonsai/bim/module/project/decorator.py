@@ -86,6 +86,68 @@ def toggle_decorations_on_load(*args):
     # as queried object is linked from separate .blend file.
 
 
+@persistent
+def restore_measurement_widgets_on_load(*args):
+    """Rebuild the 5 measurement decorators' in-memory widget lists from
+    BIMProjectProperties (see the comment above MeasureLaserAxis in
+    project/prop.py) and re-install any decorator that ends up with
+    something to draw — mirroring toggle_decorations_on_load's pattern for
+    ClippingPlaneDecorator above. Without the explicit install() calls,
+    restored widgets would sit in memory but stay invisible until the user
+    happened to re-invoke that specific tool once."""
+    props = tool.Project.get_project_props()
+    any_restored = False
+
+    LaserDecorator.widgets = [
+        (Vector(w.origin), [(Vector(a.pt_a), Vector(a.pt_b), tuple(a.color)) for a in w.axes])
+        for w in props.laser_widgets
+    ]
+    if LaserDecorator.widgets:
+        LaserDecorator.install(bpy.context)
+        any_restored = True
+
+    BMeasureDecorator.widgets = [
+        {
+            "p1": Vector(w.p1),
+            "p2": Vector(w.p2),
+            "p1_pipe": (w.p1_pipe_radius, Vector(w.p1_pipe_axis)) if w.has_p1_pipe else None,
+            "p2_pipe": (w.p2_pipe_radius, Vector(w.p2_pipe_axis)) if w.has_p2_pipe else None,
+            "p1_duct": (
+                (w.p1_duct_width, w.p1_duct_height, Vector(w.p1_duct_axis), Vector(w.p1_duct_ortho))
+                if w.has_p1_duct
+                else None
+            ),
+            "p2_duct": (
+                (w.p2_duct_width, w.p2_duct_height, Vector(w.p2_duct_axis), Vector(w.p2_duct_ortho))
+                if w.has_p2_duct
+                else None
+            ),
+        }
+        for w in props.bmeasure_widgets
+    ]
+    if BMeasureDecorator.widgets:
+        BMeasureDecorator.install(bpy.context)
+        any_restored = True
+
+    DIMDecorator.widgets = [{"points": [Vector(p.co) for p in w.points]} for w in props.dim_widgets]
+    if DIMDecorator.widgets:
+        DIMDecorator.install(bpy.context)
+        any_restored = True
+
+    XYZDecorator.points = [(Vector(p.co), p.label) for p in props.xyz_points]
+    if XYZDecorator.points:
+        XYZDecorator.install(bpy.context)
+        any_restored = True
+
+    ZDecorator.points = [(Vector(p.co), p.label) for p in props.z_points]
+    if ZDecorator.points:
+        ZDecorator.install(bpy.context)
+        any_restored = True
+
+    if any_restored:
+        AllToolsTextDecorator.install(bpy.context)
+
+
 class ProjectDecorator:
     installed = None
 
@@ -310,17 +372,38 @@ class LaserDecorator(tool.Blender.ViewportDecorator):
     def commit(cls):
         if cls.origin is not None and cls.axes:
             cls.widgets.append((cls.origin, cls.axes))
+            cls._sync_to_props()
 
     @classmethod
     def delete_last(cls):
         if cls.widgets:
             cls.widgets.pop()
+            cls._sync_to_props()
 
     @classmethod
     def clear(cls):
         cls.widgets = []
         cls.origin = None
         cls.axes = []
+        cls._sync_to_props()
+
+    @classmethod
+    def _sync_to_props(cls):
+        """Mirror ``widgets`` into BIMProjectProperties.laser_widgets so it
+        survives a Blender restart — see the comment above
+        MeasureLaserAxis in project/prop.py. Always a full rebuild rather
+        than incremental append/pop: widget counts are small, and this
+        avoids the two lists ever silently drifting out of sync."""
+        stored = tool.Project.get_project_props().laser_widgets
+        stored.clear()
+        for origin, axes in cls.widgets:
+            w = stored.add()
+            w.origin = origin
+            for pt_a, pt_b, color in axes:
+                a = w.axes.add()
+                a.pt_a = pt_a
+                a.pt_b = pt_b
+                a.color = color
 
     def draw_geometry(self, context):
         if not LaserDecorator.widgets and not (LaserDecorator.origin and LaserDecorator.axes):
@@ -448,17 +531,43 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         cls.widgets.append(
             {"p1": p1, "p2": p2, "p1_pipe": p1_pipe, "p2_pipe": p2_pipe, "p1_duct": p1_duct, "p2_duct": p2_duct}
         )
+        cls._sync_to_props()
 
     @classmethod
     def delete_last(cls):
         if cls.widgets:
             cls.widgets.pop()
+            cls._sync_to_props()
 
     @classmethod
     def clear(cls):
         cls.widgets = []
         cls.point1 = None
         cls.cursor = None
+        cls._sync_to_props()
+
+    @classmethod
+    def _sync_to_props(cls):
+        """Mirror ``widgets`` into BIMProjectProperties.bmeasure_widgets —
+        see LaserDecorator._sync_to_props for the persistence rationale."""
+        stored = tool.Project.get_project_props().bmeasure_widgets
+        stored.clear()
+        for w in cls.widgets:
+            item = stored.add()
+            item.p1 = w["p1"]
+            item.p2 = w["p2"]
+            if pipe := w["p1_pipe"]:
+                item.has_p1_pipe = True
+                item.p1_pipe_radius, item.p1_pipe_axis = pipe[0], pipe[1]
+            if pipe := w["p2_pipe"]:
+                item.has_p2_pipe = True
+                item.p2_pipe_radius, item.p2_pipe_axis = pipe[0], pipe[1]
+            if duct := w["p1_duct"]:
+                item.has_p1_duct = True
+                item.p1_duct_width, item.p1_duct_height, item.p1_duct_axis, item.p1_duct_ortho = duct
+            if duct := w["p2_duct"]:
+                item.has_p2_duct = True
+                item.p2_duct_width, item.p2_duct_height, item.p2_duct_axis, item.p2_duct_ortho = duct
         cls.point1_pipe = None
         cls.cursor_pipe = None
         cls.point1_duct = None
@@ -732,6 +841,7 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
     def commit(cls):
         if len(cls.points) >= 2:
             cls.widgets.append({"points": list(cls.points)})
+            cls._sync_to_props()
         cls.anchor = None
         cls.direction = None
         cls.points = []
@@ -742,6 +852,7 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
     def delete_last(cls):
         if cls.widgets:
             cls.widgets.pop()
+            cls._sync_to_props()
 
     @classmethod
     def clear(cls):
@@ -751,6 +862,19 @@ class DIMDecorator(tool.Blender.ViewportDecorator):
         cls.points = []
         cls.preview_point = None
         cls.cursor = None
+        cls._sync_to_props()
+
+    @classmethod
+    def _sync_to_props(cls):
+        """Mirror ``widgets`` into BIMProjectProperties.dim_widgets — see
+        LaserDecorator._sync_to_props for the persistence rationale."""
+        stored = tool.Project.get_project_props().dim_widgets
+        stored.clear()
+        for w in cls.widgets:
+            item = stored.add()
+            for point in w["points"]:
+                p = item.points.add()
+                p.co = point
 
     def draw_geometry(self, context):
         if not DIMDecorator.widgets and not DIMDecorator.points and DIMDecorator.cursor is None:
@@ -990,14 +1114,37 @@ class XYZDecorator(tool.Blender.ViewportDecorator):
         cls.cursor = cursor
 
     @classmethod
+    def commit_point(cls, point: Vector) -> None:
+        """Append a placed point (with its label computed once, see class
+        docstring) and persist it — the counterpart to Laser/BMeasure/DIM's
+        ``commit()``, just shaped differently since XYZ/Z points are placed
+        one at a time into a single flat list rather than as multi-point
+        widgets."""
+        cls.points.append((point, cls.label_text(point)))
+        cls._sync_to_props()
+
+    @classmethod
     def delete_last(cls):
         if cls.points:
             cls.points.pop()
+            cls._sync_to_props()
 
     @classmethod
     def clear(cls):
         cls.points = []
         cls.cursor = None
+        cls._sync_to_props()
+
+    @classmethod
+    def _sync_to_props(cls):
+        """Mirror ``points`` into BIMProjectProperties.xyz_points — see
+        LaserDecorator._sync_to_props for the persistence rationale."""
+        stored = tool.Project.get_project_props().xyz_points
+        stored.clear()
+        for point, label in cls.points:
+            item = stored.add()
+            item.co = point
+            item.label = label
 
     @staticmethod
     def label_text(point: Vector) -> str:
@@ -1057,14 +1204,33 @@ class ZDecorator(tool.Blender.ViewportDecorator):
         cls.cursor = cursor
 
     @classmethod
+    def commit_point(cls, point: Vector) -> None:
+        """See XYZDecorator.commit_point."""
+        cls.points.append((point, cls.label_text(point)))
+        cls._sync_to_props()
+
+    @classmethod
     def delete_last(cls):
         if cls.points:
             cls.points.pop()
+            cls._sync_to_props()
 
     @classmethod
     def clear(cls):
         cls.points = []
         cls.cursor = None
+        cls._sync_to_props()
+
+    @classmethod
+    def _sync_to_props(cls):
+        """Mirror ``points`` into BIMProjectProperties.z_points — see
+        LaserDecorator._sync_to_props for the persistence rationale."""
+        stored = tool.Project.get_project_props().z_points
+        stored.clear()
+        for point, label in cls.points:
+            item = stored.add()
+            item.co = point
+            item.label = label
 
     @staticmethod
     def _fmt_z(z: float) -> str:
