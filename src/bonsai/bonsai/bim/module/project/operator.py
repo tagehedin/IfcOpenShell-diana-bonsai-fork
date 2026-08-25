@@ -1879,6 +1879,12 @@ except Exception as e:
             t = time.time()
             with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as temp_file:
                 temp_file.write(code)
+            # This spawns a whole separate Blender process, which has to finish its
+            # own full startup (registering every enabled addon, including Bonsai's
+            # own dependency tree) before any of our code below runs - there's no
+            # way to get feedback earlier than this from inside that subprocess, so
+            # print here instead, on the parent side, right before the wait begins.
+            print(f"[Bonsai] Reloading '{self.filepath_.name}' in a background Blender process...")
             run = subprocess.run(
                 [
                     bpy.app.binary_path,
@@ -2091,16 +2097,17 @@ class ReloadLatestLinks(bpy.types.Operator):
 
     def execute(self, context):
         props = tool.Project.get_project_props()
-        reloaded = 0
-        for i, link in enumerate(props.links):
-            if _is_link_outdated(link):
-                if link.is_loaded:
-                    bpy.ops.bim.unload_link(link_index=i)
-                bpy.ops.bim.load_link(link_index=i, use_cache=False)
-                reloaded += 1
+        outdated_indices = [i for i, link in enumerate(props.links) if _is_link_outdated(link)]
+        total = len(outdated_indices)
+        for n, i in enumerate(outdated_indices, start=1):
+            link = props.links[i]
+            print(f"[Bonsai] Reload Latest: outdated link {n}/{total} - '{link.name}'")
+            if link.is_loaded:
+                bpy.ops.bim.unload_link(link_index=i)
+            bpy.ops.bim.load_link(link_index=i, use_cache=False)
         scan_outdated_links()
-        if reloaded:
-            self.report({"INFO"}, f"Reloaded {reloaded} outdated link(s)")
+        if total:
+            self.report({"INFO"}, f"Reloaded {total} outdated link(s)")
         else:
             self.report({"INFO"}, "All links are up to date")
         return {"FINISHED"}
@@ -2116,6 +2123,7 @@ class ReloadAllLinks(bpy.types.Operator):
         props = tool.Project.get_project_props()
         count = len(props.links)
         for i, link in enumerate(props.links):
+            print(f"[Bonsai] Reload All: link {i + 1}/{count} - '{link.name}'")
             if link.is_loaded:
                 bpy.ops.bim.unload_link(link_index=i)
             bpy.ops.bim.load_link(link_index=i, use_cache=False)
