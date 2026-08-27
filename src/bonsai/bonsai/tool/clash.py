@@ -155,6 +155,20 @@ class Clash(bonsai.core.tool.Clash):
         clash_set.clashes.clear()
         result = tool.Clash.get_clash_set(clash_set.name)
         assert result is not None
+
+        # Restore Group A-H source lists from the saved JSON. export_clash_sets()
+        # writes these into the same dict as the results, but nothing previously
+        # read them back on load - see issue_load_executed_clash_missing_groups.
+        for group in tool.Clash.CLASH_SOURCE_GROUP_LITERALS:
+            group_sources = clash_set.get_clash_sources_group(group)
+            group_sources.clear()
+            for source in result.get(group, []):
+                clash_source = group_sources.add()
+                clash_source.name = source["file"]
+                clash_source.mode = source.get("mode", "a")
+                if selector := source.get("selector"):
+                    tool.Search.import_filter_query(selector, clash_source.filter_groups)
+
         if "clashes" not in result:
             return
         for clash in sorted(result["clashes"].values(), key=lambda x: x["distance"]):

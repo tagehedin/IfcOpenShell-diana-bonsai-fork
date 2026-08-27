@@ -2612,6 +2612,12 @@ class ExportIFC(bpy.types.Operator, ExportHelper):
         if bim_props.ifc_file != output_file and extension not in ("ifczip", "ifcjson"):
             tool.Ifc.set_path(output_file)
         bim_props.is_dirty = False
+        # A successful save means the disk file is now in sync with this session,
+        # so any "IFC Has Changed Since Last Save" warning is stale - re-sync the
+        # recorded timestamp and clear it, same as LoadProject does after a reload.
+        ifc = tool.Ifc.get()
+        bim_props.ifc_timestamp = ifc.header.file_name.time_stamp if ifc.header.file_name else ""
+        bim_props.has_blend_warning = False
 
         pprops = tool.Project.get_project_props()
         if tool.Blender.get_addon_preferences().save_metadata_blend_file and pprops.should_save_metadata_for_this_file:
