@@ -1602,41 +1602,59 @@ class CreateDrawing(bpy.types.Operator):
         self.svg_settings = ifcopenshell.geom.settings()
         self.svg_settings.set("dimensionality", ifcopenshell.ifcopenshell_wrapper.CURVES_SURFACES_AND_SOLIDS)
         self.svg_settings.set("iterator-output", ifcopenshell.ifcopenshell_wrapper.NATIVE)
+        self.svg_buffer = ifcopenshell.geom.serializers.buffer()
+        # serialiser_settings is a separate object required by our frozen compiled
+        # core's serializers.svg() (3 positional args) - construction succeeds with it
+        # empty; none of the SVG-specific rendering options below are configurable via
+        # its string-keyed .set() interface on this core (confirmed live: every one of
+        # them raises "Setting not available" - that interface is a newer convention
+        # this core predates). Confirmed via git history (commit 4cd9d4b53, the commit
+        # that originally introduced the string-keyed convention here) that this core's
+        # equivalent is the SvgSerializer object's own explicit per-option setter
+        # methods below, called after construction - this is the exact mapping that
+        # commit's diff shows, not a guess.
+        self.serialiser_settings = ifcopenshell.geom.serializer_settings()
+        self.serialiser = ifcopenshell.geom.serializers.svg(
+            self.svg_buffer, self.svg_settings, self.serialiser_settings
+        )
+        self.serialiser.setWithoutStoreys(True)
+        self.serialiser.setUseHlrPoly(True)
+        self.serialiser.setPolygonal(True)
+        # Objects with more than these edges are rendered as wireframe instead of HLR for optimisation
+        self.serialiser.setProfileThreshold(10000)
+        self.serialiser.setUseNamespace(True)
+        self.serialiser.setAlwaysProject(True)
+        self.serialiser.setAutoElevation(False)
+        self.serialiser.setAutoSection(False)
+        self.serialiser.setPrintSpaceNames(False)
+        self.serialiser.setPrintSpaceAreas(False)
+        self.serialiser.setDrawDoorArcs(False)
+        self.serialiser.setNoCSS(True)
+        self.serialiser.setElevationRefGuid(self.camera_element.GlobalId)
+        self.serialiser.setScale(self.scale)
+        self.serialiser.setSubtractionSettings(ifcopenshell.ifcopenshell_wrapper.ALWAYS)
+        self.serialiser.setUsePrefiltering(True)  # See #3359
+        self.serialiser.setUnifyInputs(True)
+        self.serialiser.setSegmentProjection(True)
+        if target_view == "REFLECTED_PLAN_VIEW":
+            self.serialiser.setMirrorY(True)
         # SVG edge classification (issue #3668). See edge-classification.md. Settings are
         # per-drawing, stored in EPset_Drawing and read into self.cprops by import_camera_props.
+        # Genuinely not present on this core at all (no setter-method equivalent either,
+        # unlike everything above) - confirmed newer-only via the same commit history
+        # search that supplied the mapping above. Left as try/except exactly as its
+        # original author already intended for cross-core compatibility; this always
+        # no-ops on our core, which is the correct behaviour here, not a bug.
         try:
-            self.svg_settings.set("svg-use-edge-classification", self.cprops.use_edge_classification)
-            self.svg_settings.set("svg-render-crease-edges", self.cprops.render_creases)
-            self.svg_settings.set("svg-valley-angle-min-degrees", self.cprops.valley_angle_min_degrees)
-            self.svg_settings.set("svg-render-sharp-edges", self.cprops.render_sharp)
-            self.svg_settings.set("svg-ridge-angle-min-degrees", self.cprops.ridge_angle_min_degrees)
-            self.svg_settings.set("svg-emit-flush-edges", self.cprops.render_flush)
+            self.serialiser_settings.set("svg-use-edge-classification", self.cprops.use_edge_classification)
+            self.serialiser_settings.set("svg-render-crease-edges", self.cprops.render_creases)
+            self.serialiser_settings.set("svg-valley-angle-min-degrees", self.cprops.valley_angle_min_degrees)
+            self.serialiser_settings.set("svg-render-sharp-edges", self.cprops.render_sharp)
+            self.serialiser_settings.set("svg-ridge-angle-min-degrees", self.cprops.ridge_angle_min_degrees)
+            self.serialiser_settings.set("svg-emit-flush-edges", self.cprops.render_flush)
         except Exception:
             # Backwards compatibility with older ifcopenshell builds that don't expose these keys.
             pass
-        self.svg_buffer = ifcopenshell.geom.serializers.buffer()
-        self.svg_settings.set("svg-without-storeys", True)
-        self.svg_settings.set("svg-write-poly", True)
-        self.svg_settings.set("svg-poly", True)
-        # Objects with more than these edges are rendered as wireframe instead of HLR for optimisation
-        self.svg_settings.set("profile-threshold", 10000)
-        self.svg_settings.set("svg-xmlns", True)
-        self.svg_settings.set("svg-project", True)
-        self.svg_settings.set("auto-elevation", False)
-        self.svg_settings.set("auto-section", False)
-        self.svg_settings.set("print-space-names", False)
-        self.svg_settings.set("print-space-areas", False)
-        self.svg_settings.set("door-arcs", False)
-        self.svg_settings.set("svg-no-css", True)
-        self.svg_settings.set("elevation-ref-guid", self.camera_element.GlobalId)
-        self.svg_settings.set("scale", str(self.scale))
-        self.svg_settings.set("svg-subtract-before", "always")
-        self.svg_settings.set("svg-prefilter", True)  # See #3359
-        self.svg_settings.set("svg-unify-inputs", True)
-        self.svg_settings.set("svg-segment-projection", True)
-        if target_view == "REFLECTED_PLAN_VIEW":
-            self.svg_settings.set("svg-mirror-y", True)
-        self.serialiser = ifcopenshell.geom.serializers.svg(self.svg_buffer, self.svg_settings)
         # tree = ifcopenshell.geom.tree()
         # This instructs the tree to explode BReps into faces and return
         # the style of the face when running tree.select_ray()

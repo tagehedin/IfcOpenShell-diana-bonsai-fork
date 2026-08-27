@@ -313,7 +313,7 @@ class CreateAllShapes(bpy.types.Operator):
                     failures.append(element)
                     print("***** FAILURE *****")
             if shape:
-                assert isinstance(shape, W.triangulation_element)
+                assert isinstance(shape, W.TriangulationElement)
                 geom = shape.geometry
                 print(
                     f"Success {time.time() - start:.3f}s "

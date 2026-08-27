@@ -72,10 +72,15 @@ class ExportOBJ(bpy.types.Operator):
         # Conversion from IFC to OBJ
         # Settings for obj
         settings = ifcopenshell.geom.settings()
+        # serializer_settings is a separate object required by our frozen compiled
+        # core's serializers.obj() (4 positional args) - upstream merged this into
+        # `settings` for a newer, not-yet-shipped core (see git history on this file
+        # around commit af58eaf79, "Last minute refactoring").
+        serializer_settings = ifcopenshell.geom.serializer_settings()
 
         settings.set("dimensionality", ifcopenshell.ifcopenshell_wrapper.SURFACES_AND_SOLIDS)
         settings.set("apply-default-materials", True)
-        settings.set("use-element-guids", True)
+        serializer_settings.set("use-element-guids", True)
         settings.set("use-world-coords", True)
 
         ifc_file: ifcopenshell.file
@@ -89,7 +94,7 @@ class ExportOBJ(bpy.types.Operator):
         obj_file_path = os.path.join(output_dir, "model.obj")
         mtl_file_path = os.path.join(output_dir, "model.mtl")
 
-        serialiser = ifcopenshell.geom.serializers.obj(obj_file_path, mtl_file_path, settings)
+        serialiser = ifcopenshell.geom.serializers.obj(obj_file_path, mtl_file_path, settings, serializer_settings)
         serialiser.setFile(ifc_file)
         serialiser.setUnitNameAndMagnitude("METER", 1.0)
         serialiser.writeHeader()
@@ -106,7 +111,7 @@ class ExportOBJ(bpy.types.Operator):
         if iterator.initialize():
             while True:
                 shape = iterator.get()
-                assert isinstance(shape, W.triangulation_element)
+                assert isinstance(shape, W.TriangulationElement)
                 materials = shape.geometry.materials
 
                 for material in materials:
