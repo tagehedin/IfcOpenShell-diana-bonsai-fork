@@ -160,6 +160,11 @@ class CreateProject(bpy.types.Operator):
 
     def _execute(self, context):
         props = tool.Project.get_project_props()
+        # Starting fresh should always clear a stuck advanced-loading wizard
+        # state (e.g. abandoned mid-configuration on a previous file) rather
+        # than leave the New Project Wizard tab hidden for the rest of the
+        # session - see issue_advanced_wizard_abandonment_stuck_is_loading.
+        props.is_loading = False
         template = None if props.template_file == "0" else props.template_file
         if tool.Blender.is_default_scene():
             for obj in bpy.data.objects:
