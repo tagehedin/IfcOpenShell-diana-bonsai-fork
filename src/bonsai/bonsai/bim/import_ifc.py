@@ -740,7 +740,7 @@ class IfcImporter:
                 self.update_progress((percent_average / 100 * progress_range) + start_progress)
             shape = iterator.get()
             if shape:
-                assert isinstance(shape, W.triangulation_element)
+                assert isinstance(shape, W.TriangulationElement)
                 product = self.file.by_id(shape.id)
                 self.create_product(product, shape)
                 results.add(product)
@@ -1079,9 +1079,9 @@ class IfcImporter:
     def create_curve(
         self,
         element: ifcopenshell.entity_instance,
-        shape: Union[W.triangulation, W.triangulation_element],
+        shape: Union[W.Triangulation, W.TriangulationElement],
     ) -> bpy.types.Curve:
-        if isinstance(shape, W.triangulation_element):
+        if isinstance(shape, W.TriangulationElement):
             geometry = shape.geometry
         else:
             geometry = shape
@@ -1112,11 +1112,11 @@ class IfcImporter:
     def create_mesh(
         self,
         element: ifcopenshell.entity_instance,
-        shape: Union[W.triangulation, W.triangulation_element],
+        shape: Union[W.Triangulation, W.TriangulationElement],
         cartesian_point_offset: Union[npt.NDArray[np.float64], Literal[False]] = None,
     ) -> Union[bpy.types.Mesh, None]:
         try:
-            if isinstance(shape, W.triangulation_element):
+            if isinstance(shape, W.TriangulationElement):
                 # shape is ShapeElementType
                 geometry = shape.geometry
             else:
