@@ -69,6 +69,7 @@ from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.model import preview_base
 from bonsai.bim.module.model.decorator import FaceAreaDecorator, PolylineDecorator
 from bonsai.bim.module.model.polyline import PolylineOperator
+from bonsai.bim.module.project import clipping_plane_fill
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
 from bonsai.bim.module.project.decorator import (
     AllToolsTextDecorator,
@@ -3555,10 +3556,13 @@ class RefreshClippingPlanes(bpy.types.Operator):
 
     is_running: bool = False  # class-level guard — prevents multiple concurrent modals
 
+    _DRAG_BUTTONS = {"LEFTMOUSE", "MIDDLEMOUSE", "RIGHTMOUSE"}
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
+        self.mouse_button_down = False
 
     def invoke(self, context, event):
         RefreshClippingPlanes.is_running = True
@@ -3566,6 +3570,12 @@ class RefreshClippingPlanes(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
+        if event.type in self._DRAG_BUTTONS:
+            if event.value == "PRESS":
+                self.mouse_button_down = True
+            elif event.value == "RELEASE":
+                self.mouse_button_down = False
+
         should_refresh = False
         props = tool.Project.get_project_props()
 
@@ -3590,10 +3600,26 @@ class RefreshClippingPlanes(bpy.types.Operator):
         if should_refresh or total_planes != self.total_planes:
             self.camera = camera
             self.refresh_clipping_planes(context)
+            # The GPU clip planes above stay live during a drag (cheap, and
+            # that's the point of dragging - seeing the cut move). The fill
+            # rebuild is the expensive part (bisect + per-chunk sqlite
+            # lookups across every candidate), so it's skipped entirely while
+            # a mouse button is held (dragging the plane's gizmo) rather than
+            # just debounced - re-bisecting on every drag tick was regenerating
+            # repeatedly mid-drag despite the debounce timer. Caught up below
+            # once the button is released.
+            if props.clipping_plane_fill and not self.mouse_button_down:
+                clipping_plane_fill.schedule_regenerate()
             for clipping_plane in props.clipping_planes:
                 if clipping_plane.obj:
                     tool.Geometry.record_object_position(clipping_plane.obj)
             self.total_planes = total_planes
+        elif event.type in self._DRAG_BUTTONS and event.value == "RELEASE" and props.clipping_plane_fill:
+            # should_refresh can be False on the exact release tick (no new
+            # movement since the last one that already fired above) even
+            # though a drag just ended - make sure the final position always
+            # gets a fill.
+            clipping_plane_fill.schedule_regenerate()
         return {"PASS_THROUGH"}
 
     def clean_deleted_planes(self, context: bpy.types.Context) -> None:

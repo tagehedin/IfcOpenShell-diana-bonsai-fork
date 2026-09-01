@@ -721,6 +721,9 @@ class BIM_UL_links(UIList):
                 row.label(text="", icon="OBJECT_ORIGIN")
 
             row.label(text=item.filepath)
+            icon = "CHECKBOX_HLT" if item.generate_cut_fills else "CHECKBOX_DEHLT"
+            op = row.operator("bim.toggle_link_generate_cut_fills", text="", icon=icon, emboss=False)
+            op.link_index = index
             icon = "RESTRICT_SELECT_OFF" if item.is_selectable else "RESTRICT_SELECT_ON"
             row.operator("bim.toggle_link_selectability", text="", icon=icon, emboss=False).link_index = index
             icon = "CUBE" if item.is_wireframe else "MESH_CUBE"

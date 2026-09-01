@@ -250,6 +250,12 @@ class Link(PropertyGroup):
     is_selectable: BoolProperty(name="Is Selectable", default=True)
     is_wireframe: BoolProperty(name="Is Wireframe", default=False)
     is_hidden: BoolProperty(name="Is Hidden", default=False)
+    generate_cut_fills: BoolProperty(
+        name="Generate Cut Fills",
+        description="Include this link's geometry when computing Clipping Plane Fill. Off by default - "
+        "excluded links are skipped entirely, including from the fill calculation itself, not just hidden",
+        default=False,
+    )
     include_in_drawings: BoolProperty(name="Include in Drawings", default=True, options=set())
     use_obb_simplification: BoolProperty(
         name="OBB Simplification",
@@ -311,6 +317,7 @@ class Link(PropertyGroup):
         is_selectable: bool
         is_wireframe: bool
         is_hidden: bool
+        generate_cut_fills: bool
         include_in_drawings: bool
         use_obb_simplification: bool
         use_trace_silhouette: bool
@@ -616,6 +623,14 @@ class BIMProjectProperties(PropertyGroup):
     queried_guid: bpy.props.StringProperty()
     clipping_planes: bpy.props.CollectionProperty(type=ObjProperty)
     clipping_planes_active_index: bpy.props.IntProperty(min=0, default=0, max=5)
+    clipping_plane_fill: bpy.props.BoolProperty(
+        name="Clipping Plane Fill",
+        description=(
+            "Generate solid fills where clipping planes cut through walls, slabs, roofs, "
+            "columns, beams and other structural elements. Follows the clipping planes as they move"
+        ),
+        default=False,
+    )
     edited_objs: bpy.props.CollectionProperty(type=EditedObj)
     # Persisted mirrors of the Explore Tool measurement decorators' widget
     # lists - see the comment above MeasureLaserAxis for why these exist.
@@ -723,6 +738,7 @@ class BIMProjectProperties(PropertyGroup):
         queried_guid: str
         clipping_planes: bpy.types.bpy_prop_collection_idprop[ObjProperty]
         clipping_planes_active_index: int
+        clipping_plane_fill: bool
         edited_objs: bpy.types.bpy_prop_collection_idprop[EditedObj]
         laser_widgets: bpy.types.bpy_prop_collection_idprop[MeasureLaserWidget]
         bmeasure_widgets: bpy.types.bpy_prop_collection_idprop[MeasureBMeasureWidget]

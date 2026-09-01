@@ -1235,7 +1235,7 @@ class ZDecorator(tool.Blender.ViewportDecorator):
     @staticmethod
     def _fmt_z(z: float) -> str:
         sign = "+" if z >= 0 else "-"
-        return f"{sign}{abs(z):.2f}m".replace(".", ",")
+        return f"{sign}{abs(z):.3f}m".replace(".", ",")
 
     @staticmethod
     def label_text(point: Vector) -> str:

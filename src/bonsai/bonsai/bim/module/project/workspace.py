@@ -113,6 +113,13 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         op = row.operator("bim.explore_hotkey", text="Flip Clipping Plane")
         op.hotkey = "S_F"
         row = layout.row(align=True)
+        fill_prop = tool.Project.get_project_props()
+        row.operator(
+            "bim.toggle_clipping_plane_fill",
+            text="Clipping Plane Fill",
+            depress=fill_prop.clipping_plane_fill,
+        )
+        row = layout.row(align=True)
         row.operator("bim.add_clip_box", text="Add Clip Box")
         row = layout.row(align=True)
         row.operator("bim.remove_clip_box", text="Deactivate Clip Box")

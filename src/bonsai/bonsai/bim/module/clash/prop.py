@@ -118,6 +118,7 @@ class BIMSavedView(PropertyGroup):
     view_distance: FloatProperty(name="Distance")
     view_perspective: StringProperty(name="Perspective")
     planes: CollectionProperty(name="Clip Planes", type=BIMSavedViewPlane)
+    clipping_plane_fill: BoolProperty(name="Clipping Plane Fill", default=False)
 
     if TYPE_CHECKING:
         name: str
@@ -129,6 +130,7 @@ class BIMSavedView(PropertyGroup):
         view_distance: float
         view_perspective: str
         planes: bpy.types.bpy_prop_collection_idprop[BIMSavedViewPlane]
+        clipping_plane_fill: bool
 
 
 class BIMGroupColor(PropertyGroup):

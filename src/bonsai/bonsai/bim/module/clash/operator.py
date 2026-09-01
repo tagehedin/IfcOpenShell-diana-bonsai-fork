@@ -33,6 +33,7 @@ from mathutils import Matrix, Vector
 import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.clash.decorator import ClashDecorator
+from bonsai.bim.module.project import clipping_plane_fill
 
 _preview_collections: dict = {}
 
@@ -324,6 +325,7 @@ def _save_view_state(view: "bonsai.bim.module.clash.prop.BIMSavedView", context)
         m = cp.obj.matrix_world
         plane = view.planes.add()
         plane.matrix = [m[r][c] for r in range(4) for c in range(4)]
+    view.clipping_plane_fill = proj_props.clipping_plane_fill
 
 
 def _restore_clip_planes(context, view) -> None:
@@ -388,6 +390,12 @@ def _restore_clip_planes(context, view) -> None:
             data.clip_planes = [tuple(next(clip_planes_cycled)) for _ in range(6)]
     data.update()
     region.tag_redraw()
+
+    proj_props.clipping_plane_fill = view.clipping_plane_fill
+    if proj_props.clipping_plane_fill:
+        clipping_plane_fill.regenerate(context)
+    else:
+        clipping_plane_fill.clear()
 
 
 class SaveClashView(bpy.types.Operator):

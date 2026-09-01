@@ -20,9 +20,11 @@ import bpy
 
 import bonsai.tool as tool
 
-from . import decorator, gizmo, operator, prop, ui, workspace
+from . import clipping_plane_fill, decorator, gizmo, operator, prop, ui, workspace
 
 classes = (
+    clipping_plane_fill.ToggleClippingPlaneFill,
+    clipping_plane_fill.ToggleLinkGenerateCutFills,
     operator.AddProjectLibrary,
     operator.AppendEntireLibrary,
     operator.AppendInspectedLinkedElement,
@@ -166,6 +168,8 @@ def unregister():
     if not bpy.app.background:
         bpy.utils.unregister_tool(workspace.ExploreTool)
     tool.Autosave.cancel_timer()
+    clipping_plane_fill.cancel_scheduled_regenerate()
+    clipping_plane_fill.clear()
     # Uninstall every viewport decorator FIRST, before any of the properties they
     # read (Scene.BIMProjectProperties/MeasureToolSettings, addon prefs) are torn
     # down below - a decorator still installed at that point keeps firing its
