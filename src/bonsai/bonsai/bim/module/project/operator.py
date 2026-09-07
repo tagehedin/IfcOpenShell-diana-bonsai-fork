@@ -3556,30 +3556,76 @@ class RefreshClippingPlanes(bpy.types.Operator):
 
     is_running: bool = False  # class-level guard — prevents multiple concurrent modals
 
-    _DRAG_BUTTONS = {"LEFTMOUSE", "MIDDLEMOUSE", "RIGHTMOUSE"}
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
-        self.mouse_button_down = False
+        self._catchup_timer = None
 
     def invoke(self, context, event):
         RefreshClippingPlanes.is_running = True
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
+    # The arrow gizmo's own drag shows up in window.modal_operators as
+    # GIZMOGROUP_OT_gizmo_tweak (confirmed live - NOT "GIZMO_OT_..." as the
+    # name would suggest). Blender's built-in G/R/S transform modal does NOT
+    # show up in window.modal_operators at all (also confirmed live) - so
+    # this can only ever detect the gizmo case, never G/R/S.
+    _GIZMO_DRAG_OPERATOR = "GIZMOGROUP_OT_gizmo_tweak"
+
+    @classmethod
+    def _is_gizmo_dragging(cls, context: bpy.types.Context) -> bool:
+        window = context.window
+        if not window:
+            return False
+        return any(op.bl_idname == cls._GIZMO_DRAG_OPERATOR for op in window.modal_operators)
+
     def modal(self, context, event):
-        if event.type in self._DRAG_BUTTONS:
-            if event.value == "PRESS":
-                self.mouse_button_down = True
-            elif event.value == "RELEASE":
-                self.mouse_button_down = False
-
-        should_refresh = False
-        props = tool.Project.get_project_props()
-
         self.clean_deleted_planes(context)
+
+        # While the arrow gizmo is being dragged, freeze the GPU clip data
+        # and fill at their pre-drag state - the object itself keeps moving
+        # live regardless (gizmo.py writes straight to matrix_world), so
+        # recomputing on every tick would just be wasted work for a result
+        # that gets thrown away a frame later.
+        #
+        # G/R/S needs none of this: it isn't detectable via
+        # window.modal_operators at all, but it doesn't need to be - it
+        # already fully captures every event (including TIMER events) for
+        # its own duration, so this modal simply never ticks until it's
+        # done, exactly like the original code. Only the arrow gizmo's own
+        # drag has the gap this exists for: its RELEASE event never reaches
+        # this background modal, so without a catch-up tick the clip stays
+        # frozen until some unrelated later event happens to arrive.
+        #
+        # A WM timer (not bpy.app.timers - code run from bpy.app.timers sits
+        # outside Blender's normal event-dispatch pipeline and, confirmed
+        # live, can write correct clip_planes/use_clip_planes data without
+        # the viewport ever actually repainting to show it) is armed only
+        # while a gizmo drag is actually detected, and torn down again the
+        # moment it ends - not left running permanently, which would let its
+        # TIMER events leak into modal() during a G/R/S transform too (confirmed
+        # live: this is exactly what caused refreshing on every frame during
+        # G-move once a permanent timer was tried).
+        if self._is_gizmo_dragging(context):
+            if self._catchup_timer is None:
+                self._catchup_timer = context.window_manager.event_timer_add(0.05, window=context.window)
+            return {"PASS_THROUGH"}
+
+        if self._catchup_timer is not None:
+            context.window_manager.event_timer_remove(self._catchup_timer)
+            self._catchup_timer = None
+
+        should_refresh, camera, total_planes = self._pending_refresh(context)
+        if should_refresh or total_planes != self.total_planes:
+            self._do_refresh(context, camera, total_planes)
+        return {"PASS_THROUGH"}
+
+    def _pending_refresh(self, context: bpy.types.Context):
+        """Whether a refresh is due, without mutating any state."""
+        props = tool.Project.get_project_props()
+        should_refresh = False
 
         for clipping_plane in props.clipping_planes:
             if clipping_plane.obj and tool.Ifc.is_moved(clipping_plane.obj, ifc_only=False):
@@ -3596,31 +3642,34 @@ class RefreshClippingPlanes(bpy.types.Operator):
         elif self.camera and tool.Ifc.is_moved(self.camera, ifc_only=False):
             should_refresh = True
 
-        total_planes = len(props.clipping_planes)
-        if should_refresh or total_planes != self.total_planes:
-            self.camera = camera
-            self.refresh_clipping_planes(context)
-            # The GPU clip planes above stay live during a drag (cheap, and
-            # that's the point of dragging - seeing the cut move). The fill
-            # rebuild is the expensive part (bisect + per-chunk sqlite
-            # lookups across every candidate), so it's skipped entirely while
-            # a mouse button is held (dragging the plane's gizmo) rather than
-            # just debounced - re-bisecting on every drag tick was regenerating
-            # repeatedly mid-drag despite the debounce timer. Caught up below
-            # once the button is released.
-            if props.clipping_plane_fill and not self.mouse_button_down:
-                clipping_plane_fill.schedule_regenerate()
-            for clipping_plane in props.clipping_planes:
-                if clipping_plane.obj:
-                    tool.Geometry.record_object_position(clipping_plane.obj)
-            self.total_planes = total_planes
-        elif event.type in self._DRAG_BUTTONS and event.value == "RELEASE" and props.clipping_plane_fill:
-            # should_refresh can be False on the exact release tick (no new
-            # movement since the last one that already fired above) even
-            # though a drag just ended - make sure the final position always
-            # gets a fill.
+        return should_refresh, camera, len(props.clipping_planes)
+
+    def _do_refresh(self, context: bpy.types.Context, camera, total_planes: int) -> None:
+        props = tool.Project.get_project_props()
+        self.camera = camera
+        self.refresh_clipping_planes(context)
+        if props.clipping_plane_fill:
             clipping_plane_fill.schedule_regenerate()
-        return {"PASS_THROUGH"}
+        for clipping_plane in props.clipping_planes:
+            if clipping_plane.obj:
+                tool.Geometry.record_object_position(clipping_plane.obj)
+        self.total_planes = total_planes
+
+        # The viewport can get stuck crossfading between the old and new
+        # clip cut after a refresh - confirmed live as a genuine partial
+        # blend animation that never reaches its final frame, and immune to
+        # any amount of forced redraw (tag_redraw, wm.redraw_timer at up to
+        # 32 iterations, repeated clip_border() calls, nudging the view
+        # matrix). Empirically the only things that reliably clear it are
+        # Blender's own selection-change, view-change, or object add/remove
+        # notifiers - not plain redraw requests. A deselect+reselect is the
+        # cheapest of those and fixes it reliably; only done for planes
+        # already selected, so it never changes the user's actual selection.
+        for clipping_plane in props.clipping_planes:
+            obj = clipping_plane.obj
+            if obj and obj.select_get():
+                obj.select_set(False)
+                obj.select_set(True)
 
     def clean_deleted_planes(self, context: bpy.types.Context) -> None:
         props = tool.Project.get_project_props()
@@ -3705,6 +3754,21 @@ class RefreshClippingPlanes(bpy.types.Operator):
         return {"FINISHED"}
 
 
+_CLIPPING_PLANE_COLLECTION_NAME = "Clipping Planes"
+
+
+def _get_clipping_plane_collection(context: bpy.types.Context) -> bpy.types.Collection:
+    # A dedicated collection outside the IFC spatial hierarchy - ClippingPlane
+    # objects aren't IFC elements and shouldn't end up nested under whatever
+    # IfcBuildingStorey happens to be the active collection at creation time.
+    collection = bpy.data.collections.get(_CLIPPING_PLANE_COLLECTION_NAME)
+    if collection is None:
+        collection = bpy.data.collections.new(_CLIPPING_PLANE_COLLECTION_NAME)
+    if not context.scene.collection.children.get(collection.name):
+        context.scene.collection.children.link(collection)
+    return collection
+
+
 class CreateClippingPlane(bpy.types.Operator):
     bl_idname = "bim.create_clipping_plane"
     bl_label = "Create Clipping Plane"
@@ -3736,7 +3800,7 @@ class CreateClippingPlane(bpy.types.Operator):
         self.preview_obj = bpy.data.objects.new("ClippingPlane", mesh)
         self.preview_obj.show_in_front = True
         self.preview_obj.display_type = "WIRE"
-        context.collection.objects.link(self.preview_obj)
+        _get_clipping_plane_collection(context).objects.link(self.preview_obj)
 
         self.last_location = context.scene.cursor.location.copy()
         self.last_normal = Vector((0, 0, 1))
@@ -4071,7 +4135,14 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
         if not hit:
             return
         point = Vector(location)
-        snap_point = {"type": "Face", "point": point, "object": obj, "group": "Object", "distance": 9}
+        snap_point = {
+            "type": "Face",
+            "point": point,
+            "object": obj,
+            "group": "Object",
+            "distance": 9,
+            "normal": Vector(normal),
+        }
         pipe = tool.Raycast.get_pipe_center_radius(obj, point, Vector(normal), face_index)
         if pipe:
             snap_point["point"], snap_point["pipe_radius"], snap_point["pipe_axis"] = pipe
@@ -4112,6 +4183,7 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             self._pipe_from_snap(snap),
             BMeasureDecorator.point1_duct,
             self._duct_from_snap(snap),
+            BMeasureDecorator.point1_normal,
         )
 
     def _handle_snap_timer(self, context, event):
@@ -4129,6 +4201,7 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                 None,
                 BMeasureDecorator.point1_duct,
                 None,
+                BMeasureDecorator.point1_normal,
             )
             tool.Blender.update_viewport()
         return True
@@ -4148,13 +4221,14 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                     BMeasureDecorator.cursor_pipe,
                     None,
                     BMeasureDecorator.cursor_duct,
+                    None,
                 )
                 tool.Blender.update_viewport()
                 return {"RUNNING_MODAL"}
             # Exit without clearing committed widgets — they persist until
             # explicitly deleted (bim.delete_last_bmeasure_widget /
             # bim.all_widgets_off). Only drop the live in-progress state.
-            BMeasureDecorator.update(None, None, None, None, None, None)
+            BMeasureDecorator.update(None, None, None, None, None, None, None)
             context.window.cursor_set("DEFAULT")
             self._remove_snap_timer(context)
             tool.Blender.update_viewport()
@@ -4177,8 +4251,13 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
             snap_pipe = self._pipe_from_snap(snap)
             snap_duct = self._duct_from_snap(snap)
             if BMeasureDecorator.point1 is None:
-                # Start a new widget.
-                BMeasureDecorator.update(snap_pt.copy(), snap_pt.copy(), snap_pipe, snap_pipe, snap_duct, snap_duct)
+                # Start a new widget. The normal at this first point (if any)
+                # fixes the local X/Y measurement axes for the whole widget -
+                # see BMeasureDecorator._local_axes.
+                snap_normal = snap.get("normal")
+                BMeasureDecorator.update(
+                    snap_pt.copy(), snap_pt.copy(), snap_pipe, snap_pipe, snap_duct, snap_duct, snap_normal
+                )
             else:
                 # Complete it — archive into the persisted list, then start
                 # the next one right away from this same click.
@@ -4189,8 +4268,9 @@ class BMeasureTool(bpy.types.Operator, PolylineOperator):
                     snap_pipe,
                     BMeasureDecorator.point1_duct,
                     snap_duct,
+                    BMeasureDecorator.point1_normal,
                 )
-                BMeasureDecorator.update(None, snap_pt.copy(), None, snap_pipe, None, snap_duct)
+                BMeasureDecorator.update(None, snap_pt.copy(), None, snap_pipe, None, snap_duct, None)
             tool.Blender.update_viewport()
 
         return {"RUNNING_MODAL"}

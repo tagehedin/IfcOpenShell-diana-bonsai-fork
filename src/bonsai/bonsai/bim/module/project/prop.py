@@ -371,6 +371,12 @@ class MeasureLaserWidget(PropertyGroup):
 class MeasureBMeasureWidget(PropertyGroup):
     p1: FloatVectorProperty(size=3, subtype="XYZ")
     p2: FloatVectorProperty(size=3, subtype="XYZ")
+    # World-space face normal at p1, used to derive the local X/Y measurement
+    # axes (X along the face horizontally, Y horizontal into/out of the face,
+    # Z always global) - has_* flag since it's "or None" (e.g. a grid/axis
+    # snap with no face behind it), same convention as the pipe/duct fields.
+    has_p1_normal: BoolProperty(default=False)
+    p1_normal: FloatVectorProperty(size=3, subtype="XYZ")
     # Pipe/duct metadata mirrors tool.Raycast.get_pipe_center_radius /
     # get_duct_center_dims's optional-tuple return - a has_* flag stands in
     # for "or None" since bpy.props has no native optional/union type.
@@ -394,6 +400,8 @@ class MeasureBMeasureWidget(PropertyGroup):
     if TYPE_CHECKING:
         p1: tuple[float, float, float]
         p2: tuple[float, float, float]
+        has_p1_normal: bool
+        p1_normal: tuple[float, float, float]
         has_p1_pipe: bool
         p1_pipe_radius: float
         p1_pipe_axis: tuple[float, float, float]

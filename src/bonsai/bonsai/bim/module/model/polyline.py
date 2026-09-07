@@ -671,6 +671,7 @@ class PolylineOperator:
             "face_index": face_index,
             "distance": best_dist,
             "is_closest_to_camera": True,
+            "normal": face_normal_world,
         }
         if best_edge_verts is not None:
             object_snap["edge_verts"] = best_edge_verts

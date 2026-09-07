@@ -110,6 +110,7 @@ def restore_measurement_widgets_on_load(*args):
         {
             "p1": Vector(w.p1),
             "p2": Vector(w.p2),
+            "p1_normal": Vector(w.p1_normal) if w.has_p1_normal else None,
             "p1_pipe": (w.p1_pipe_radius, Vector(w.p1_pipe_axis)) if w.has_p1_pipe else None,
             "p2_pipe": (w.p2_pipe_radius, Vector(w.p2_pipe_axis)) if w.has_p2_pipe else None,
             "p1_duct": (
@@ -496,9 +497,11 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     # from different tools sitting close together can be deconflicted together
     # instead of each decorator drawing its own text independently.
     draw_methods = (("draw_geometry", "POST_VIEW"),)
-    widgets: list = []  # committed: [{"p1","p2","p1_pipe","p2_pipe","p1_duct","p2_duct"}, ...]
+    widgets: list = []  # committed: [{"p1","p2","p1_normal","p1_pipe","p2_pipe","p1_duct","p2_duct"}, ...]
     point1 = None  # in-progress start point, or None
     cursor = None  # live hover point
+    # World-space face normal at point1 (or None) - see _local_axes below.
+    point1_normal = None
     # Pipe/circular-profile metadata for point1/cursor above, as (radius, world_axis)
     # or None — see tool.Raycast.get_pipe_center_radius.
     point1_pipe = None
@@ -518,20 +521,50 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
     _PIPE_CIRCLE_SEGMENTS = 32
 
     @classmethod
-    def update(cls, point1, cursor, point1_pipe=None, cursor_pipe=None, point1_duct=None, cursor_duct=None):
+    def update(
+        cls, point1, cursor, point1_pipe=None, cursor_pipe=None, point1_duct=None, cursor_duct=None, point1_normal=None
+    ):
         cls.point1 = point1
         cls.cursor = cursor
         cls.point1_pipe = point1_pipe
         cls.cursor_pipe = cursor_pipe
         cls.point1_duct = point1_duct
         cls.cursor_duct = cursor_duct
+        cls.point1_normal = point1_normal
 
     @classmethod
-    def commit_widget(cls, p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+    def commit_widget(cls, p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct, p1_normal=None):
         cls.widgets.append(
-            {"p1": p1, "p2": p2, "p1_pipe": p1_pipe, "p2_pipe": p2_pipe, "p1_duct": p1_duct, "p2_duct": p2_duct}
+            {
+                "p1": p1,
+                "p2": p2,
+                "p1_normal": p1_normal,
+                "p1_pipe": p1_pipe,
+                "p2_pipe": p2_pipe,
+                "p1_duct": p1_duct,
+                "p2_duct": p2_duct,
+            }
         )
         cls._sync_to_props()
+
+    @staticmethod
+    def _local_axes(normal) -> tuple[Vector, Vector]:
+        """(x_axis, y_axis) for measuring X/Y/Z relative to a face instead of
+        plain global X/Y - x along the face (horizontal), y the face's own
+        horizontal in/out direction, both derived from `normal`; z is always
+        implicitly global Z (not returned - every caller already treats the
+        Z component as p2.z - p1.z directly).
+
+        Falls back to global X/Y when `normal` is None (no face behind the
+        point, e.g. a grid/axis snap) or (near) vertical - "perpendicular to
+        the normal, but horizontal" is undefined for a floor/ceiling face.
+        """
+        if normal is not None:
+            horiz = Vector((normal.x, normal.y, 0.0))
+            if horiz.length > 1e-6:
+                horiz.normalize()
+                return horiz.cross(Vector((0.0, 0.0, 1.0))), horiz
+        return Vector((1.0, 0.0, 0.0)), Vector((0.0, 1.0, 0.0))
 
     @classmethod
     def delete_last(cls):
@@ -544,6 +577,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         cls.widgets = []
         cls.point1 = None
         cls.cursor = None
+        cls.point1_normal = None
         cls._sync_to_props()
 
     @classmethod
@@ -556,6 +590,9 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             item = stored.add()
             item.p1 = w["p1"]
             item.p2 = w["p2"]
+            if (normal := w.get("p1_normal")) is not None:
+                item.has_p1_normal = True
+                item.p1_normal = normal
             if pipe := w["p1_pipe"]:
                 item.has_p1_pipe = True
                 item.p1_pipe_radius, item.p1_pipe_axis = pipe[0], pipe[1]
@@ -568,6 +605,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             if duct := w["p2_duct"]:
                 item.has_p2_duct = True
                 item.p2_duct_width, item.p2_duct_height, item.p2_duct_axis, item.p2_duct_ortho = duct
+        cls.point1_normal = None
         cls.point1_pipe = None
         cls.cursor_pipe = None
         cls.point1_duct = None
@@ -627,7 +665,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         line_shader.bind()
         line_shader.uniform_float("viewportSize", (context.region.width, context.region.height))
 
-        def draw_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+        def draw_one(p1, p2, p1_normal, p1_pipe, p2_pipe, p1_duct, p2_duct):
             point_shader.bind()
             gpu.state.point_size_set(8)
             for pt in (p1, p2):
@@ -649,8 +687,10 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
             if p1 is None or p2 is None:
                 return
 
-            corner_a = Vector((p2.x, p1.y, p1.z))
-            corner_b = Vector((p2.x, p2.y, p1.z))
+            x_axis, y_axis = self._local_axes(p1_normal)
+            delta = p2 - p1
+            corner_a = p1 + delta.dot(x_axis) * x_axis
+            corner_b = corner_a + delta.dot(y_axis) * y_axis
 
             for pts, color in [
                 ([p1, corner_a], self._COLOR_X),
@@ -674,10 +714,11 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 batch.draw(point_shader)
 
         for w in BMeasureDecorator.widgets:
-            draw_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
+            draw_one(w["p1"], w["p2"], w.get("p1_normal"), w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
         draw_one(
             BMeasureDecorator.point1,
             BMeasureDecorator.cursor,
+            BMeasureDecorator.point1_normal,
             BMeasureDecorator.point1_pipe,
             BMeasureDecorator.cursor_pipe,
             BMeasureDecorator.point1_duct,
@@ -706,7 +747,7 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
         settings = context.scene.MeasureToolSettings
         labels = []
 
-        def collect_one(p1, p2, p1_pipe, p2_pipe, p1_duct, p2_duct):
+        def collect_one(p1, p2, p1_normal, p1_pipe, p2_pipe, p1_duct, p2_duct):
             # Pipe diameter/duct WxH are always shown in mm regardless of magnitude,
             # unlike the X/Y/Z/d auto-scaling `fmt()` above — more useful for typical
             # pipe/duct sizes.
@@ -724,14 +765,15 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 labels.append((p2, cls._COLOR_PIPE, f"{width * 1000:.0f} x {height * 1000:.0f} mm"))
 
             if p1 is not None and p2 is not None:
-                corner_a = Vector((p2.x, p1.y, p1.z))
-                corner_b = Vector((p2.x, p2.y, p1.z))
+                x_axis, y_axis = cls._local_axes(p1_normal)
+                delta = p2 - p1
+                dx, dy, dz = delta.dot(x_axis), delta.dot(y_axis), delta.z
+                corner_a = p1 + dx * x_axis
+                corner_b = corner_a + dy * y_axis
 
-                labels.append(((p1 + corner_a) / 2, tuple(settings.text_color_red), f"X: {fmt(abs(p2.x - p1.x))}"))
-                labels.append(
-                    ((corner_a + corner_b) / 2, tuple(settings.text_color_green), f"Y: {fmt(abs(p2.y - p1.y))}")
-                )
-                labels.append(((corner_b + p2) / 2, tuple(settings.text_color_blue), f"Z: {fmt(abs(p2.z - p1.z))}"))
+                labels.append(((p1 + corner_a) / 2, tuple(settings.text_color_red), f"X: {fmt(abs(dx))}"))
+                labels.append(((corner_a + corner_b) / 2, tuple(settings.text_color_green), f"Y: {fmt(abs(dy))}"))
+                labels.append(((corner_b + p2) / 2, tuple(settings.text_color_blue), f"Z: {fmt(abs(dz))}"))
 
                 # "d:" (total distance) sits a third of the way down from whichever
                 # of p1/p2 is higher in world Z, rather than at the line's
@@ -743,8 +785,16 @@ class BMeasureDecorator(tool.Blender.ViewportDecorator):
                 )
 
         for w in cls.widgets:
-            collect_one(w["p1"], w["p2"], w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
-        collect_one(cls.point1, cls.cursor, cls.point1_pipe, cls.cursor_pipe, cls.point1_duct, cls.cursor_duct)
+            collect_one(w["p1"], w["p2"], w.get("p1_normal"), w["p1_pipe"], w["p2_pipe"], w["p1_duct"], w["p2_duct"])
+        collect_one(
+            cls.point1,
+            cls.cursor,
+            cls.point1_normal,
+            cls.point1_pipe,
+            cls.cursor_pipe,
+            cls.point1_duct,
+            cls.cursor_duct,
+        )
 
         return labels
 
