@@ -3712,7 +3712,25 @@ class RefreshClippingPlanes(bpy.types.Operator):
             data.use_clip_planes = False
         else:
             with bpy.context.temp_override(area=area, region=region):
-                bpy.ops.view3d.clip_border()
+                # clip_border()'s only job here is flipping use_clip_planes on
+                # - the actual clip_planes VALUES below are computed and
+                # written independently, regardless of anything clip_border()
+                # itself does. But it's a real border-select-style operator:
+                # internally it samples the viewport's depth buffer to define
+                # its clip volume, an expensive GPU readback that scales with
+                # how much geometry is actually visible/unclipped at call
+                # time. Confirmed live via `py-spy dump` on a genuinely hung
+                # Blender process (2026-09-07): moving a plane to a position
+                # that clips nothing suddenly leaves far more of a heavy
+                # multi-link scene visible for that readback, and this call
+                # was blocking the main thread for a very long time - reported
+                # as "almost unresponsive," recoverable only by deleting the
+                # plane or disabling fill (both stop further refreshes from
+                # re-triggering this same call). Only needed once, to turn
+                # use_clip_planes on in the first place - every call after
+                # that was pure redundant cost.
+                if not data.use_clip_planes:
+                    bpy.ops.view3d.clip_border()
 
                 clip_planes = []
                 for clipping_plane in tool.Project.get_project_props().clipping_planes:
