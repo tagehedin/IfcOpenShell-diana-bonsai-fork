@@ -3655,6 +3655,22 @@ class RefreshClippingPlanes(bpy.types.Operator):
                 tool.Geometry.record_object_position(clipping_plane.obj)
         self.total_planes = total_planes
 
+        # The viewport can get stuck crossfading between the old and new
+        # clip cut after a refresh - confirmed live as a genuine partial
+        # blend animation that never reaches its final frame, and immune to
+        # any amount of forced redraw (tag_redraw, wm.redraw_timer at up to
+        # 32 iterations, repeated clip_border() calls, nudging the view
+        # matrix). Empirically the only things that reliably clear it are
+        # Blender's own selection-change, view-change, or object add/remove
+        # notifiers - not plain redraw requests. A deselect+reselect is the
+        # cheapest of those and fixes it reliably; only done for planes
+        # already selected, so it never changes the user's actual selection.
+        for clipping_plane in props.clipping_planes:
+            obj = clipping_plane.obj
+            if obj and obj.select_get():
+                obj.select_set(False)
+                obj.select_set(True)
+
     def clean_deleted_planes(self, context: bpy.types.Context) -> None:
         props = tool.Project.get_project_props()
         while True:
