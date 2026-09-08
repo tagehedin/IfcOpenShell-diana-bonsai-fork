@@ -3556,76 +3556,44 @@ class RefreshClippingPlanes(bpy.types.Operator):
 
     is_running: bool = False  # class-level guard — prevents multiple concurrent modals
 
+    # 2026-09-08: reverted to this per-tick-refresh design (was briefly
+    # replaced with a window.modal_operators + WM-timer based
+    # drag-detection scheme, see git history around commit c5bd2c025) after
+    # that scheme was suspected of causing an intermittent orbit/zoom
+    # sluggishness on the Windows test machine that this version does not
+    # reproduce. The mechanism was never conclusively confirmed as the
+    # cause before reverting - see feature_clipping_plane_fill.md memory for
+    # the full investigation. Known tradeoff knowingly accepted by
+    # reverting: mouse_button_down below gets stuck True forever after the
+    # first arrow-gizmo drag in a session (its RELEASE event never reaches
+    # this background modal, confirmed live - only PRESS does), silently
+    # disabling the fill-suppression branch for all later gizmo drags. This
+    # was a known, understood, already-diagnosed bug before the revert, not
+    # a new one - see the same memory file.
+    _DRAG_BUTTONS = {"LEFTMOUSE", "MIDDLEMOUSE", "RIGHTMOUSE"}
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
-        self._catchup_timer = None
+        self.mouse_button_down = False
 
     def invoke(self, context, event):
         RefreshClippingPlanes.is_running = True
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    # The arrow gizmo's own drag shows up in window.modal_operators as
-    # GIZMOGROUP_OT_gizmo_tweak (confirmed live - NOT "GIZMO_OT_..." as the
-    # name would suggest). Blender's built-in G/R/S transform modal does NOT
-    # show up in window.modal_operators at all (also confirmed live) - so
-    # this can only ever detect the gizmo case, never G/R/S.
-    _GIZMO_DRAG_OPERATOR = "GIZMOGROUP_OT_gizmo_tweak"
-
-    @classmethod
-    def _is_gizmo_dragging(cls, context: bpy.types.Context) -> bool:
-        window = context.window
-        if not window:
-            return False
-        return any(op.bl_idname == cls._GIZMO_DRAG_OPERATOR for op in window.modal_operators)
-
     def modal(self, context, event):
-        self.clean_deleted_planes(context)
+        if event.type in self._DRAG_BUTTONS:
+            if event.value == "PRESS":
+                self.mouse_button_down = True
+            elif event.value == "RELEASE":
+                self.mouse_button_down = False
 
-        # While the arrow gizmo is being dragged, freeze the GPU clip data
-        # and fill at their pre-drag state - the object itself keeps moving
-        # live regardless (gizmo.py writes straight to matrix_world), so
-        # recomputing on every tick would just be wasted work for a result
-        # that gets thrown away a frame later.
-        #
-        # G/R/S needs none of this: it isn't detectable via
-        # window.modal_operators at all, but it doesn't need to be - it
-        # already fully captures every event (including TIMER events) for
-        # its own duration, so this modal simply never ticks until it's
-        # done, exactly like the original code. Only the arrow gizmo's own
-        # drag has the gap this exists for: its RELEASE event never reaches
-        # this background modal, so without a catch-up tick the clip stays
-        # frozen until some unrelated later event happens to arrive.
-        #
-        # A WM timer (not bpy.app.timers - code run from bpy.app.timers sits
-        # outside Blender's normal event-dispatch pipeline and, confirmed
-        # live, can write correct clip_planes/use_clip_planes data without
-        # the viewport ever actually repainting to show it) is armed only
-        # while a gizmo drag is actually detected, and torn down again the
-        # moment it ends - not left running permanently, which would let its
-        # TIMER events leak into modal() during a G/R/S transform too (confirmed
-        # live: this is exactly what caused refreshing on every frame during
-        # G-move once a permanent timer was tried).
-        if self._is_gizmo_dragging(context):
-            if self._catchup_timer is None:
-                self._catchup_timer = context.window_manager.event_timer_add(0.05, window=context.window)
-            return {"PASS_THROUGH"}
-
-        if self._catchup_timer is not None:
-            context.window_manager.event_timer_remove(self._catchup_timer)
-            self._catchup_timer = None
-
-        should_refresh, camera, total_planes = self._pending_refresh(context)
-        if should_refresh or total_planes != self.total_planes:
-            self._do_refresh(context, camera, total_planes)
-        return {"PASS_THROUGH"}
-
-    def _pending_refresh(self, context: bpy.types.Context):
-        """Whether a refresh is due, without mutating any state."""
-        props = tool.Project.get_project_props()
         should_refresh = False
+        props = tool.Project.get_project_props()
+
+        self.clean_deleted_planes(context)
 
         for clipping_plane in props.clipping_planes:
             if clipping_plane.obj and tool.Ifc.is_moved(clipping_plane.obj, ifc_only=False):
@@ -3642,34 +3610,31 @@ class RefreshClippingPlanes(bpy.types.Operator):
         elif self.camera and tool.Ifc.is_moved(self.camera, ifc_only=False):
             should_refresh = True
 
-        return should_refresh, camera, len(props.clipping_planes)
-
-    def _do_refresh(self, context: bpy.types.Context, camera, total_planes: int) -> None:
-        props = tool.Project.get_project_props()
-        self.camera = camera
-        self.refresh_clipping_planes(context)
-        if props.clipping_plane_fill:
+        total_planes = len(props.clipping_planes)
+        if should_refresh or total_planes != self.total_planes:
+            self.camera = camera
+            self.refresh_clipping_planes(context)
+            # The GPU clip planes above stay live during a drag (cheap, and
+            # that's the point of dragging - seeing the cut move). The fill
+            # rebuild is the expensive part (bisect + per-chunk sqlite
+            # lookups across every candidate), so it's skipped entirely while
+            # a mouse button is held (dragging the plane's gizmo) rather than
+            # just debounced - re-bisecting on every drag tick was regenerating
+            # repeatedly mid-drag despite the debounce timer. Caught up below
+            # once the button is released.
+            if props.clipping_plane_fill and not self.mouse_button_down:
+                clipping_plane_fill.schedule_regenerate()
+            for clipping_plane in props.clipping_planes:
+                if clipping_plane.obj:
+                    tool.Geometry.record_object_position(clipping_plane.obj)
+            self.total_planes = total_planes
+        elif event.type in self._DRAG_BUTTONS and event.value == "RELEASE" and props.clipping_plane_fill:
+            # should_refresh can be False on the exact release tick (no new
+            # movement since the last one that already fired above) even
+            # though a drag just ended - make sure the final position always
+            # gets a fill.
             clipping_plane_fill.schedule_regenerate()
-        for clipping_plane in props.clipping_planes:
-            if clipping_plane.obj:
-                tool.Geometry.record_object_position(clipping_plane.obj)
-        self.total_planes = total_planes
-
-        # The viewport can get stuck crossfading between the old and new
-        # clip cut after a refresh - confirmed live as a genuine partial
-        # blend animation that never reaches its final frame, and immune to
-        # any amount of forced redraw (tag_redraw, wm.redraw_timer at up to
-        # 32 iterations, repeated clip_border() calls, nudging the view
-        # matrix). Empirically the only things that reliably clear it are
-        # Blender's own selection-change, view-change, or object add/remove
-        # notifiers - not plain redraw requests. A deselect+reselect is the
-        # cheapest of those and fixes it reliably; only done for planes
-        # already selected, so it never changes the user's actual selection.
-        for clipping_plane in props.clipping_planes:
-            obj = clipping_plane.obj
-            if obj and obj.select_get():
-                obj.select_set(False)
-                obj.select_set(True)
+        return {"PASS_THROUGH"}
 
     def clean_deleted_planes(self, context: bpy.types.Context) -> None:
         props = tool.Project.get_project_props()
@@ -3728,7 +3693,10 @@ class RefreshClippingPlanes(bpy.types.Operator):
                 # plane or disabling fill (both stop further refreshes from
                 # re-triggering this same call). Only needed once, to turn
                 # use_clip_planes on in the first place - every call after
-                # that was pure redundant cost.
+                # that was pure redundant cost. This call happens on every
+                # single mousemove tick during a drag (per-tick refresh, not
+                # once-per-drag), so this guard matters even more here than
+                # a once-per-drag version of this fix would need it to.
                 if not data.use_clip_planes:
                     bpy.ops.view3d.clip_border()
 
