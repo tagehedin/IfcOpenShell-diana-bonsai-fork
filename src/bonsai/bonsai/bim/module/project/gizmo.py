@@ -21,6 +21,7 @@ from bpy.types import GizmoGroup
 from mathutils import Matrix
 
 import bonsai.tool as tool
+from bonsai.bim.module.project import clipping_plane_fill
 
 
 class ClippingPlane(GizmoGroup):
@@ -29,6 +30,19 @@ class ClippingPlane(GizmoGroup):
     bl_space_type = "VIEW_3D"
     bl_region_type = "WINDOW"
     bl_options = {"3D", "PERSISTENT"}
+
+    # 2026-09-08: fill regeneration on drag-end is triggered directly from
+    # here, not inferred by RefreshClippingPlanes.modal() polling
+    # window.modal_operators on every tick (which it still does, but only to
+    # suppress fill *during* a drag - see operator.py). That polling-based
+    # approach was found live to sometimes fire in rapid, sub-millisecond
+    # bursts (over 1000 calls/sec at times, confirmed via a caller-tracking
+    # diagnostic), each burst able to trigger real ~4s regenerate() runs
+    # back to back - this is a much more direct source of truth: this
+    # GizmoGroup is the one place that actually owns the arrow gizmo's drag,
+    # so it doesn't need to infer anything, only notice its own state
+    # changed.
+    _GIZMO_DRAG_OPERATOR = "GIZMOGROUP_OT_gizmo_tweak"
 
     @classmethod
     def poll(cls, context):
@@ -46,6 +60,7 @@ class ClippingPlane(GizmoGroup):
         self.offset = 0
         self.mw = Matrix()
         self.last_mw = Matrix()
+        self._was_dragging = False
 
         self.gizmo = self.gizmos.new("GIZMO_GT_arrow_3d")
 
@@ -68,3 +83,18 @@ class ClippingPlane(GizmoGroup):
         mw = context.object.matrix_world.normalized()
         mw.col[3] -= mw.col[2] * self.offset
         self.gizmo.matrix_basis = mw
+
+        # window.modal_operators (not self.gizmo.is_modal, which was found
+        # live earlier this session to flicker False/True several times
+        # mid-drag on longer drags, some internal re-arm in the arrow
+        # gizmo) - this is called during every redraw while this group is
+        # active, including the few redraws Blender does immediately after
+        # a drag ends (its own highlight-fade), so it reliably sees the
+        # transition without needing any timer of its own.
+        window = context.window
+        is_dragging = bool(window) and any(op.bl_idname == self._GIZMO_DRAG_OPERATOR for op in window.modal_operators)
+        if self._was_dragging and not is_dragging:
+            props = tool.Project.get_project_props()
+            if props.clipping_plane_fill:
+                clipping_plane_fill.schedule_regenerate()
+        self._was_dragging = is_dragging

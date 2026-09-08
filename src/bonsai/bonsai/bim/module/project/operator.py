@@ -3562,7 +3562,19 @@ class RefreshClippingPlanes(bpy.types.Operator):
     # an orbit/zoom sluggishness on Windows, confirmed by A/B testing but
     # never root-caused - see feature_clipping_plane_fill.md memory).
     #
-    # Fill suppression during a drag, however, used to be tracked via plain
+    # Fill suppression *during* a drag is still handled here (below), but
+    # firing fill regeneration once the drag *ends* is NOT - that used to be
+    # inferred here too, by tracking window.modal_operators transitioning
+    # True->False across ticks, but a live caller-tracking diagnostic caught
+    # this modal() firing in rapid sub-millisecond bursts (1000+ calls/sec)
+    # at times, each burst able to trigger real ~4s regenerate() runs back
+    # to back - this modal() ticks on every event from every tool, so
+    # inferring one specific gizmo's drag-end from it was fragile. That
+    # responsibility now lives directly in gizmo.py's ClippingPlane
+    # GizmoGroup instead, which actually owns the arrow gizmo's drag and
+    # doesn't need to infer anything about it.
+    #
+    # Separately: fill suppression used to be tracked via plain
     # LEFTMOUSE/MIDDLEMOUSE/RIGHTMOUSE PRESS/RELEASE - broken, because a
     # gizmo-owned drag's own RELEASE event never reaches this background
     # modal (only its PRESS does, confirmed live), so that flag got stuck
@@ -3570,10 +3582,7 @@ class RefreshClippingPlanes(bpy.types.Operator):
     # silently disabling fill regeneration for the rest of it (the
     # "fill doesn't update, have to toggle the checkbox" bug). Fixed by
     # reading window.modal_operators directly instead - live, accurate
-    # state, not something we track ourselves. This is a plain read with no
-    # WM timer involved, unlike the reverted mechanism above - confirmed
-    # live earlier this session as cheap (well under 1ms/call) and not
-    # itself implicated in the sluggishness, only the timer was.
+    # state, not something we track ourselves.
     _GIZMO_DRAG_OPERATOR = "GIZMOGROUP_OT_gizmo_tweak"
 
     @classmethod
@@ -3587,16 +3596,44 @@ class RefreshClippingPlanes(bpy.types.Operator):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
-        self._was_gizmo_dragging = False
+        self._last_plane_matrices: dict[bpy.types.Object, tuple[float, ...]] = {}
 
     def invoke(self, context, event):
         RefreshClippingPlanes.is_running = True
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
+    @staticmethod
+    def _snapshot_matrix(obj: bpy.types.Object) -> tuple[float, ...]:
+        # Plain floats, not tuple(obj.matrix_world) - mathutils Vectors stay
+        # live-linked to the object, so a naive tuple() doesn't freeze a
+        # snapshot (confirmed live earlier this session: comparing a
+        # "captured" live-linked tuple against itself later is always
+        # trivially equal, since it's still tracking the current transform).
+        return tuple(f for row in obj.matrix_world for f in row)
+
+    @classmethod
+    def _plane_moved(cls, obj: bpy.types.Object, last: "tuple[float, ...] | None") -> bool:
+        # Not tool.Ifc.is_moved() - that's a shared, general-purpose utility
+        # used across Bonsai for IFC placement-commit decisions, and its
+        # rotation check (angle between two rotation matrices via arccos)
+        # was found live to permanently read ~0.1 degrees - just over its
+        # own 0.1 degree tolerance - for one specific clip plane's exact
+        # orientation, a genuine float32 precision edge case in that
+        # formula, not a real difference (the matrices print identically).
+        # That made should_refresh permanently true for the whole session,
+        # so refresh_clipping_planes() and schedule_regenerate() fired on
+        # every single tick, forever, once that plane existed - this is
+        # what actually caused the "sluggish the whole time fill is active"
+        # reports, not the drag-detection mechanism. A plain per-element
+        # comparison with a fixed tolerance has no such blowup.
+        if last is None:
+            return True
+        current = cls._snapshot_matrix(obj)
+        return any(abs(a - b) > 1e-5 for a, b in zip(current, last))
+
     def modal(self, context, event):
         is_gizmo_dragging = self._is_gizmo_dragging(context)
-        was_gizmo_dragging, self._was_gizmo_dragging = self._was_gizmo_dragging, is_gizmo_dragging
 
         should_refresh = False
         props = tool.Project.get_project_props()
@@ -3604,7 +3641,8 @@ class RefreshClippingPlanes(bpy.types.Operator):
         self.clean_deleted_planes(context)
 
         for clipping_plane in props.clipping_planes:
-            if clipping_plane.obj and tool.Ifc.is_moved(clipping_plane.obj, ifc_only=False):
+            obj = clipping_plane.obj
+            if obj and self._plane_moved(obj, self._last_plane_matrices.get(obj)):
                 should_refresh = True
                 break
 
@@ -3626,23 +3664,19 @@ class RefreshClippingPlanes(bpy.types.Operator):
             # that's the point of dragging - seeing the cut move). The fill
             # rebuild is the expensive part (bisect + per-chunk sqlite
             # lookups across every candidate), so it's skipped entirely while
-            # the arrow gizmo is actively being dragged, rather than just
-            # debounced - re-bisecting on every drag tick was regenerating
-            # repeatedly mid-drag despite the debounce timer. Caught up below
-            # once the drag ends.
+            # the arrow gizmo is actively being dragged - gizmo.py fires it
+            # once, directly, the moment the drag actually ends (see the
+            # class docstring above). G/R/S needs none of this: it already
+            # fully captures every event for its own duration, so should_refresh
+            # only ever becomes true here right after it finishes, same as
+            # always - firing fill then is correct, not something to suppress.
             if props.clipping_plane_fill and not is_gizmo_dragging:
                 clipping_plane_fill.schedule_regenerate()
             for clipping_plane in props.clipping_planes:
                 if clipping_plane.obj:
                     tool.Geometry.record_object_position(clipping_plane.obj)
+                    self._last_plane_matrices[clipping_plane.obj] = self._snapshot_matrix(clipping_plane.obj)
             self.total_planes = total_planes
-        elif was_gizmo_dragging and not is_gizmo_dragging and props.clipping_plane_fill:
-            # should_refresh can be False on the exact tick a drag ends (the
-            # GPU clip data already caught the true final position on an
-            # earlier tick, live, before release - same reasoning as the
-            # comment on record_object_position above) - make sure fill
-            # still catches up to that final position.
-            clipping_plane_fill.schedule_regenerate()
         return {"PASS_THROUGH"}
 
     def clean_deleted_planes(self, context: bpy.types.Context) -> None:
