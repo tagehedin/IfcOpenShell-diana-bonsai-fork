@@ -110,6 +110,11 @@ endif()
 option(BUILD_PACKAGE "" OFF)
 
 option(
+    BUILD_FUZZERS
+    "Build libFuzzer security-fuzzing harnesses. Requires a Clang toolchain configured with -fsanitize=fuzzer (typically also address,undefined) via CMAKE_CXX_FLAGS."
+    OFF
+)
+option(
     IFCOPENSHELL_DEPLOY_QT_RUNTIME
     "Deploy Qt runtime dependencies for installed Qt applications."
     ON
@@ -134,6 +139,7 @@ option(USERSPACE_PYTHON_PREFIX "Installs IfcPython for the current user only ins
 option(USE_DEBUG_PYTHON "Use debug binaries when building Debug IfcPython on Windows." OFF)
 option(ADD_COMMIT_SHA "Add commit sha and branch in version number, requires git" OFF)
 option(VERSION_OVERRIDE "Use VERSION as the branch label when commit information is embedded" OFF)
+option(USE_CCACHE "Use ccache as a compiler launcher if it is found" OFF)
 
 set(
     PYTHON_MODULE_INSTALL_DIR
@@ -178,26 +184,30 @@ if((BUILD_CONVERT OR BUILD_GEOMSERVER OR BUILD_IFCPYTHON) AND(NOT BUILD_IFCGEOM)
     set(BUILD_IFCGEOM ON)
 endif()
 
-find_program(CCACHE_FOUND ccache)
-if(CCACHE_FOUND)
-    message(STATUS "`ccache` is found, using it as a compiler launcher.")
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_FOUND}")
-    if(MSVC)
-        # By default Visual Studio generators will use /Zi which is not compatible
-        # with ccache, so tell Visual Studio to use /Z7 instead.
-        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
-        # Not needed for Ninja.
-        if(CMAKE_GENERATOR MATCHES "Visual Studio")
-            file(COPY_FILE
-                ${CCACHE_FOUND} ${CMAKE_BINARY_DIR}/cl.exe
-                ONLY_IF_DIFFERENT)
-            set(CMAKE_VS_GLOBALS
-                "CLToolExe=cl.exe"
-                "CLToolPath=${CMAKE_BINARY_DIR}"
-                "UseMultiToolTask=true"
-            )
+if(USE_CCACHE)
+    find_program(CCACHE_FOUND ccache)
+    if(CCACHE_FOUND)
+        message(STATUS "`USE_CCACHE` is enabled and `ccache` is found, using it as a compiler launcher.")
+        set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_FOUND}")
+        if(MSVC)
+            # By default Visual Studio generators will use /Zi which is not compatible
+            # with ccache, so tell Visual Studio to use /Z7 instead.
+            set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+            # Not needed for Ninja.
+            if(CMAKE_GENERATOR MATCHES "Visual Studio")
+                file(COPY_FILE
+                    ${CCACHE_FOUND} ${CMAKE_BINARY_DIR}/cl.exe
+                    ONLY_IF_DIFFERENT)
+                set(CMAKE_VS_GLOBALS
+                    "CLToolExe=cl.exe"
+                    "CLToolPath=${CMAKE_BINARY_DIR}"
+                    "UseMultiToolTask=true"
+                )
+            endif()
         endif()
     endif()
+else()
+    message(STATUS "ccache usage is disabled, set `USE_CCACHE=ON` to enable it.")
 endif()
 
 if(MSVC AND MSVC_PARALLEL_BUILD)
@@ -311,12 +321,25 @@ if (WITH_ROCKSDB)
     set(SWIG_DEFINES ${SWIG_DEFINES} -DIFOPSH_WITH_ROCKSDB)
     # See https://github.com/facebook/rocksdb/issues/981.
     if(TARGET RocksDB::rocksdb)
-        target_link_libraries(IFCOPENSHELL_RocksDB INTERFACE RocksDB::rocksdb)
+        set(IFCOPENSHELL_ROCKSDB_IMPORTED_TARGET RocksDB::rocksdb)
     elseif(TARGET RocksDB::rocksdb-shared)
-        target_link_libraries(IFCOPENSHELL_RocksDB INTERFACE RocksDB::rocksdb-shared)
+        set(IFCOPENSHELL_ROCKSDB_IMPORTED_TARGET RocksDB::rocksdb-shared)
     else()
         message(FATAL_ERROR "RocksDB found but neither RocksDB::rocksdb nor RocksDB::rocksdb-shared target exists")
     endif()
+    # Our win/build-deps.cmd builds RocksDB separately per Debug/Release config into the
+    # same install prefix, so the imported target only ever has DEBUG and RELEASE listed in
+    # IMPORTED_CONFIGURATIONS. On a multi-config generator (Visual Studio), CMake maps any
+    # unmatched build config to the *first* entry of that list, which happens to be DEBUG
+    # (RocksDBTargets-debug.cmake sorts before RocksDBTargets-release.cmake). Without an
+    # explicit mapping, RelWithDebInfo and MinSizeRel builds would end up linking the
+    # /MDd-flavored rocksdb_d.lib into an /MD (NDEBUG) binary, causing a CRT/runtime-library
+    # mismatch that depends on nothing but that alphabetical ordering.
+    set_target_properties(${IFCOPENSHELL_ROCKSDB_IMPORTED_TARGET} PROPERTIES
+        MAP_IMPORTED_CONFIG_RELWITHDEBINFO "RELWITHDEBINFO;RELEASE"
+        MAP_IMPORTED_CONFIG_MINSIZEREL "MINSIZEREL;RELEASE"
+    )
+    target_link_libraries(IFCOPENSHELL_RocksDB INTERFACE ${IFCOPENSHELL_ROCKSDB_IMPORTED_TARGET})
 
     if (WITH_ZSTD)
         # @todo do we actually need the zstd include dir or rather just pass
@@ -710,7 +733,7 @@ if(BUILD_IFCMAX)
     add_subdirectory(../src/ifcmax ifcmax)
 endif()
 
-if(BUILD_IFCPYTHON AND WITH_CGAL)
+if(WITH_CGAL)
     add_subdirectory(../src/svgfill svgfill)
 endif()
 
@@ -756,6 +779,10 @@ if(BUILD_BONSAIVIEWER)
         add_subdirectory(../src/ifcviewer-minimal ifcviewer-minimal)
     endif()
     add_subdirectory(../src/bonsaiviewer bonsaiviewer)
+endif()
+
+if(BUILD_FUZZERS)
+    add_subdirectory(../src/ifcfuzz ifcfuzz)
 endif()
 
 # Cmake uninstall target

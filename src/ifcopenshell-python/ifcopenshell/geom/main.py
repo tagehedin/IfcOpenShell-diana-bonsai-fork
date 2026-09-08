@@ -377,7 +377,7 @@ class iterator(ifcopenshell_wrapper.iterator):
         def get(self):
             return wrap_shape_creation(self.settings, ifcopenshell_wrapper.iterator.get(self))
 
-    def __iter__(self) -> Generator[IteratorOutput, None, None]:
+    def __iter__(self) -> Generator[IteratorOutput]:
         if self.initialize():
             while True:
                 yield self.get()
@@ -549,6 +549,63 @@ def create_shape(
     )
 
 
+class kernel:
+    """A reusable geometry kernel bound to a (geometry library, file, settings) triple.
+
+    ``ifcopenshell.geom.create_shape`` constructs a new geometry kernel on every
+    call, which repeats the backend resolution (including plugin discovery for
+    hybrid kernels) and discards the mapping and conversion caches afterwards.
+    This class performs that construction once so that converting many products
+    one by one reuses the same kernel, mapping and caches, similar to what
+    ``ifcopenshell.geom.iterator`` does internally.
+
+    The kernel is bound at construction: the settings are copied and the file
+    reference is kept, so later changes to the settings object do not affect an
+    existing kernel and instances passed to :meth:`create_shape` must belong to
+    the bound file.
+
+    Example:
+
+    .. code:: python
+
+        settings = ifcopenshell.geom.settings()
+        k = ifcopenshell.geom.kernel(settings, ifc_file, geometry_library="hybrid-cgal-simple-opencascade")
+        for product in ifc_file.by_type("IfcProduct"):
+            if product.Representation:
+                shape = k.create_shape(product)
+    """
+
+    def __init__(
+        self,
+        settings: settings,
+        file: file,
+        geometry_library: GEOMETRY_LIBRARY = "opencascade",
+        logger: Optional[ifcopenshell.logger] = None,
+    ):
+        self.settings = settings
+        self.file = file
+        self.wrapped = ifcopenshell_wrapper.geometry_kernel(
+            geometry_library, file, settings, *ifcopenshell.optional_logger_args(logger)
+        )
+
+    def create_shape(
+        self,
+        inst: entity_instance,
+        repr: Optional[entity_instance] = None,
+    ) -> Union[
+        ShapeType, ShapeElementType, ifcopenshell_wrapper.transformation, utils.shape_tuple, TopoDS.TopoDS_Shape
+    ]:
+        """Identical to :func:`create_shape` but reuses this kernel across calls.
+
+        See :func:`create_shape` for the possible return types; the settings and
+        geometry library bound at construction are used for every call.
+        """
+        return wrap_shape_creation(
+            self.settings,
+            self.wrapped.create_shape(inst, repr) if repr else self.wrapped.create_shape(inst),
+        )
+
+
 def map_shape(settings: settings, inst: entity_instance) -> ifcopenshell_wrapper.item:
     """
     Returns an interpretation of the geometry encoded as per IfcOpenShell's taxonomy layer.
@@ -564,18 +621,14 @@ def map_shape(settings: settings, inst: entity_instance) -> ifcopenshell_wrapper
 
 
 @overload
-def consume_iterator(it: iterator, with_progress: Literal[False] = False) -> Generator[IteratorOutput, None, None]: ...
+def consume_iterator(it: iterator, with_progress: Literal[False] = False) -> Generator[IteratorOutput]: ...
 @overload
-def consume_iterator(
-    it: iterator, with_progress: Literal[True]
-) -> Generator[tuple[int, IteratorOutput], None, None]: ...
+def consume_iterator(it: iterator, with_progress: Literal[True]) -> Generator[tuple[int, IteratorOutput]]: ...
 @overload
-def consume_iterator(
-    it: iterator, with_progress: bool
-) -> Generator[Union[IteratorOutput, tuple[int, IteratorOutput]], None, None]: ...
+def consume_iterator(it: iterator, with_progress: bool) -> Generator[IteratorOutput | tuple[int, IteratorOutput]]: ...
 def consume_iterator(
     it: iterator, with_progress: bool = False
-) -> Generator[Union[IteratorOutput, tuple[int, IteratorOutput]], None, None]:
+) -> Generator[IteratorOutput | tuple[int, IteratorOutput]]:
     if it.initialize():
         while True:
             if with_progress:
@@ -599,7 +652,7 @@ def iterate(
     with_progress: Literal[False] = False,
     geometry_library: GEOMETRY_LIBRARY = "opencascade",
     logger=None,
-) -> Generator[IteratorOutput, None, None]: ...
+) -> Generator[IteratorOutput]: ...
 @overload
 def iterate(
     settings: settings,
@@ -611,7 +664,7 @@ def iterate(
     with_progress: Literal[True] = True,
     geometry_library: GEOMETRY_LIBRARY = "opencascade",
     logger=None,
-) -> Generator[tuple[int, IteratorOutput], None, None]: ...
+) -> Generator[tuple[int, IteratorOutput]]: ...
 @overload
 def iterate(
     settings: settings,
@@ -623,7 +676,7 @@ def iterate(
     with_progress: bool = False,
     geometry_library: GEOMETRY_LIBRARY = "opencascade",
     logger=None,
-) -> Generator[Union[IteratorOutput, tuple[int, IteratorOutput]], None, None]: ...
+) -> Generator[IteratorOutput | tuple[int, IteratorOutput]]: ...
 def iterate(
     settings: settings,
     file_or_filename: Union[file, str],
@@ -634,7 +687,7 @@ def iterate(
     with_progress: bool = False,
     geometry_library: GEOMETRY_LIBRARY = "opencascade",
     logger=None,
-) -> Generator[Union[IteratorOutput, tuple[int, IteratorOutput]], None, None]:
+) -> Generator[IteratorOutput | tuple[int, IteratorOutput]]:
     """Get a geometry iterator for the provided file."""
     it = iterator(settings, file_or_filename, num_threads, include, exclude, geometry_library)
     yield from consume_iterator(it, with_progress=with_progress)

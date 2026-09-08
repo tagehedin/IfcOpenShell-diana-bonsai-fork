@@ -623,6 +623,12 @@ private:
 			// @nb we don't check anymore if the attribute is optional here, because it should be
 			// possible to go back to the state at construction time.
 			// bool is_optional = $self->declaration().as_entity()->attribute_by_index(i)->optional();
+			// A derived attribute keeps its derived marker, as at construction time.
+			auto* ent = $self->declaration().as_entity();
+			if (ent && i < ent->derived().size() && ent->derived()[i]) {
+				self->set_attribute_value(i, ifcopenshell::derived{});
+				return;
+			}
 			self->set_attribute_value(i, blank{});
 			return;
 		}
@@ -962,6 +968,12 @@ private:
 };
 
 %include "../ifcparse/ifc_parse_api.h"
+
+namespace ifcopenshell {
+std::string encode_spf_string(const std::string& value);
+std::string decode_spf_string(const std::string& value);
+}
+
 %include "../ifcparse/spf_header.h"
 
 %pythoncode %{

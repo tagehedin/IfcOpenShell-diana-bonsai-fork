@@ -42,6 +42,7 @@
 #include <iomanip>
 #include <charconv>
 #include <type_traits>
+#include <unordered_map>
 
 // Apple clang's libc++ has no floating-point std::from_chars overload (it's
 // =deleted), so on macOS doubles are parsed via strtod_l with a cached "C"
@@ -548,6 +549,26 @@ std::string token::to_string() {
         return as_string();
     }
     return result;
+}
+
+std::string ifcopenshell::encode_spf_string(const std::string& value) {
+    return character_encoder(value);
+}
+
+std::string ifcopenshell::decode_spf_string(const std::string& value) {
+    std::string wrapped;
+    auto value_p = &value;
+    if (!value.empty() && value.front() != '\'') {
+        wrapped = "'" + value + "'";
+        value_p = &wrapped;
+    }
+    file_reader<full_buffer_impl> reader(*value_p, caller_fed_tag{});
+    spf_lexer<file_reader<full_buffer_impl>> lexer(&reader);
+    token decoded = lexer.next();
+    if (!decoded.is_string()) {
+        throw exception("Expected an SPF string");
+    }
+    return decoded.as_string();
 }
 
 namespace {
@@ -1585,6 +1606,67 @@ class apply_individual_instance_visitor {
     };
 };
 
+namespace {
+struct inverse_attribute_difference {
+    std::vector<express::base> removed;
+    std::vector<express::base> added;
+    size_t intersection_size = 0;
+};
+
+inverse_attribute_difference compute_inverse_attribute_difference(
+    const std::vector<express::base>& current,
+    const std::vector<express::base>& replacement) {
+    inverse_attribute_difference result;
+    const auto common_size = std::min(current.size(), replacement.size());
+    const auto mismatch = std::mismatch(current.begin(), current.begin() + common_size, replacement.begin());
+    if (mismatch.first == current.begin() + common_size) {
+        result.intersection_size = common_size;
+        result.removed.insert(result.removed.end(), current.begin() + common_size, current.end());
+        result.added.insert(result.added.end(), replacement.begin() + common_size, replacement.end());
+        return result;
+    }
+
+    std::unordered_map<express::base, size_t> remaining_current;
+    remaining_current.reserve(current.size());
+    for (const auto& instance : current) {
+        ++remaining_current[instance];
+    }
+
+    result.added.reserve(replacement.size());
+    for (const auto& instance : replacement) {
+        auto it = remaining_current.find(instance);
+        if (it != remaining_current.end() && it->second != 0) {
+            --it->second;
+            ++result.intersection_size;
+        } else {
+            result.added.push_back(instance);
+        }
+    }
+
+    result.removed.reserve(current.size());
+    for (const auto& instance : current) {
+        auto it = remaining_current.find(instance);
+        if (it != remaining_current.end() && it->second != 0) {
+            --it->second;
+            result.removed.push_back(instance);
+        }
+    }
+    return result;
+}
+
+bool use_inverse_attribute_difference(const inverse_attribute_difference& difference) {
+    const auto changed_count = difference.removed.size() + difference.added.size();
+    // Use the delta path when it avoids at least half of the inverse-index mutations.
+    return difference.intersection_size != 0 && changed_count <= difference.intersection_size * 2;
+}
+
+bool can_have_significant_inverse_attribute_intersection(size_t current_size, size_t replacement_size) {
+    const auto smaller_size = std::min(current_size, replacement_size);
+    const auto larger_size = std::max(current_size, replacement_size);
+    return larger_size <= smaller_size * 3;
+}
+} // namespace
+
 template <typename T>
 typename std::enable_if<
     (!std::is_base_of_v<express::base, T> || std::is_same_v<express::base, T>),
@@ -1609,6 +1691,18 @@ express::base::set_attribute_value(size_t i, const T& t) {
     }
     auto current_attribute = get_attribute_value(i);
 
+    inverse_attribute_difference inverse_difference;
+    bool update_inverses_incrementally = false;
+    std::vector<express::base> current_instances;
+    if constexpr (std::is_same_v<T, std::vector<express::base>>) {
+        if (current_attribute.type() == ifcopenshell::Argument_AGGREGATE_OF_ENTITY_INSTANCE &&
+            can_have_significant_inverse_attribute_intersection(current_attribute.size(), t.size())) {
+            current_instances = (std::vector<express::base>)current_attribute;
+            inverse_difference = compute_inverse_attribute_difference(current_instances, t);
+            update_inverses_incrementally = use_inverse_attribute_difference(inverse_difference);
+        }
+    }
+
     // Deregister old attribute guid in file guid map.
     if (i == 0 && (file()->ifcroot_type() != nullptr) && this->declaration().is(*file()->ifcroot_type())) {
         try {
@@ -1625,33 +1719,70 @@ express::base::set_attribute_value(size_t i, const T& t) {
         }
     }
 
-    if constexpr (std::is_same_v<T, express::base> || std::is_same_v<T, std::vector<express::base>> || std::is_same_v<T, std::vector<std::vector<express::base>>> || std::is_same_v<T, blank>) {
+    if constexpr (std::is_same_v<T, std::vector<express::base>>) {
+        unregister_inverse_visitor visitor(*file(), *this);
+        if (update_inverses_incrementally) {
+            for (const auto& instance : inverse_difference.removed) {
+                visitor(instance, (int)i);
+            }
+        } else if (!current_instances.empty()) {
+            for (const auto& instance : current_instances) {
+                visitor(instance, (int)i);
+            }
+        } else {
+            apply_individual_instance_visitor(current_attribute, (int)i).apply(visitor);
+        }
+    } else if constexpr (std::is_same_v<T, express::base> || std::is_same_v<T, std::vector<std::vector<express::base>>> || std::is_same_v<T, blank>) {
         // Deregister inverse indices in file
         unregister_inverse_visitor visitor(*file(), *this);
         apply_individual_instance_visitor(current_attribute, (int)i).apply(visitor);
     }
 
-    data()->set_attribute_value(i, t);
-    auto new_attribute = get_attribute_value(i);
-
-    // Register inverse indices in file
-    if constexpr (std::is_same_v<T, express::base> || std::is_same_v<T, std::vector<express::base>> || std::is_same_v<T, std::vector<std::vector<express::base>>>) {
-        register_inverse_visitor visitor(*file(), *this);
-        apply_individual_instance_visitor(new_attribute, (int)i).apply(visitor);
+    // A null/empty single instance attribute (e.g. an omitted optional like
+    // OwnerHistory, ObjectPlacement or Representation) must not be persisted
+    // as a "set" attribute: doing so leaves isNull() false for it afterwards,
+    // so generated getters proceed to as<T>() and dereference a null instance.
+    bool should_set = true;
+    if constexpr (std::is_same_v<T, express::base>) {
+        should_set = static_cast<bool>(t);
     }
 
-    // Register new attribute guid in guid map
-    if (i == 0 && (file()->ifcroot_type() != nullptr) && this->declaration().is(*file()->ifcroot_type())) {
-        try {
-            auto guid = (std::string) new_attribute;
-            auto it = file()->internal_guid_map().find(guid);
-            if (it != file()->internal_guid_map().end()) {
-                file()->logger().warning("Duplicate guid " + guid);
+    if (should_set) {
+        data()->set_attribute_value(i, t);
+        auto new_attribute = get_attribute_value(i);
+
+        // Register inverse indices in file
+        if constexpr (std::is_same_v<T, std::vector<express::base>>) {
+            register_inverse_visitor visitor(*file(), *this);
+            if (update_inverses_incrementally) {
+                for (const auto& instance : inverse_difference.added) {
+                    visitor(instance, (int)i);
+                }
+            } else {
+                apply_individual_instance_visitor(new_attribute, (int)i).apply(visitor);
             }
-            file()->internal_guid_map().insert({guid, *this});
-        } catch (ifcopenshell::exception& e) {
-            file()->logger().error(e);
+        } else if constexpr (std::is_same_v<T, express::base> || std::is_same_v<T, std::vector<std::vector<express::base>>>) {
+            register_inverse_visitor visitor(*file(), *this);
+            apply_individual_instance_visitor(new_attribute, (int)i).apply(visitor);
         }
+
+        // Register new attribute guid in guid map
+        if (i == 0 && (file()->ifcroot_type() != nullptr) && this->declaration().is(*file()->ifcroot_type())) {
+            try {
+                auto guid = (std::string) new_attribute;
+                auto it = file()->internal_guid_map().find(guid);
+                if (it != file()->internal_guid_map().end()) {
+                    file()->logger().warning("Duplicate guid " + guid);
+                }
+                file()->internal_guid_map().insert({guid, *this});
+            } catch (ifcopenshell::exception& e) {
+                file()->logger().error(e);
+            }
+        }
+    } else if (!current_attribute.isNull()) {
+        // The attribute previously held a value, so record the clearing
+        // explicitly as blank instead of silently leaving the old value in place.
+        data()->set_attribute_value(i, blank{});
     }
 }
 

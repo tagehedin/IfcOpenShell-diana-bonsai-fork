@@ -139,17 +139,22 @@ endif()
 #
 # Keep this list explicit (no glob) — the boundary is the whole point.
 set(IFCVIEWER_CORE_SOURCES
+    AxisIndicatorRenderer.cpp
     BufferPool.cpp
     ChunkPlanner.cpp
     InstanceCompose.cpp
     LodBuilder.cpp
     FederationMath.cpp
+    GpuAllocScope.cpp
+    GpuBudget.cpp
+    GpuMemory.cpp
     SidecarCache.cpp
     SidecarCompress.cpp
     StreamingLoader.cpp
     StreamingThread.cpp
     SectionGizmoRenderer.cpp
     ViewportCore.cpp
+    WgpuDynamicOffsets.cpp
 )
 # Web needs a zstd DECODER (Emscripten has no zstd port; the desktop links the
 # full libzstd below). Rather than vendor a generated blob, fetch the pinned
@@ -187,6 +192,7 @@ if(EMSCRIPTEN)
     # below which would mangle these absolute paths; added via target_sources.
 endif()
 set(IFCVIEWER_CORE_HEADERS
+    AxisIndicatorRenderer.h
     BufferPool.h
     CameraMath.h
     ChunkPlanner.h
