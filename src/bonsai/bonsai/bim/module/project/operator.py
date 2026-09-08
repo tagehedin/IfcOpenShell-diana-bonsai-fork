@@ -3556,27 +3556,38 @@ class RefreshClippingPlanes(bpy.types.Operator):
 
     is_running: bool = False  # class-level guard — prevents multiple concurrent modals
 
-    # 2026-09-08: reverted to this per-tick-refresh design (was briefly
-    # replaced with a window.modal_operators + WM-timer based
-    # drag-detection scheme, see git history around commit c5bd2c025) after
-    # that scheme was suspected of causing an intermittent orbit/zoom
-    # sluggishness on the Windows test machine that this version does not
-    # reproduce. The mechanism was never conclusively confirmed as the
-    # cause before reverting - see feature_clipping_plane_fill.md memory for
-    # the full investigation. Known tradeoff knowingly accepted by
-    # reverting: mouse_button_down below gets stuck True forever after the
-    # first arrow-gizmo drag in a session (its RELEASE event never reaches
-    # this background modal, confirmed live - only PRESS does), silently
-    # disabling the fill-suppression branch for all later gizmo drags. This
-    # was a known, understood, already-diagnosed bug before the revert, not
-    # a new one - see the same memory file.
-    _DRAG_BUTTONS = {"LEFTMOUSE", "MIDDLEMOUSE", "RIGHTMOUSE"}
+    # 2026-09-08: per-tick GPU clip refresh below is deliberately kept
+    # exactly as shipped (see git history around commit c5bd2c025 for a
+    # once-per-drag alternative that was reverted after being implicated in
+    # an orbit/zoom sluggishness on Windows, confirmed by A/B testing but
+    # never root-caused - see feature_clipping_plane_fill.md memory).
+    #
+    # Fill suppression during a drag, however, used to be tracked via plain
+    # LEFTMOUSE/MIDDLEMOUSE/RIGHTMOUSE PRESS/RELEASE - broken, because a
+    # gizmo-owned drag's own RELEASE event never reaches this background
+    # modal (only its PRESS does, confirmed live), so that flag got stuck
+    # "button down" forever after the first arrow-gizmo drag in a session,
+    # silently disabling fill regeneration for the rest of it (the
+    # "fill doesn't update, have to toggle the checkbox" bug). Fixed by
+    # reading window.modal_operators directly instead - live, accurate
+    # state, not something we track ourselves. This is a plain read with no
+    # WM timer involved, unlike the reverted mechanism above - confirmed
+    # live earlier this session as cheap (well under 1ms/call) and not
+    # itself implicated in the sluggishness, only the timer was.
+    _GIZMO_DRAG_OPERATOR = "GIZMOGROUP_OT_gizmo_tweak"
+
+    @classmethod
+    def _is_gizmo_dragging(cls, context: bpy.types.Context) -> bool:
+        window = context.window
+        if not window:
+            return False
+        return any(op.bl_idname == cls._GIZMO_DRAG_OPERATOR for op in window.modal_operators)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.total_planes = 0
         self.camera = None
-        self.mouse_button_down = False
+        self._was_gizmo_dragging = False
 
     def invoke(self, context, event):
         RefreshClippingPlanes.is_running = True
@@ -3584,11 +3595,8 @@ class RefreshClippingPlanes(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
-        if event.type in self._DRAG_BUTTONS:
-            if event.value == "PRESS":
-                self.mouse_button_down = True
-            elif event.value == "RELEASE":
-                self.mouse_button_down = False
+        is_gizmo_dragging = self._is_gizmo_dragging(context)
+        was_gizmo_dragging, self._was_gizmo_dragging = self._was_gizmo_dragging, is_gizmo_dragging
 
         should_refresh = False
         props = tool.Project.get_project_props()
@@ -3618,21 +3626,22 @@ class RefreshClippingPlanes(bpy.types.Operator):
             # that's the point of dragging - seeing the cut move). The fill
             # rebuild is the expensive part (bisect + per-chunk sqlite
             # lookups across every candidate), so it's skipped entirely while
-            # a mouse button is held (dragging the plane's gizmo) rather than
-            # just debounced - re-bisecting on every drag tick was regenerating
+            # the arrow gizmo is actively being dragged, rather than just
+            # debounced - re-bisecting on every drag tick was regenerating
             # repeatedly mid-drag despite the debounce timer. Caught up below
-            # once the button is released.
-            if props.clipping_plane_fill and not self.mouse_button_down:
+            # once the drag ends.
+            if props.clipping_plane_fill and not is_gizmo_dragging:
                 clipping_plane_fill.schedule_regenerate()
             for clipping_plane in props.clipping_planes:
                 if clipping_plane.obj:
                     tool.Geometry.record_object_position(clipping_plane.obj)
             self.total_planes = total_planes
-        elif event.type in self._DRAG_BUTTONS and event.value == "RELEASE" and props.clipping_plane_fill:
-            # should_refresh can be False on the exact release tick (no new
-            # movement since the last one that already fired above) even
-            # though a drag just ended - make sure the final position always
-            # gets a fill.
+        elif was_gizmo_dragging and not is_gizmo_dragging and props.clipping_plane_fill:
+            # should_refresh can be False on the exact tick a drag ends (the
+            # GPU clip data already caught the true final position on an
+            # earlier tick, live, before release - same reasoning as the
+            # comment on record_object_position above) - make sure fill
+            # still catches up to that final position.
             clipping_plane_fill.schedule_regenerate()
         return {"PASS_THROUGH"}
 
