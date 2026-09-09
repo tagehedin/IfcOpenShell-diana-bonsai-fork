@@ -214,6 +214,18 @@ version — Blender automatically picks the right download for your platform.
 
 Releases: https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases
 
+### Point Cloud I/O (separate extension)
+
+Point Cloud I/O is a separate Blender extension, not part of Bonsai, for importing
+large laser-scan point clouds (E57, PLY, LAS/LAZ, PCD, XYZ, PTS) for use as BIM
+coordination reference. Install it the same way, using this repository URL instead:
+
+```
+https://tagehedin.github.io/diana-Point-Cloud-IO-fork/index.json
+```
+
+Releases: https://github.com/tagehedin/diana-Point-Cloud-IO-fork/releases
+
 ### Troubleshooting: "ModuleNotFoundError: No module named 'ifcopenshell'" after updating on Windows
 
 On Windows, updating an extension in-place can fail to fully replace the
