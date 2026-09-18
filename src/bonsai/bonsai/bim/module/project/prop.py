@@ -247,6 +247,11 @@ class Link(PropertyGroup):
     )
     is_loaded: BoolProperty(name="Is Loaded", default=False)
     is_editing: BoolProperty(name="Is Editing", description="Whether the link is being transformed", default=False)
+    selected: BoolProperty(
+        name="Selected",
+        description="Check to include this link in bulk actions (Unload, Reload, Unlink, visibility toggles)",
+        default=False,
+    )
     is_selectable: BoolProperty(name="Is Selectable", default=True)
     is_wireframe: BoolProperty(name="Is Wireframe", default=False)
     is_hidden: BoolProperty(name="Is Hidden", default=False)

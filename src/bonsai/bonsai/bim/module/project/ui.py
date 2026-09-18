@@ -541,7 +541,20 @@ class BIM_PT_links(Panel):
             op.link_index = self.props.active_link_index
             row2.operator("bim.reload_latest_links", icon="FILE_REFRESH")
             row2.operator("bim.reload_all_links", icon="LOOP_FORWARDS")
-            if self.props.active_link:
+
+            selected_indices = [i for i, l in enumerate(self.props.links) if l.selected]
+            if len(selected_indices) > 1:
+                # Bulk mode: two or more links checked in the list below - these
+                # buttons act on the whole checked set instead of just the active
+                # link. Editing/rename has no bulk meaning, so it's skipped here.
+                row = self.layout.row(align=True)
+                row.alignment = "RIGHT"
+                row.label(text=f"{len(selected_indices)} checked")
+                row.operator("bim.select_selected_link_handles", text="", icon="OBJECT_DATA")
+                row.operator("bim.unload_selected_links", text="", icon="UNLINKED")
+                row.operator("bim.reload_selected_links", text="", icon="FILE_REFRESH")
+                row.operator("bim.unlink_selected_links", text="", icon="X")
+            elif self.props.active_link:
                 row = self.layout.row(align=True)
                 row.alignment = "RIGHT"
                 index = self.props.active_link_index
@@ -705,7 +718,14 @@ class BIM_UL_links(UIList):
     ):
         from bonsai.bim.module.project.operator import _stale_link_paths
 
+        # Bulk mode: two or more links checked - the toggle icons below apply to
+        # every checked link (see the Toggle*SelectedLinks operators), not just
+        # whichever row you happen to click, matching the top action row's
+        # bulk Unload/Reload/Unlink buttons in BIM_PT_links.draw.
+        bulk = sum(1 for l in data.links if l.selected) > 1
+
         row = layout.row(align=True)
+        row.prop(item, "selected", text="")
         if item.filepath in _stale_link_paths:
             row.alert = True
         if item.is_loaded:
@@ -725,15 +745,26 @@ class BIM_UL_links(UIList):
             op = row.operator("bim.toggle_link_generate_cut_fills", text="", icon=icon, emboss=False)
             op.link_index = index
             icon = "RESTRICT_SELECT_OFF" if item.is_selectable else "RESTRICT_SELECT_ON"
-            row.operator("bim.toggle_link_selectability", text="", icon=icon, emboss=False).link_index = index
+            if bulk and item.selected:
+                row.operator("bim.toggle_selected_links_selectability", text="", icon=icon, emboss=False)
+            else:
+                row.operator("bim.toggle_link_selectability", text="", icon=icon, emboss=False).link_index = index
             icon = "CUBE" if item.is_wireframe else "MESH_CUBE"
-            op = row.operator("bim.toggle_link_visibility", text="", icon=icon, emboss=False)
-            op.link_index = index
-            op.mode = "WIREFRAME"
+            if bulk and item.selected:
+                row.operator("bim.toggle_selected_links_visibility", text="", icon=icon, emboss=False).mode = (
+                    "WIREFRAME"
+                )
+            else:
+                op = row.operator("bim.toggle_link_visibility", text="", icon=icon, emboss=False)
+                op.link_index = index
+                op.mode = "WIREFRAME"
             icon = "HIDE_ON" if item.is_hidden else "HIDE_OFF"
-            op = row.operator("bim.toggle_link_visibility", text="", icon=icon, emboss=False)
-            op.link_index = index
-            op.mode = "VISIBLE"
+            if bulk and item.selected:
+                row.operator("bim.toggle_selected_links_visibility", text="", icon=icon, emboss=False).mode = "VISIBLE"
+            else:
+                op = row.operator("bim.toggle_link_visibility", text="", icon=icon, emboss=False)
+                op.link_index = index
+                op.mode = "VISIBLE"
         else:
             row.label(text=item.filepath)
 

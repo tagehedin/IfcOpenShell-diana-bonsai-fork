@@ -16,6 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Bonsai.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
 import math
 import time
 from pathlib import Path
@@ -45,6 +46,24 @@ def _get_link_storey_elevations(link_filepath: Path) -> dict[str, float]:
     cached = _link_storey_elevations_cache.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
+
+    # Disk-persisted sidecar: an in-memory-only cache is empty on every fresh Blender
+    # session, so the first depsgraph update touching storeys after opening a project
+    # (e.g. simply selecting a storey) previously re-opened every loaded link's full
+    # raw IFC from scratch just to read storey elevations - confirmed live to take
+    # 50+ seconds combined across 9 real MEP links, blocking the main thread the whole
+    # time. Persisting the result means that cost is paid once per link per source-file
+    # version, not once per Blender session.
+    sidecar_path = link_filepath.with_suffix(".ifc.cache.storeys.json")
+    try:
+        sidecar = json.loads(sidecar_path.read_text())
+        if sidecar.get("mtime") == mtime:
+            elevations = sidecar["elevations"]
+            _link_storey_elevations_cache[key] = (mtime, elevations)
+            return elevations
+    except (OSError, ValueError, KeyError):
+        pass
+
     print(f"[Bonsai] Building storey elevation cache for linked file: {link_filepath.name}...")
     t0 = time.perf_counter()
     link_ifc = ifcopenshell.open(str(link_filepath))
@@ -54,6 +73,10 @@ def _get_link_storey_elevations(link_filepath: Path) -> dict[str, float]:
         for s in link_ifc.by_type("IfcBuildingStorey")
     }
     _link_storey_elevations_cache[key] = (mtime, elevations)
+    try:
+        sidecar_path.write_text(json.dumps({"mtime": mtime, "elevations": elevations}))
+    except OSError:
+        pass  # Sidecar is a pure optimization - a failed write just means no persistence this time.
     print(f"[Bonsai] Storey elevation cache for {link_filepath.name} built in {time.perf_counter() - t0:.1f}s")
     return elevations
 
@@ -962,7 +985,18 @@ class RebuildStoreyVisibilityCache(bpy.types.Operator):
 def sync_linked_storeys(scene, depsgraph):
     """Whenever a main-model IfcBuildingStorey collection's visibility changes (drag-toggle
     in the N-panel, Outliner, or elsewhere), hide/show the Z-matched storey in every loaded
-    link to match. Runs on every depsgraph update but is a no-op unless something changed.
+    link to match. Registered on every depsgraph update (any scene change at all, e.g. just
+    selecting an object - there's no single choke-point operator for "visibility changed",
+    since it can happen via the N-panel, the Outliner, or a script), but is a no-op unless a
+    storey's own hidden state has genuinely changed since we last recorded it.
+
+    A storey this function has never seen before is deliberately NOT treated as "just
+    changed" - see seed_storey_hidden_state()'s docstring. Confirmed live: an earlier version
+    of this function ran the full link sync below (which parses each loaded link's raw IFC
+    the first time - see _get_link_storey_elevations) for every "new" storey, and since any
+    unrelated depsgraph event (e.g. a plain selection click) can race the load_post seeding
+    timer and win, this let something as unrelated as selecting a storey in Spatial
+    Decomposition trigger a 50+ second freeze on a project with several large linked models.
 
     Each main-model storey "owns" the Z band halfway to its neighbours above and below (a
     1D Voronoi partition), so every link storey is claimed by exactly one main storey with
@@ -991,11 +1025,16 @@ def sync_linked_storeys(scene, depsgraph):
             continue
 
         hidden = collection.hide_viewport
-        is_new_storey = storey.id() not in _last_known_storey_hidden
-        if not is_new_storey and _last_known_storey_hidden[storey.id()] == hidden:
+        if storey.id() not in _last_known_storey_hidden:
+            # First time seeing this storey - record the baseline only. There is nothing to
+            # sync yet: "we don't know its state" is not the same as "it just changed", and
+            # we have no prior value to compare against anyway. A genuine future toggle will
+            # be caught below once a baseline exists. (Use "Rebuild Link Cache" in the N-panel
+            # for an explicit, predictable one-time sync instead of waiting for a real toggle.)
+            _last_known_storey_hidden[storey.id()] = hidden
             continue
-        if is_new_storey:
-            print(f"[Bonsai] New storey '{storey.Name}' detected — updating linked-storey sync cache...")
+        if _last_known_storey_hidden[storey.id()] == hidden:
+            continue
         _last_known_storey_hidden[storey.id()] = hidden
 
         main_z = sorted_zs[index]

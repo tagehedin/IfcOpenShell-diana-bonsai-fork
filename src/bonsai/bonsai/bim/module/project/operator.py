@@ -2017,6 +2017,68 @@ class ReloadLink(bpy.types.Operator):
         ) or {"FINISHED"}
 
 
+class UnloadSelectedLinks(bpy.types.Operator):
+    bl_idname = "bim.unload_selected_links"
+    bl_label = "Unload Selected Links"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Unload every checked link"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        indices = [i for i, link in enumerate(props.links) if link.selected]
+        if not indices:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        for i in indices:
+            bpy.ops.bim.unload_link(link_index=i)
+        return {"FINISHED"}
+
+
+class ReloadSelectedLinks(bpy.types.Operator):
+    bl_idname = "bim.reload_selected_links"
+    bl_label = "Reload Selected Links"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Reload every checked link, reusing each link's own stored query settings"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        indices = [i for i, link in enumerate(props.links) if link.selected]
+        if not indices:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        for i in indices:
+            bpy.ops.bim.reload_link(link_index=i)
+        return {"FINISHED"}
+
+
+class UnlinkSelectedLinks(bpy.types.Operator):
+    bl_idname = "bim.unlink_selected_links"
+    bl_label = "Unlink Selected Links"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Remove every checked link from the link list"
+
+    def invoke(self, context, event):
+        props = tool.Project.get_project_props()
+        n = sum(1 for link in props.links if link.selected)
+        if n > 1:
+            return context.window_manager.invoke_confirm(
+                self, event, message=f"Unlink {n} checked links?", title="Unlink Selected Links"
+            )
+        return self.execute(context)
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        # Descending order: unlink_ifc removes the item from props.links, which
+        # would shift every later index out from under a forward loop.
+        indices = sorted((i for i, link in enumerate(props.links) if link.selected), reverse=True)
+        if not indices:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        for i in indices:
+            bpy.ops.bim.unlink_ifc(link_index=i)
+        return {"FINISHED"}
+
+
 _stale_link_paths: set[str] = set()
 
 
@@ -2255,6 +2317,48 @@ class ToggleLinkVisibility(bpy.types.Operator):
         ]
 
 
+class ToggleSelectedLinksSelectability(bpy.types.Operator):
+    bl_idname = "bim.toggle_selected_links_selectability"
+    bl_label = "Toggle Selected Links Selectability"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Toggle selectability for every checked link"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        indices = [i for i, link in enumerate(props.links) if link.selected]
+        if not indices:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        for i in indices:
+            bpy.ops.bim.toggle_link_selectability(link_index=i)
+        return {"FINISHED"}
+
+
+class ToggleSelectedLinksVisibility(bpy.types.Operator):
+    bl_idname = "bim.toggle_selected_links_visibility"
+    bl_label = "Toggle Selected Links Visibility"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Toggle visibility (or wireframe) for every checked link"
+
+    mode: bpy.props.EnumProperty(
+        name="Visibility Mode",
+        items=[("WIREFRAME", "WIREFRAME", ""), ("VISIBLE", "VISIBLE", "")],
+    )
+
+    if TYPE_CHECKING:
+        mode: Literal["WIREFRAME", "VISIBLE"]
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        indices = [i for i, link in enumerate(props.links) if link.selected]
+        if not indices:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        for i in indices:
+            bpy.ops.bim.toggle_link_visibility(link_index=i, mode=self.mode)
+        return {"FINISHED"}
+
+
 class ToggleLinkStoreyVisibility(bpy.types.Operator):
     bl_idname = "bim.toggle_link_storey_visibility"
     bl_label = "Toggle Storey Visibility"
@@ -2419,6 +2523,30 @@ class SelectLinkHandle(bpy.types.Operator):
             self.report({"ERROR"}, "Link has no empty handle (probably it was deleted).")
             return {"CANCELLED"}
         tool.Blender.select_and_activate_single_object(context, handle)
+        return {"FINISHED"}
+
+
+class SelectSelectedLinkHandles(bpy.types.Operator):
+    bl_idname = "bim.select_selected_link_handles"
+    bl_label = "Select Selected Link Handles"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Select the empty object handle for every checked link, e.g. to move them together"
+
+    def execute(self, context):
+        props = tool.Project.get_project_props()
+        checked = [link for link in props.links if link.selected]
+        if not checked:
+            self.report({"ERROR"}, "No links checked")
+            return {"CANCELLED"}
+        handles = [h for link in checked if (h := tool.Project.get_link_empty_handle(link))]
+        if not handles:
+            self.report({"ERROR"}, "None of the checked links have an empty handle (probably deleted).")
+            return {"CANCELLED"}
+        for obj in context.selected_objects:
+            obj.select_set(False)
+        for obj in handles:
+            obj.select_set(True)
+        context.view_layer.objects.active = handles[-1]
         return {"FINISHED"}
 
 
