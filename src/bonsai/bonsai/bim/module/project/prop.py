@@ -634,6 +634,8 @@ class BIMProjectProperties(PropertyGroup):
     queried_obj: bpy.props.PointerProperty(type=bpy.types.Object)
     queried_obj_root: bpy.props.PointerProperty(type=bpy.types.Object)
     queried_guid: bpy.props.StringProperty()
+    # Undo bridge for linked-element visibility - plain tracked string, see link_visibility.py.
+    link_visibility_token: bpy.props.StringProperty()
     clipping_planes: bpy.props.CollectionProperty(type=ObjProperty)
     clipping_planes_active_index: bpy.props.IntProperty(min=0, default=0, max=5)
     clipping_plane_fill: bpy.props.BoolProperty(
@@ -749,6 +751,7 @@ class BIMProjectProperties(PropertyGroup):
         queried_obj: Union[bpy.types.Object, None]
         queried_obj_root: Union[bpy.types.Object, None]
         queried_guid: str
+        link_visibility_token: str
         clipping_planes: bpy.types.bpy_prop_collection_idprop[ObjProperty]
         clipping_planes_active_index: int
         clipping_plane_fill: bool

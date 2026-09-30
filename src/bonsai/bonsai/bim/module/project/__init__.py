@@ -20,7 +20,7 @@ import bpy
 
 import bonsai.tool as tool
 
-from . import clipping_plane_fill, decorator, gizmo, operator, prop, ui, workspace
+from . import clipping_plane_fill, decorator, gizmo, link_visibility, operator, prop, ui, workspace
 
 classes = (
     clipping_plane_fill.ToggleClippingPlaneFill,
@@ -152,6 +152,10 @@ def register():
     bpy.app.handlers.load_post.append(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
     bpy.app.handlers.load_post.append(decorator.restore_measurement_widgets_on_load)
+    bpy.app.handlers.load_post.append(link_visibility.load_post)
+    bpy.app.handlers.undo_post.append(link_visibility.undo_redo_post)
+    bpy.app.handlers.redo_post.append(link_visibility.undo_redo_post)
+    bpy.app.handlers.depsgraph_update_post.append(link_visibility.depsgraph_update_post)
     bpy.types.TOPBAR_MT_file_import.append(ui.file_import_menu)
     bpy.types.TOPBAR_MT_file.prepend(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.prepend(ui.file_menu)
@@ -202,6 +206,10 @@ def unregister():
     bpy.app.handlers.load_post.remove(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.remove(decorator.toggle_decorations_on_load)
     bpy.app.handlers.load_post.remove(decorator.restore_measurement_widgets_on_load)
+    bpy.app.handlers.load_post.remove(link_visibility.load_post)
+    bpy.app.handlers.undo_post.remove(link_visibility.undo_redo_post)
+    bpy.app.handlers.redo_post.remove(link_visibility.undo_redo_post)
+    bpy.app.handlers.depsgraph_update_post.remove(link_visibility.depsgraph_update_post)
     bpy.types.TOPBAR_MT_file.remove(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.remove(ui.file_menu)
 

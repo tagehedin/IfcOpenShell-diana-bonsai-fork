@@ -69,7 +69,7 @@ from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.model import preview_base
 from bonsai.bim.module.model.decorator import FaceAreaDecorator, PolylineDecorator
 from bonsai.bim.module.model.polyline import PolylineOperator
-from bonsai.bim.module.project import clipping_plane_fill
+from bonsai.bim.module.project import clipping_plane_fill, link_visibility
 from bonsai.bim.module.project.data import LinksData, ProjectLibraryData
 from bonsai.bim.module.project.decorator import (
     AllToolsTextDecorator,
@@ -2576,7 +2576,9 @@ class SelectLinkedModelElement(bpy.types.Operator):
         assert active_link is not None
         assert active_link.is_loaded
 
-        guid_obj = tool.Project.Link.get_obj_by_guid(active_link, guid)
+        # Not tool.Project.Link.get_obj_by_guid: it only looks at the link's top-level collection,
+        # while chunks live in nested per-storey collections, so it never found anything.
+        guid_obj = link_visibility.find_chunk(active_link, guid)
         if not guid_obj:
             filepath = active_link.filepath
             self.report({"INFO"}, f"Element with GlobalId '{guid}' not found in the linked model at '{filepath}'.")
@@ -3425,8 +3427,7 @@ class HideQueriedLinkedElement(bpy.types.Operator):
         "Hide geometry for currently queried linked element.\n\n"
         "SHIFT+Click (or SHIFT+H in Explore Tool) to hide everything "
         "in the currently selected model, but the queried element.\n"
-        "ALT+Click (or ALT+H in Explore Tool) to unhide all geometry for currently selected linked model.\n\n"
-        "Known limitation: doesn't work with UNDO."
+        "ALT+Click (or ALT+H in Explore Tool) to unhide all linked model geometry."
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -3456,7 +3457,9 @@ class HideQueriedLinkedElement(bpy.types.Operator):
             self.report({"INFO"}, "No object is queried to hide.")
             return {"FINISHED"}
         guid = props.queried_guid
-        tool.Project.Link.hide_linked_element(obj, guid)
+        # Shared, diff-based and undoable (see link_visibility.py) instead of
+        # tool.Project.Link.hide_linked_element.
+        link_visibility.hide_elements(context, {guid}, label="Hide Queried Element")
         tool.Project.Link.deselect_queried_linked_element()
 
         self.report({"INFO"}, "Queried object is now hidden.")
@@ -3467,9 +3470,8 @@ class HideQueriedLinkedElement(bpy.types.Operator):
         if not props.links:
             self.report({"INFO"}, "No linked models are loaded.")
             return {"FINISHED"}
-        for link in props.links:
-            if link.is_loaded:
-                tool.Project.Link.unhide_all_elements(link)
+        # Only touches what's actually hidden - a no-op costs a few ms instead of rewriting every chunk.
+        link_visibility.unhide_all(bpy.context)
         self.report({"INFO"}, "All linked model geometry is unhidden.")
         return {"FINISHED"}
 
@@ -3488,7 +3490,9 @@ class HideQueriedLinkedElement(bpy.types.Operator):
             return {"FINISHED"}
         guid = props.queried_guid
         print(f"[Hide All Except] Queried object: {obj.name!r} ({guid}) -> link: {link.name!r}")
-        tool.Project.Link.hide_all_elements_except(link, obj, guid)
+        # Hides the link handle and shows just this element's chunk through a small isolation
+        # collection, instead of hiding every chunk of the link one by one.
+        link_visibility.isolate(bpy.context, link, {guid})
         self.report({"INFO"}, "All other linked model geometry is now hidden.")
         return {"FINISHED"}
 
@@ -3519,8 +3523,9 @@ class HideQueriedElementIfcClass(bpy.types.Operator):
             f"[Hide IFC Class] Queried object: {obj.name!r} ({props.queried_guid}, class={ifc_class!r}) "
             f"-> searching link: {link.name!r}"
         )
-        count = tool.Project.Link.hide_elements_by_class(link, ifc_class, obj["db"])
-        self.report({"INFO"}, f"Hid {count} {ifc_class} element(s).")
+        guids = link_visibility.with_geometry(link, link_visibility.class_guids(link, ifc_class))
+        link_visibility.hide_elements(context, guids, label=f"Hide IFC Class {ifc_class}")
+        self.report({"INFO"}, f"Hid {len(guids)} {ifc_class} element(s).")
         return {"FINISHED"}
 
 
