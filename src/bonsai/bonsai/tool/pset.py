@@ -233,7 +233,12 @@ class Pset(bonsai.core.tool.Pset):
                     if unit := getattr(prop_or_prop_template, "Unit", None):
                         return cls.get_special_type_for_unit(unit)
         elif prop_or_prop_template.is_a("IfcPhysicalSimpleQuantity"):
-            entity = prop_or_prop_template.declaration.as_entity()
+            # `.declaration` only exists on the newer compiled core (upstream 007cdce98); the fork ships
+            # the frozen 260706 core, where it's `wrapped_data.declaration()`. Works on both.
+            declaration = getattr(prop_or_prop_template, "declaration", None)
+            if declaration is None:
+                declaration = prop_or_prop_template.wrapped_data.declaration()
+            entity = declaration.as_entity()
             measure_class = entity.attribute_by_index(3).type_of_attribute().declared_type().name()
             return cls.get_special_type_for_measure_class(measure_class)
         return ""
