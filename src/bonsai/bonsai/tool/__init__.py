@@ -23,6 +23,7 @@ from bonsai.tool.aggregate import Aggregate
 from bonsai.tool.array import Array
 from bonsai.tool.attribute import Attribute
 from bonsai.tool.bcf import Bcf
+from bonsai.tool.bcf2 import Bcf2
 from bonsai.tool.blender import Blender
 from bonsai.tool.boundary import Boundary
 from bonsai.tool.brick import Brick

@@ -39,6 +39,7 @@ modules = {
     "project": None,
     "search": None,
     "bcf": None,
+    "bcf2": None,
     "bsdd": None,
     "root": None,
     "unit": None,
