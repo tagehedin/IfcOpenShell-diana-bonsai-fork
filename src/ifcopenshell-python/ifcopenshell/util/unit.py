@@ -574,7 +574,9 @@ def get_property_unit(
     measure_class = None
 
     if prop.is_a("IfcPhysicalSimpleQuantity"):
-        entity = prop.declaration
+        # Fork: `.declaration` only exists on the newer compiled core; the fork ships the frozen 260706
+        # core (this file is overlaid onto it by release.py), where it's `wrapped_data.declaration()`.
+        entity = getattr(prop, "declaration", None) or prop.wrapped_data.declaration().as_entity()
         measure_class = entity.attribute_by_index(3).type_of_attribute().declared_type().name()
     elif prop.is_a("IfcPropertySingleValue"):
         if value := prop.NominalValue:
