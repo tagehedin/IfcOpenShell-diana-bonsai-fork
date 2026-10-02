@@ -19,7 +19,9 @@
 # This file was generated with the assistance of an AI coding tool.
 import bpy
 
-from . import operator, prop, ui, undo
+from . import bcfstore, operator, prop, topic_columns, ui, undo, viewpoint_camera
+
+addon_keymaps = []
 
 classes = (
     operator.ActivateBcfViewpoint,
@@ -34,6 +36,8 @@ classes = (
     operator.AddBcfViewpoint,
     operator.BCFFileHandlerOperator,
     operator.BIM_FH_import_bcf,
+    operator.ClickBcfTopic,
+    operator.OpenBcfTopicViewpoint,
     operator.CloseBcfViewpoint,
     operator.EditBcf2Comment,
     operator.EditBcf2Labels,
@@ -59,6 +63,7 @@ classes = (
     operator.RemoveBcf2Topic,
     operator.RemoveBcfViewpoint,
     operator.SaveBcfProject,
+    operator.SaveBcfWithCtrlS,
     operator.SelectBcf2BimSnippetReference,
     operator.SelectBcf2DocumentReference,
     operator.SelectBcfHeaderFile,
@@ -70,6 +75,8 @@ classes = (
     prop.Bcf2DocumentReference,
     prop.Bcf2Comment,
     prop.Bcf2Topic,
+    topic_columns.Bcf2TopicColumns,
+    topic_columns.CycleBcfTopicSort,
     prop.BCFProperties2,
     ui.BIM_PT_bcf2,
     ui.BIM_PT_bcf2_metadata,
@@ -82,9 +89,27 @@ def register():
     bpy.types.Scene.BCFProperties2 = bpy.props.PointerProperty(type=prop.BCFProperties2)
     bpy.app.handlers.undo_post.append(undo.undo_post)
     bpy.app.handlers.redo_post.append(undo.redo_post)
+    bpy.app.handlers.load_post.append(bcfstore.load_post)
+    bpy.app.handlers.save_post.append(bcfstore.save_post)
+    bpy.app.handlers.load_post.append(viewpoint_camera.load_post)
+    ui.register_file_menu()
+    wm = bpy.context.window_manager
+    if wm.keyconfigs.addon:
+        # head=True: runs before Bonsai's own Ctrl+S (bim.save_project) and passes the key on to it.
+        km = wm.keyconfigs.addon.keymaps.new(name="Window", space_type="EMPTY")
+        kmi = km.keymap_items.new("bcf2.save_with_ctrl_s", "S", "PRESS", ctrl=True, head=True)
+        addon_keymaps.append((km, kmi))
 
 
 def unregister():
+    ui.unregister_file_menu()
+    for km, kmi in addon_keymaps:
+        km.keymap_items.remove(kmi)
+    addon_keymaps.clear()
     del bpy.types.Scene.BCFProperties2
     bpy.app.handlers.undo_post.remove(undo.undo_post)
     bpy.app.handlers.redo_post.remove(undo.redo_post)
+    bpy.app.handlers.load_post.remove(bcfstore.load_post)
+    bpy.app.handlers.save_post.remove(bcfstore.save_post)
+    bpy.app.handlers.load_post.remove(viewpoint_camera.load_post)
+    viewpoint_camera.unregister()

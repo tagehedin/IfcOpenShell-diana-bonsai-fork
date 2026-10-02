@@ -428,11 +428,25 @@ def apply_bcf(context, default_visibility: bool, guids: Iterable[str]) -> str:
     """BCF viewpoint visibility for linked models (replaces any manual hides). -> summary line."""
     requested, n_suffixed = _strip_guid_suffixes(frozenset(guids))
     guids, n_expanded, n_parts = _expand_decomposition(requested)
+    whole_links: list[tuple[Link, bpy.types.Object]] = []
     if default_visibility:
+        # A link with every element hidden (typically: it was hidden in the Outliner when the
+        # viewpoint was made) is hidden as a whole, by its handle - like the Outliner's eye, which
+        # then brings it back after orbiting out. Element by element, the eye couldn't.
+        for link, handle in _loaded_links():
+            link_guids = _entry(link, handle)["lookup"].keys()
+            if link_guids and link_guids <= guids:
+                whole_links.append((link, handle))
+                guids = guids - link_guids
         spec: Spec = {"hidden": guids, "only": None, "only_scope": None}
     else:
         spec = {"hidden": frozenset(), "only": guids, "only_scope": None}
     stats = _commit(context, spec, "BCF viewpoint")
+    if whole_links:
+        # After _commit: it may unhide handles of links that the previous viewpoint isolated.
+        for _, handle in whole_links:
+            handle.hide_set(True)
+        context.view_layer.update()
     # Assemblies that were expanded show up as "not found" themselves - don't count them as missing.
     not_found = {g for g in stats["not_found"] if g in requested}
     no_geometry = _classify_missing(not_found)
@@ -444,6 +458,8 @@ def apply_bcf(context, default_visibility: bool, guids: Iterable[str]) -> str:
     if n_expanded:
         summary += f", {n_expanded} of them assemblies/groups shown through {n_parts} part(s)"
     summary += f"; {stats['found']} object(s) found in links ({per_link})"
+    if whole_links:
+        summary += ", hidden as whole link(s): " + ", ".join(link.name for link, _ in whole_links)
     unexpanded_no_geometry = {k: n for k, n in no_geometry.items()}
     if n_expanded:
         # Expanded ones are in no_geometry too (they have no geometry of their own) - report only the rest.

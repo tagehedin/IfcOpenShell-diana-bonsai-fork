@@ -35,6 +35,7 @@ import bonsai.tool as tool
 from bonsai.bim.prop import StrProperty
 
 from . import bcfstore
+from .topic_columns import Bcf2TopicColumns
 
 bcfviewpoints_enum = None
 
@@ -97,9 +98,13 @@ def getBcfViewpoints(self, context, force_update=False):
         bcfviewpoints_enum = []
         props = tool.Bcf2.get_bcf_props()
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
-        assert bcfxml
         topic = props.active_topic
-        viewpoints = bcfxml.topics[topic.name].viewpoints.keys() if topic else []
+        # The topic list lives in the .blend, the topics in the .bcf file - they can disagree
+        # (e.g. a topic never saved to the .bcf before Blender closed). Show no viewpoints then.
+        if bcfxml and topic and topic.name in bcfxml.topics:
+            viewpoints = bcfxml.topics[topic.name].viewpoints.keys()
+        else:
+            viewpoints = []
         bcfviewpoints_enum.extend([(v, f"Viewpoint {i+1}", "") for i, v in enumerate(viewpoints)])
     return bcfviewpoints_enum
 
@@ -253,6 +258,11 @@ class BCFProperties2(PropertyGroup):
     # bim/prop.py's BIMProperties.last_transaction exactly, which is what
     # IfcStore's own real undo bridge relies on.
     last_transaction: StringProperty(name="Last BCF2 Transaction")
+    # The BCF someone else sent (the file last loaded that isn't one of our own copies) - never
+    # overwritten: Save Current Project redirects to Save As until an own copy exists.
+    bcf_source_file: StringProperty(name="Received BCF File")
+    # Files written by Save Project As from this .blend - ours to overwrite.
+    own_bcf_files: CollectionProperty(type=StrProperty)
     bcf_version: EnumProperty(
         name="BCF Version",
         description="Currently loaded BCF project version / BCF version to use for created projects",
@@ -267,6 +277,12 @@ class BCFProperties2(PropertyGroup):
         description="Author name that will be used for added comments, topics",
     )
     topics: CollectionProperty(name="BCF Topics", type=Bcf2Topic)
+    topic_columns: PointerProperty(type=Bcf2TopicColumns)
+    add_viewpoint_with_topic: BoolProperty(
+        name="Add Viewpoint to New Topics",
+        description="New topics get a viewpoint of the current 3D view (camera, snapshot, clipping, visibility)",
+        default=True,
+    )
     active_topic_index: IntProperty(name="Active BCF Topic Index", update=refreshBcf2Topic)
     file_reference: StringProperty(default="", name="Reference")
     file_ifc_project: StringProperty(default="", name="IFC Project")
@@ -290,11 +306,15 @@ class BCFProperties2(PropertyGroup):
     if TYPE_CHECKING:
         bcf_file: str
         last_transaction: str
+        bcf_source_file: str
+        add_viewpoint_with_topic: bool
+        own_bcf_files: bpy.types.bpy_prop_collection_idprop[StrProperty]
         bcf_version: str
         comment_text_width: int
         name: str
         author: str
         topics: bpy.types.bpy_prop_collection_idprop[Bcf2Topic]
+        topic_columns: Bcf2TopicColumns
         active_topic_index: int
         file_reference: str
         file_ifc_project: str

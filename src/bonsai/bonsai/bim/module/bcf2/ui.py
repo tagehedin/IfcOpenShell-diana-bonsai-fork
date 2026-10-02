@@ -19,6 +19,7 @@
 # This file was generated with the assistance of an AI coding tool.
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import bpy
@@ -26,7 +27,34 @@ from bpy.types import Panel
 
 import bonsai.tool as tool
 
-from . import bcfstore
+from . import bcfstore, operator, topic_columns
+
+
+def file_menu(self, context):
+    """File menu entries for BCF Project 2, next to Bonsai's IFC ones."""
+    layout = self.layout
+    layout.operator("bcf2.load_bcf_project", text="Open BCF File...", icon="FILEBROWSER")
+    received = bcfstore.Bcf2Store.bcfxml and bcfstore.is_protected(tool.Bcf2.get_bcf_props().bcf_file)
+    op = layout.operator(
+        "bcf2.save_bcf_project", text="Save BCF As Own Copy..." if received else "Save BCF File", icon="FILE_TICK"
+    )
+    op.save_current_bcf = True
+    layout.operator("bcf2.save_bcf_project", text="Save BCF File As...")
+    layout.separator()
+
+
+def register_file_menu() -> None:
+    # Directly below Bonsai's IFC block (project.ui.file_menu), above Blender's own entries.
+    from bonsai.bim.module.project.ui import file_menu as ifc_file_menu
+
+    draw_funcs = bpy.types.TOPBAR_MT_file._dyn_ui_initialize()
+    index = draw_funcs.index(ifc_file_menu) + 1 if ifc_file_menu in draw_funcs else 0
+    draw_funcs.insert(index, file_menu)
+
+
+def unregister_file_menu() -> None:
+    bpy.types.TOPBAR_MT_file.remove(file_menu)
+
 
 if TYPE_CHECKING:
     from bonsai.bim.module.bcf2.prop import Bcf2Topic, BCFProperties2
@@ -57,10 +85,42 @@ class BIM_PT_bcf2(Panel):
             return
 
         row = layout.row(align=True)
-        op = row.operator("bcf2.save_bcf_project", icon="FILE_TICK", text="Save Current Project")
+        received = bcfstore.is_protected(props.bcf_file)
+        op = row.operator(
+            "bcf2.save_bcf_project",
+            icon="FILE_TICK",
+            text="Save As Own Copy..." if received else "Save Current Project",
+        )
         op.save_current_bcf = True
         row.operator("bcf2.save_bcf_project", icon="EXPORT", text="Save Project As...")
         row.operator("bcf2.unload_bcf_project", text="", icon="CANCEL")
+
+        col = layout.column(align=True)
+        if props.bcf_file:
+            path = props.bcf_file
+            if not os.path.isabs(path):
+                path = os.path.abspath(os.path.join(bpy.path.abspath("//"), path))
+            col.label(text=os.path.basename(path), icon="FILE")
+            col.label(text=os.path.dirname(path), icon="FILE_FOLDER")
+        else:
+            col.label(text="Not saved to a BCF file yet", icon="FILE")
+
+        if received:
+            box = layout.box()
+            box.label(text="Received BCF - it is never overwritten.", icon="LOCKED")
+            box.label(text="Save your work as your own copy.")
+        if bcfstore.Bcf2Store.dirty:
+            row = layout.row()
+            row.alert = True
+            row.label(text="Unsaved BCF changes - not written to the file yet", icon="ERROR")
+        if operator._is_viewpoint_open(context):
+            # The viewpoint hides elements one by one (in linked models too), so the Outliner's eye
+            # on a link can't bring them back - only Close does.
+            col = layout.column(align=True)
+            col.alert = True
+            col.label(text="BCF viewpoint open - its hidden elements stay hidden,", icon="ERROR")
+            col.label(text="also in links, until it's closed", icon="BLANK1")
+            col.operator("bcf2.close_bcf_viewpoint", text="Close BCF Viewpoint", icon="LOOP_BACK")
 
         row = layout.row()
         row.prop(props, "bcf_version", emboss=False)
@@ -72,11 +132,15 @@ class BIM_PT_bcf2(Panel):
         row = layout.row()
         row.prop(props, "author")
 
+        topic_columns.draw_header(layout, props)
         row = layout.row()
-        row.template_list("BIM_UL_topics2", "", props, "topics", props, "active_topic_index")
+        row.template_list(
+            "BIM_UL_topics2", "", props, "topics", props, "active_topic_index", rows=topic_columns.LIST_ROWS
+        )
         col = row.column(align=True)
         col.operator("bcf2.add_bcf_topic", icon="ADD", text="")
         col.operator("bcf2.remove_bcf_topic", icon="REMOVE", text="")
+        layout.prop(props, "add_viewpoint_with_topic")
 
         topic = props.active_topic
         if topic is not None:
@@ -94,32 +158,43 @@ class BIM_PT_bcf2(Panel):
             row.operator("bcf2.add_bcf_viewpoint", icon="ADD", text="")
             row.operator("bcf2.remove_bcf_viewpoint", icon="X", text="")
 
+            columns = props.topic_columns
             col = layout.column(align=True)
             topic_props = ("type", "status", "priority", "stage", "assigned_to", "due_date")
-            bl_rna_props = topic.bl_rna.properties
+
+            def field_row(prop_name: str) -> bpy.types.UILayout:
+                # Tick box on the left: show this field as a column in the topic list.
+                row = col.row(align=True)
+                if prop_name == "title":
+                    row.label(text="", icon="BLANK1")  # the name column is always shown
+                else:
+                    row.prop(columns, f"show_{prop_name}", text="")
+                return row
 
             def draw_prop(prop_name: str) -> None:
-                row = col.row(align=True)
-                row.label(text=f"{bl_rna_props[prop_name].name}")
+                row = field_row(prop_name)
+                row.label(text=topic_columns.LABELS[prop_name])
                 row.label(text=getattr(topic, prop_name))
 
+            # Same property as the name in the topic list above - editing either updates both.
+            if is_editable:
+                field_row("title").prop(topic, "title", text="Name")
+            else:
+                draw_prop("title")
+
+            # All fields are always listed, empty or not, so it's visible what can be filled in.
             for prop in topic_props:
-                if getattr(topic, prop) or is_editable:
-                    # Can't just use emboss because search= on props is changing
-                    # how they look and adds "ui.button_string_clear" button
-                    # which allows clearing out the string and we don't want to.
-                    if is_editable:
-                        col.prop(topic, prop, emboss=is_editable)
-                    else:
-                        draw_prop(prop)
+                # Can't just use emboss because search= on props is changing
+                # how they look and adds "ui.button_string_clear" button
+                # which allows clearing out the string and we don't want to.
+                if is_editable:
+                    field_row(prop).prop(topic, prop, text=topic_columns.LABELS[prop], emboss=is_editable)
+                else:
+                    draw_prop(prop)
 
             col = layout.column(align=True)
-            if topic.modified_date:
-                draw_prop("modified_date")
-                draw_prop("modified_author")
-            else:
-                draw_prop("creation_date")
-                draw_prop("creation_author")
+            for prop in ("creation_date", "creation_author", "modified_date", "modified_author"):
+                draw_prop(prop)
 
 
 class BIM_PT_bcf2_metadata(Panel):
@@ -367,8 +442,14 @@ class BIM_UL_topics2(bpy.types.UIList):
         icon,
         active_data,
         active_propname,
+        index,
     ) -> None:
         if item:
-            layout.prop(item, "title", text="", emboss=False)
+            # The name is a button, not an editable field: click selects, double-click opens the
+            # first viewpoint. (Renaming is done in the Name field below the list.)
+            topic_columns.draw_item(layout, data.topic_columns, item, index, bool(operator.topic_viewpoints(item.name)))
         else:
             layout.label(text="", translate=False)
+
+    def filter_items(self, context, data, propname):
+        return topic_columns.filter_items(self, data, propname)

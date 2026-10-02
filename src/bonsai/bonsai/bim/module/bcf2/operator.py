@@ -21,7 +21,7 @@ import tempfile
 import time
 import uuid
 import webbrowser
-from math import atan, degrees, radians, tan
+from math import radians, tan
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +37,6 @@ import bcf.v3.model
 import bcf.v3.topic
 import bcf.v3.visinfo
 import bpy
-import ifcopenshell
 import ifcopenshell.util.geolocation
 import ifcopenshell.util.unit
 import numpy as np
@@ -47,6 +46,7 @@ from xsdata.models.datatype import XmlDateTime
 
 import bonsai.bim.module.bcf2.bcfstore as bcfstore
 import bonsai.tool as tool
+from bonsai.bim.module.bcf2 import viewpoint_camera, viewpoint_capture
 from bonsai.bim.module.bcf2.undo import Bcf2UndoStore
 from bonsai.bim.module.project import link_visibility
 
@@ -66,6 +66,30 @@ class NewBcfProject(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _ensure_project(bcfxml) -> None:
+    """BCF v2.1/v3 doesn't need a project (PEAB's BCF has no project.bcfp), but the panel edits one.
+    https://github.com/buildingSMART/BCF-XML/tree/release_2_1/Documentation#bcf-file-structure"""
+    nameless = "Unknown"
+    if bcfxml.project is None:
+        print("No project, we will create one for BBIM.")
+        project_info = bcfxml.project_info
+        if (bcfxml.version.version_id or "").startswith("2"):
+            assert isinstance(bcfxml, bcf.v2.bcfxml.BcfXml)
+            if project_info is None:
+                project_info = bcf.v2.model.ProjectExtension(extension_schema="")
+                bcfxml.project_info = project_info
+            if project_info.project is None:
+                project_info.project = bcf.v2.model.Project(name=nameless, project_id=str(uuid.uuid4()))
+        else:
+            assert isinstance(bcfxml, bcf.v3.bcfxml.BcfXml)
+            bcfxml.project_info = bcf.v3.model.ProjectInfo(
+                project=bcf.v3.model.Project(name=nameless, project_id=str(uuid.uuid4()))
+            )
+    assert bcfxml.project
+    if bcfxml.project.name is None:
+        bcfxml.project.name = nameless
+
+
 class LoadBcfProject(bpy.types.Operator, ImportHelper):
     bl_idname = "bcf2.load_bcf_project"
     bl_label = "Load BCF Project"
@@ -75,38 +99,25 @@ class LoadBcfProject(bpy.types.Operator, ImportHelper):
     filter_glob: bpy.props.StringProperty(default="*.bcf;*.bcfzip", options={"HIDDEN"})
     filename_ext = ".bcf"
 
+    def invoke(self, context, event):
+        if bcfstore.Bcf2Store.dirty and bcfstore.Bcf2Store.bcfxml:
+            self.report({"ERROR"}, "The open BCF has unsaved changes - save it (Ctrl+S) or unload it first.")
+            return {"CANCELLED"}
+        return ImportHelper.invoke(self, context, event)
+
     def execute(self, context):
         # Operator is also used when new project is created by not yet saved.
+        if self.filepath and _is_viewpoint_open(context):
+            bpy.ops.bcf2.close_bcf_viewpoint()
         if self.filepath:
             bcfstore.Bcf2Store.set_by_filepath(self.filepath)
+            if not bcfstore.is_own_file(self.filepath):
+                # A BCF from someone else - protect it from being overwritten (see SaveBcfProject).
+                tool.Bcf2.get_bcf_props().bcf_source_file = self.filepath
 
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
         assert bcfxml
-        bcf_v2 = (bcfxml.version.version_id or "").startswith("2")
-
-        # BCF v2.1/v3 does not need to have a project, but BBIM likes to have one
-        # https://github.com/buildingSMART/BCF-XML/tree/release_2_1/Documentation#bcf-file-structure
-        nameless = "Unknown"
-        if bcfxml.project is None:
-            print("No project, we will create one for BBIM.")
-            project_info = bcfxml.project_info
-            if bcf_v2:
-                assert isinstance(bcfxml, bcf.v2.bcfxml.BcfXml)
-                if project_info is None:
-                    project_info = bcf.v2.model.ProjectExtension(extension_schema="")
-                    bcfxml.project_info = project_info
-                if project_info.project is None:
-                    project_info.project = bcf.v2.model.Project(name=nameless, project_id=str(uuid.uuid4()))
-            else:
-                assert isinstance(bcfxml, bcf.v3.bcfxml.BcfXml)
-                project_info = bcf.v3.model.ProjectInfo(
-                    project=bcf.v3.model.Project(name=nameless, project_id=str(uuid.uuid4()))
-                )
-                bcfxml.project_info = project_info
-
-        assert bcfxml.project
-        if bcfxml.project.name is None:
-            bcfxml.project.name = nameless
+        _ensure_project(bcfxml)
         props = tool.Bcf2.get_bcf_props()
         props.name = bcfxml.project.name
         bpy.ops.bcf2.load_bcf_topics()
@@ -118,6 +129,17 @@ class UnloadBcfProject(bpy.types.Operator):
     bl_idname = "bcf2.unload_bcf_project"
     bl_label = "Unload BCF Project"
     bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        if bcfstore.Bcf2Store.dirty:
+            return context.window_manager.invoke_confirm(
+                self,
+                event,
+                title="Unsaved BCF changes",
+                message="Changes not saved to a BCF file will be lost.",
+                confirm_text="Unload anyway",
+            )
+        return self.execute(context)
 
     def execute(self, context):
         if _is_viewpoint_open(context):
@@ -276,9 +298,8 @@ class EditBcfProjectName(bpy.types.Operator):
     def execute(self, context):
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
         assert bcfxml
-
-        # Bonsai creates default project on load.
-        assert bcfxml.project
+        # Normally created on load - but not when the BCF was re-read from disk after reopening the .blend.
+        _ensure_project(bcfxml)
 
         props = tool.Bcf2.get_bcf_props()
         bcfxml.project.name = props.name
@@ -354,22 +375,136 @@ class SaveBcfProject(bpy.types.Operator, ExportHelper):
     save_current_bcf: bpy.props.BoolProperty(default=False, options={"SKIP_SAVE"})
     filename_ext = ".bcf"
 
+    @classmethod
+    def poll(cls, context):
+        if not bcfstore.Bcf2Store.get_bcfxml():
+            cls.poll_message_set("No BCF file is open.")
+            return False
+        return True
+
     def execute(self, context):
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
         assert bcfxml
-        bcfxml.save(self.filepath)
+        if bcfstore.is_protected(self.filepath):
+            self.report(
+                {"ERROR"}, "That's the BCF you received - choose another file name so the original stays untouched."
+            )
+            return {"CANCELLED"}
+        bcfstore.save_bcf(bcfxml, self.filepath)
         bcfstore.Bcf2Store.set(bcfxml, self.filepath)
+        bcfstore.remember_own_file(self.filepath)
         self.report({"INFO"}, f"BCF Project '{Path(self.filepath).name}' is saved.")
         return {"FINISHED"}
 
     def invoke(self, context, event):
         if self.save_current_bcf:
             path = tool.Bcf2.get_path()
-            if path:
+            if path and not bcfstore.is_protected(str(path)):
                 self.filepath = str(path)
                 return self.execute(context)
+            if path:
+                # Never overwrite the received BCF: save a copy next to it instead.
+                self.report({"INFO"}, "This is the BCF you received - saving your own copy (Save Project As).")
+                self.filepath = str(Path(path).with_name(f"{Path(path).stem}_own.bcf"))
 
         return ExportHelper.invoke(self, context, event)
+
+
+class ClickBcfTopic(bpy.types.Operator):
+    """Click selects the topic, double-click opens its first viewpoint"""
+
+    bl_idname = "bcf2.click_topic"
+    bl_label = ""
+    bl_options = {"INTERNAL"}
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    DOUBLE_CLICK_SECONDS = 0.5
+    _last_click: tuple[int, float] = (-1, 0.0)
+
+    def invoke(self, context, event):
+        props = tool.Bcf2.get_bcf_props()
+        if self.index >= len(props.topics):
+            return {"CANCELLED"}
+        # A list row button only gets single clicks - a second one on the same row soon after is a double-click.
+        now = time.monotonic()
+        last_index, last_time = ClickBcfTopic._last_click
+        is_double = last_index == self.index and now - last_time <= self.DOUBLE_CLICK_SECONDS
+        ClickBcfTopic._last_click = (-1, 0.0) if is_double else (self.index, now)
+
+        if props.active_topic_index != self.index:
+            props.active_topic_index = self.index
+        if is_double:
+            _open_first_viewpoint(self, props.topics[self.index])
+        return {"FINISHED"}
+
+
+def topic_viewpoints(topic_name: str) -> list[str]:
+    bcfxml = bcfstore.Bcf2Store.get_bcfxml()
+    return list(bcfxml.topics[topic_name].viewpoints.keys()) if bcfxml and topic_name in bcfxml.topics else []
+
+
+def _open_first_viewpoint(op: bpy.types.Operator, topic) -> None:
+    viewpoints = topic_viewpoints(topic.name)
+    if not viewpoints:
+        op.report({"INFO"}, f"Topic '{topic.title}' has no viewpoint to open.")
+        return
+    try:
+        topic.viewpoints = viewpoints[0]
+    except TypeError:
+        pass
+    bpy.ops.bcf2.activate_bcf_viewpoint()
+
+
+class OpenBcfTopicViewpoint(bpy.types.Operator):
+    """Open this topic's viewpoint (its first, if it has several)"""
+
+    bl_idname = "bcf2.open_topic_viewpoint"
+    bl_label = "Open Topic Viewpoint"
+    bl_options = {"INTERNAL"}
+    index: bpy.props.IntProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        props = tool.Bcf2.get_bcf_props()
+        if self.index >= len(props.topics):
+            return {"CANCELLED"}
+        # The viewpoint operators work on the active topic - make this row's topic active first.
+        if props.active_topic_index != self.index:
+            props.active_topic_index = self.index
+        _open_first_viewpoint(self, props.topics[self.index])
+        return {"FINISHED"}
+
+
+class SaveBcfWithCtrlS(bpy.types.Operator):
+    """Ctrl+S also saves the BCF - into your own copy only - then lets Bonsai's/Blender's save run"""
+
+    bl_idname = "bcf2.save_with_ctrl_s"
+    bl_label = "Save BCF With Ctrl+S"
+    bl_options = {"INTERNAL"}
+
+    def invoke(self, context, event):
+        return self.execute(context)
+
+    def execute(self, context):
+        try:
+            level, msg = bcfstore.save_own_copy()
+        except Exception as e:
+            level, msg = "ERROR", f"BCF save failed: {e!r}"
+        if msg:
+            print(f"[BCF2] Ctrl+S: {msg}")
+            self.report({level}, msg)
+        # Never consume the key: the normal IFC/.blend save must still happen.
+        return {"PASS_THROUGH"}
+
+
+def _extension_default(bcfxml, group_attr: str, values_attr: str, preferred: str) -> str:
+    """`preferred` if the BCF's extensions allow it (or list nothing), else their first value."""
+    try:
+        values = list(getattr(getattr(bcfxml.extensions, group_attr, None), values_attr, None) or [])
+    except Exception:
+        values = []
+    if not values or preferred in values:
+        return preferred
+    return values[0]
 
 
 class AddBcf2Topic(bpy.types.Operator):
@@ -387,8 +522,22 @@ class AddBcf2Topic(bpy.types.Operator):
         assert bcfxml
 
         props = tool.Bcf2.get_bcf_props()
-        bcfxml.add_topic("New Topic", "", props.author)
+        # TopicType and TopicStatus are required by the BCF 3.0 schema - prefill them from the
+        # project's own extensions list (PEAB: "Error", "Open"), as Solibri/Dalux topics have them.
+        topic_type = _extension_default(bcfxml, "topic_types", "topic_type", "Error")
+        topic_status = _extension_default(bcfxml, "topic_statuses", "topic_status", "Open")
+        # No description: None leaves the element out - an empty <Description/> fails the BCF 3.0 schema.
+        topic = bcfxml.add_topic("New Topic", None, props.author, topic_type, topic_status)
         bpy.ops.bcf2.load_bcf_topics()
+        # Select the new topic (last in the list) so the list scrolls to it.
+        guid = getattr(topic, "guid", None)
+        index = next((i for i, t in enumerate(props.topics) if t.name == guid), len(props.topics) - 1)
+        props.active_topic_index = index
+        if props.add_viewpoint_with_topic:
+            if bpy.ops.bcf2.add_bcf_viewpoint.poll():
+                bpy.ops.bcf2.add_bcf_viewpoint()
+            else:
+                self.report({"WARNING"}, "Topic added without a viewpoint - no 3D viewport to capture.")
         return {"FINISHED"}
 
 
@@ -541,139 +690,135 @@ class ViewBcf2Topic(bpy.types.Operator):
 class AddBcfViewpoint(bpy.types.Operator):
     bl_idname = "bcf2.add_bcf_viewpoint"
     bl_label = "Add BCF Viewpoint"
+    bl_description = (
+        "Add a viewpoint of what the 3D viewport shows: camera, snapshot, clipping planes and element "
+        "visibility (including linked models), structured like Solibri/Dalux viewpoints"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context):
-        if not context.scene.camera:
-            cls.poll_message_set("Scene has no active camera.")
+        if not viewpoint_capture.find_view3d(context):
+            cls.poll_message_set("No 3D viewport to capture.")
             return False
         return True
 
     def execute(self, context):
+        t_start = time.perf_counter()
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
         assert bcfxml
         bcf_v2 = (bcfxml.version.version_id or "").startswith("2")
-
-        blender_camera = context.scene.camera
-        assert blender_camera
+        mdl = bcf.v2.model if bcf_v2 else bcf.v3.model
 
         props = tool.Bcf2.get_bcf_props()
         blender_topic = props.active_topic
+        if not blender_topic or blender_topic.name not in bcfxml.topics:
+            self.report({"ERROR"}, "The active topic isn't in the loaded BCF file (was it saved?).")
+            return {"CANCELLED"}
         topic = bcfxml.topics[blender_topic.name]
 
-        direction = blender_camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-        up = blender_camera.matrix_world.to_quaternion() @ Vector((0.0, 1.0, 0.0))
+        _window, _area, space, region = viewpoint_capture.find_view3d(context)
+        view, projection, width, height, source = viewpoint_capture.view_matrices(context, space, region)
+        aspect = width / height
 
-        blender_render = context.scene.render
-        assert isinstance(blender_camera.data, bpy.types.Camera)
-        visinfo_guid = str(uuid.uuid4())
+        # Camera - from the same matrices the snapshot is drawn with, so they always match.
+        is_perspective, location, direction, up, extent = viewpoint_capture.camera_from_matrices(view, projection)
+        location, direction, up = viewpoint_capture.to_global(location, direction, up)
+        camera_args = dict(
+            camera_view_point=mdl.Point(x=location.x, y=location.y, z=location.z),
+            camera_direction=mdl.Direction(x=direction.x, y=direction.y, z=direction.z),
+            camera_up_vector=mdl.Direction(x=up.x, y=up.y, z=up.z),
+        )
+        if not bcf_v2:
+            camera_args["aspect_ratio"] = aspect
+        if is_perspective:
+            camera_kwargs = {"perspective_camera": mdl.PerspectiveCamera(field_of_view=extent, **camera_args)}
+        else:
+            camera_kwargs = {"orthogonal_camera": mdl.OrthogonalCamera(view_to_world_scale=extent, **camera_args)}
+
+        # Components - same shape as the reference BCF: Selection and Coloring always present (empty
+        # when unused), Visibility with ViewSetupHints + Exceptions. Written as "show all, hide these"
+        # or "hide all, show these", whichever list is shorter.
+        visible, hidden, spaces_visible = viewpoint_capture.element_visibility(context)
+        default_visibility = len(hidden) <= len(visible)
+        exceptions = sorted(hidden if default_visibility else visible)
+        hints = mdl.ViewSetupHints(
+            spaces_visible=spaces_visible, space_boundaries_visible=False, openings_visible=False
+        )
+        selection = mdl.ComponentSelection(
+            component=[mdl.Component(ifc_guid=g) for g in viewpoint_capture.selected_guids(context)]
+        )
+        visibility_args = dict(
+            default_visibility=default_visibility,
+            exceptions=mdl.ComponentVisibilityExceptions(component=[mdl.Component(ifc_guid=g) for g in exceptions]),
+        )
         if bcf_v2:
-            camera_view_point = bcf.v2.model.Point(
-                x=blender_camera.location.x, y=blender_camera.location.y, z=blender_camera.location.z
+            components = mdl.Components(
+                view_setup_hints=hints,
+                selection=selection,
+                visibility=mdl.ComponentVisibility(**visibility_args),
+                coloring=mdl.ComponentColoring(),
             )
-            camera_direction = bcf.v2.model.Direction(x=direction.x, y=direction.y, z=direction.z)
-            camera_up_vector = bcf.v2.model.Direction(x=up.x, y=up.y, z=up.z)
-            if blender_camera.data.type == "ORTHO":
-                camera = bcf.v2.model.OrthogonalCamera(
-                    view_to_world_scale=blender_camera.data.ortho_scale,
-                    camera_view_point=camera_view_point,
-                    camera_direction=camera_direction,
-                    camera_up_vector=camera_up_vector,
-                )
-                visualization_info = bcf.v2.model.VisualizationInfo(guid=visinfo_guid, orthogonal_camera=camera)
-            elif blender_camera.data.type == "PERSP":
-                camera = bcf.v2.model.PerspectiveCamera(
-                    field_of_view=degrees(blender_camera.data.angle),
-                    camera_view_point=camera_view_point,
-                    camera_direction=camera_direction,
-                    camera_up_vector=camera_up_vector,
-                )
-                visualization_info = bcf.v2.model.VisualizationInfo(guid=visinfo_guid, perspective_camera=camera)
-            else:
-                self.report({"INFO"}, f"Unsupported camera type: '{blender_camera.data.type}'.")
-                return {"FINISHED"}
         else:
-            camera_view_point = bcf.v3.model.Point(
-                x=blender_camera.location.x, y=blender_camera.location.y, z=blender_camera.location.z
+            components = mdl.Components(
+                selection=selection,
+                visibility=mdl.ComponentVisibility(view_setup_hints=hints, **visibility_args),
+                coloring=mdl.ComponentColoring(),
             )
-            camera_direction = bcf.v3.model.Direction(x=direction.x, y=direction.y, z=direction.z)
-            camera_up_vector = bcf.v3.model.Direction(x=up.x, y=up.y, z=up.z)
-            cam_aspect = blender_render.resolution_x / blender_render.resolution_y
-            if blender_camera.data.type == "ORTHO":
-                camera = bcf.v3.model.OrthogonalCamera(
-                    view_to_world_scale=blender_camera.data.ortho_scale,
-                    camera_view_point=camera_view_point,
-                    camera_direction=camera_direction,
-                    camera_up_vector=camera_up_vector,
-                    aspect_ratio=cam_aspect,
-                )
-                visualization_info = bcf.v3.model.VisualizationInfo(guid=visinfo_guid, orthogonal_camera=camera)
-            elif blender_camera.data.type == "PERSP":
-                camera = bcf.v3.model.PerspectiveCamera(
-                    field_of_view=degrees(blender_camera.data.angle),
-                    camera_view_point=camera_view_point,
-                    camera_direction=camera_direction,
-                    camera_up_vector=camera_up_vector,
-                    aspect_ratio=cam_aspect,
-                )
-                visualization_info = bcf.v3.model.VisualizationInfo(guid=visinfo_guid, perspective_camera=camera)
-            else:
-                self.report({"INFO"}, f"Unsupported camera type: '{blender_camera.data.type}'.")
-                return {"FINISHED"}
 
-        # TODO allow the user to enable or disable snapshotting
-        snapshot = None
-
-        old_file_format = blender_render.image_settings.file_format
-        blender_render.image_settings.file_format = "PNG"
-        old_filepath = blender_render.filepath
-        blender_render.filepath = tool.Blender.get_data_dir_path("snapshot.png").__str__()
-        bpy.ops.render.opengl(write_still=True)
-        with open(blender_render.filepath, "rb") as f:
-            snapshot = f.read()
-        # viewpoint.snapshot = blender_render.filepath
-
-        if isinstance(visualization_info, bcf.v2.model.VisualizationInfo):
-            vizinfo = bcf.v2.visinfo.VisualizationInfoHandler(visualization_info=visualization_info, snapshot=snapshot)
-            assert isinstance(topic, bcf.v2.topic.TopicHandler)
-            topic.viewpoints[vizinfo.guid + ".bcfv"] = vizinfo
-            viewpoints = tool.Bcf2.get_topic_viewpoints(topic)
-            viewpoint = bcf.v2.model.ViewPoint(
-                viewpoint=vizinfo.guid + ".bcfv", guid=vizinfo.guid, snapshot=vizinfo.guid + ".png"
+        planes = viewpoint_capture.clipping_planes()
+        clipping = None
+        if planes:
+            clipping = mdl.VisualizationInfoClippingPlanes(
+                clipping_plane=[
+                    mdl.ClippingPlane(
+                        location=mdl.Point(x=loc.x, y=loc.y, z=loc.z),
+                        direction=mdl.Direction(x=d.x, y=d.y, z=d.z),
+                    )
+                    for loc, d in planes
+                ]
             )
-            assert tool.Bcf2.is_list_of(viewpoints, bcf.v2.model.ViewPoint)
-            viewpoints.append(viewpoint)
-        else:
-            vizinfo = bcf.v3.visinfo.VisualizationInfoHandler(visualization_info=visualization_info, snapshot=snapshot)
-            assert isinstance(topic, bcf.v3.topic.TopicHandler)
-            topic.viewpoints[vizinfo.guid + ".bcfv"] = vizinfo
-            viewpoints = tool.Bcf2.get_topic_viewpoints(topic)
-            viewpoint = bcf.v3.model.ViewPoint(
-                viewpoint=vizinfo.guid + ".bcfv", guid=vizinfo.guid, snapshot=vizinfo.guid + ".png"
+
+        visinfo_guid = str(uuid.uuid4())
+        extra = {} if bcf_v2 else {"bitmaps": mdl.VisualizationInfoBitmaps()}
+        visualization_info = mdl.VisualizationInfo(
+            guid=visinfo_guid, components=components, clipping_planes=clipping, **camera_kwargs, **extra
+        )
+
+        snapshot = viewpoint_capture.snapshot_png(context, space, region, view, projection, width, height)
+
+        handler_module = bcf.v2.visinfo if bcf_v2 else bcf.v3.visinfo
+        vizinfo = handler_module.VisualizationInfoHandler(
+            visualization_info=visualization_info,
+            snapshot=snapshot,
+            xml_handler=None if bcf_v2 else viewpoint_capture.bcf3_xml_handler(),
+        )
+        topic.viewpoints[vizinfo.guid + ".bcfv"] = vizinfo
+        viewpoints = tool.Bcf2.get_topic_viewpoints(topic)
+        viewpoints.append(
+            mdl.ViewPoint(
+                viewpoint=vizinfo.guid + ".bcfv",
+                guid=vizinfo.guid,
+                snapshot=vizinfo.guid + ".png",
+                index=len(viewpoints),
             )
-            assert tool.Bcf2.is_list_of(viewpoints, bcf.v3.model.ViewPoint)
-            viewpoints.append(viewpoint)
+        )
         tool.Bcf2.set_topic_viewpoints(topic, viewpoints)
-
-        def get_ifc_elements(objs: list[bpy.types.Object]) -> list[ifcopenshell.entity_instance]:
-            elements = []
-            for obj in objs:
-                if e := tool.Ifc.get_entity(obj):
-                    elements.append(e)
-            return elements
-
-        selected_elements = get_ifc_elements(context.selected_objects)
-        if selected_elements:
-            vizinfo.set_selected_elements(selected_elements)
-
-        visible_elements = get_ifc_elements(context.visible_objects)
-        if visible_elements:
-            vizinfo.set_visible_elements(visible_elements)
-
-        blender_render.filepath = old_filepath
-        blender_render.image_settings.file_format = old_file_format
         props.refresh_topic(context)
+        # Select the new viewpoint, so Activate opens it - not the topic's first (e.g. the received) one.
+        try:
+            blender_topic.viewpoints = vizinfo.guid + ".bcfv"
+        except TypeError:
+            pass
+
+        what = f"{extent:.1f} deg FOV" if is_perspective else f"{extent:.2f} m ortho"
+        mode = f"show all, hide {len(exceptions)}" if default_visibility else f"hide all, show {len(exceptions)}"
+        self.report(
+            {"INFO"},
+            f"[BCF2] Viewpoint added from the {source}: {what}, aspect {aspect:.3f}, snapshot {width}x{height}, "
+            f"{len(planes)} clipping plane(s), visibility {mode}, {len(selection.component)} selected "
+            f"in {(time.perf_counter() - t_start) * 1000:.0f} ms",
+        )
         return {"FINISHED"}
 
 
@@ -796,8 +941,12 @@ class RemoveBcf2Topic(bpy.types.Operator):
         assert bcfxml
 
         props = tool.Bcf2.get_bcf_props()
+        index = props.active_topic_index
         del bcfxml.topics[props.active_topic.name]
         bpy.ops.bcf2.load_bcf_topics()
+        # Stay in place: select the topic that moved up into the removed one's row (or the new last one).
+        if props.topics:
+            props.active_topic_index = min(index, len(props.topics) - 1)
         return {"FINISHED"}
 
 
@@ -1230,6 +1379,41 @@ class AddBcf2Comment(bpy.types.Operator):
 _saved_view: Optional[dict] = None
 
 
+def _frame_camera(context: bpy.types.Context) -> None:
+    """Fit the camera frame to the viewport (Home in camera view). Otherwise the frame keeps the
+    previous camera-view zoom, and a small frame with extra view around it looks like a wider,
+    different camera than the snapshot."""
+    found = viewpoint_capture.find_view3d(context)
+    if not found:
+        return
+    window, area, _space, region = found
+    try:
+        with context.temp_override(window=window, area=area, region=region):
+            bpy.ops.view3d.view_center_camera()
+    except RuntimeError as e:
+        print(f"[BCF2] Couldn't fit the camera frame to the viewport: {e}")
+
+
+def _match_viewport_lens(context: bpy.types.Context, camera: bpy.types.Object) -> None:
+    """Give the 3D view the camera's on-screen scale, so orbiting out of a viewpoint doesn't zoom.
+    In camera view the frame is fitted to the region (view_center_camera, 4 px margin) and the
+    camera's vertical angle spans the frame's height; the viewport's lens spans the region's longer
+    side as a 72 mm sensor (checked against its window_matrix). CloseBcfViewpoint restores the lens."""
+    data = camera.data
+    if not isinstance(data, bpy.types.Camera) or data.type != "PERSP":
+        return
+    found = viewpoint_capture.find_view3d(context)
+    if not found:
+        return
+    _window, _area, space, region = found
+    render = context.scene.render
+    aspect = (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y)
+    width, height = region.width, region.height
+    frame_height = min(width - 4, (height - 4) * aspect) / aspect
+    focal_px = (frame_height / 2) / tan(data.angle_y / 2)
+    space.lens = focal_px * 72 / max(width, height)
+
+
 def _is_viewpoint_open(context: bpy.types.Context) -> bool:
     """Whether a BCF viewpoint currently affects the scene - also true after a restart,
     when _saved_view is gone but the camera view is still there. (Linked-model hides alone
@@ -1249,10 +1433,36 @@ def _save_view_before_bcf(context: bpy.types.Context) -> None:
     if not space:
         return
     camera = context.scene.camera
+    render = context.scene.render
     _saved_view = {
         "perspective": space.region_3d.view_perspective,
         "camera": camera.name if camera and camera.name != "Viewpoint" else None,
+        "lens": space.lens,
+        # Viewpoints temporarily change the render size to the BCF aspect ratio.
+        "resolution": (render.resolution_x, render.resolution_y),
     }
+
+
+def _png_aspect(data: bytes) -> Optional[float]:
+    """Width/height from a PNG header - no image datablock needed."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        import struct
+
+        width, height = struct.unpack(">II", data[16:24])
+        if width and height:
+            return width / height
+    return None
+
+
+def _bcf_aspect(viewpoint, render: bpy.types.RenderSettings) -> float:
+    """The shape of the BCF view: BCF 3.0 AspectRatio, else the snapshot's shape (BCF 2.1 has no
+    AspectRatio), else the current render shape."""
+    visinfo = viewpoint.visualization_info
+    camera = visinfo.perspective_camera or visinfo.orthogonal_camera
+    aspect = getattr(camera, "aspect_ratio", None) if camera else None
+    if not aspect and viewpoint.snapshot:
+        aspect = _png_aspect(viewpoint.snapshot)
+    return aspect or (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y)
 
 
 class ActivateBcfViewpoint(bpy.types.Operator):
@@ -1274,7 +1484,9 @@ class ActivateBcfViewpoint(bpy.types.Operator):
             cls.poll_message_set("No topic is active.")
             return False
         bcfxml = bcfstore.Bcf2Store.get_bcfxml()
-        assert bcfxml
+        if not bcfxml or blender_topic.name not in bcfxml.topics:
+            cls.poll_message_set("This topic isn't in the loaded BCF file (was it saved?).")
+            return False
         topic = bcfxml.topics[blender_topic.name]
         if not topic.viewpoints:
             cls.poll_message_set("No viewpoints in the active topic.")
@@ -1311,15 +1523,22 @@ class ActivateBcfViewpoint(bpy.types.Operator):
         _save_view_before_bcf(context)
 
         viewpoint = topic.viewpoints[viewpoint_guid]
-        obj = bpy.data.objects.get("Viewpoint")
-        if not obj:
-            obj = bpy.data.objects.new("Viewpoint", bpy.data.cameras.new("Viewpoint"))
-            context.scene.collection.objects.link(obj)
+        is_new = bpy.data.objects.get(viewpoint_camera.CAMERA_NAME) is None
+        obj = viewpoint_camera.get_camera(context)
+        if is_new:
             context.scene.camera = obj
 
-        cam_width = context.scene.render.resolution_x
-        cam_height = context.scene.render.resolution_y
-        cam_aspect = cam_width / cam_height
+        # Match the camera frame to the BCF view's shape: keep the render width, change the height.
+        # CloseBcfViewpoint restores the user's original render size (_saved_view["resolution"]).
+        render = context.scene.render
+        bcf_aspect = _bcf_aspect(viewpoint, render)
+        target_y = max(1, round(render.resolution_x * render.pixel_aspect_x / (bcf_aspect * render.pixel_aspect_y)))
+        if render.resolution_y != target_y:
+            render.resolution_y = target_y
+
+        cam_width = render.resolution_x
+        cam_height = render.resolution_y
+        cam_aspect = (cam_width * render.pixel_aspect_x) / (cam_height * render.pixel_aspect_y)
 
         assert isinstance(obj.data, bpy.types.Camera)
         obj.data.background_images.clear()
@@ -1329,20 +1548,21 @@ class ActivateBcfViewpoint(bpy.types.Operator):
             with tempfile.NamedTemporaryFile(delete=False) as f:
                 f.write(viewpoint.snapshot)
                 background.image = bpy.data.images.load(f.name)
-            src_width = background.image.size[0]
-            src_height = background.image.size[1]
-            src_aspect = src_width / src_height
-
-            if src_aspect > cam_aspect:
-                background.frame_method = "FIT"
-            else:
-                background.frame_method = "CROP"
+            src_aspect = _png_aspect(viewpoint.snapshot)
+            if not src_aspect and background.image.size[1]:
+                src_aspect = background.image.size[0] / background.image.size[1]
+            src_aspect = src_aspect or cam_aspect
+            # The snapshot shows the BCF's full *vertical* field of view, so scale it to the frame's
+            # height: crop the sides if it's wider than the frame, fit (side bars) if narrower.
+            background.frame_method = "CROP" if src_aspect > cam_aspect else "FIT"
             background.display_depth = "FRONT"
         else:
             obj.data.show_background_images = False
 
         assert (space := tool.Blender.get_view3d_space())
+        viewpoint_camera.show(context)
         space.region_3d.view_perspective = "CAMERA"
+        _frame_camera(context)
 
         if self.file:
             self.set_viewpoint_components(viewpoint, context)
@@ -1370,6 +1590,7 @@ class ActivateBcfViewpoint(bpy.types.Operator):
             self.create_bitmaps(bcfxml, viewpoint, topic)
 
         self.setup_camera(viewpoint, obj, cam_aspect, context, cam_height, cam_width)
+        _match_viewport_lens(context, obj)
         # Force the single batched scene update here so the timing below is the real per-click cost
         # (it would otherwise happen right after, on the next redraw - this doesn't add a second one).
         context.view_layer.update()
@@ -1386,20 +1607,19 @@ class ActivateBcfViewpoint(bpy.types.Operator):
         cam_width: float,
     ) -> None:
         assert isinstance(obj.data, bpy.types.Camera)
+        # BCF 3.0 defines FieldOfView and ViewToWorldScale as VERTICAL. With sensor_fit VERTICAL,
+        # Blender's angle / ortho_scale mean exactly that, whatever the frame's shape. (The original
+        # code applied them to the horizontal side, which made the view ~1.5x too zoomed in for a
+        # 60 deg / 2.32:1 BCF view.)
+        obj.data.sensor_fit = "VERTICAL"
         if viewpoint.visualization_info.orthogonal_camera:
             camera = viewpoint.visualization_info.orthogonal_camera
             obj.data.type = "ORTHO"
-            obj.data.ortho_scale = viewpoint.visualization_info.orthogonal_camera.view_to_world_scale
+            obj.data.ortho_scale = camera.view_to_world_scale
         elif viewpoint.visualization_info.perspective_camera:
             camera = viewpoint.visualization_info.perspective_camera
             obj.data.type = "PERSP"
-            if cam_aspect >= 1:
-                obj.data.angle = radians(camera.field_of_view)
-            else:
-                # https://blender.stackexchange.com/questions/23431/how-to-set-camera-horizontal-and-vertical-fov
-                obj.data.angle = 2 * atan(
-                    (0.5 * cam_height) / (0.5 * cam_width / tan(radians(camera.field_of_view) / 2))
-                )
+            obj.data.angle = radians(camera.field_of_view)
         else:
             return
 
@@ -1725,9 +1945,16 @@ class CloseBcfViewpoint(bpy.types.Operator):
 
         # Back to the user's own view. Blender keeps the non-camera view (location/rotation/distance)
         # while in camera view, so switching the perspective back is enough to return to it.
+        saved_resolution = (_saved_view or {}).get("resolution")
+        if saved_resolution:
+            render = context.scene.render
+            render.resolution_x, render.resolution_y = saved_resolution
+
         space = tool.Blender.get_view3d_space()
         if space:
             saved = _saved_view or {}
+            if saved.get("lens"):
+                space.lens = saved["lens"]
             camera_name = saved.get("camera")
             if saved.get("perspective") == "CAMERA" and camera_name and (user_cam := bpy.data.objects.get(camera_name)):
                 context.scene.camera = user_cam
@@ -1736,6 +1963,7 @@ class CloseBcfViewpoint(bpy.types.Operator):
                 perspective = saved.get("perspective")
                 space.region_3d.view_perspective = perspective if perspective in {"PERSP", "ORTHO"} else "PERSP"
         _saved_view = None
+        viewpoint_camera.hide_if_unused()
 
         context.view_layer.update()
         self.report(
@@ -1870,6 +2098,9 @@ class BCFFileHandlerOperator(bpy.types.Operator):
             return {"FINISHED"}
 
         if bcfstore.Bcf2Store.get_bcfxml():
+            if bcfstore.Bcf2Store.dirty:
+                self.report({"WARNING"}, "Unsaved BCF changes - save them or unload the project first.")
+                return {"CANCELLED"}
             bpy.ops.bcf2.unload_bcf_project()
 
         # `files` contain only .bcf files.
@@ -1891,3 +2122,42 @@ class BIM_FH_import_bcf(bpy.types.FileHandler):
     @classmethod
     def poll_drop(cls, context):
         return True
+
+
+# --- Unsaved-change tracking -------------------------------------------------------------------
+# Every Add*/Remove*/Edit* operator changes BCF data that only reaches disk via Save Current
+# Project / Save Project As, so a successful run marks the project dirty - except while loading,
+# when filling in the panel's fields runs Edit* operators through their update callbacks.
+_LOADING_OPERATORS = ("LoadBcfProject", "LoadBcf2Topics", "LoadBcf2Topic", "LoadBcf2Comments")
+
+
+def _track_changes(cls: type) -> None:
+    original = cls.execute
+    if cls.__name__ in _LOADING_OPERATORS:
+
+        def execute(self, context):
+            bcfstore.Bcf2Store.loading += 1
+            try:
+                return original(self, context)
+            finally:
+                bcfstore.Bcf2Store.loading -= 1
+
+    else:
+
+        def execute(self, context):
+            result = original(self, context)
+            if "FINISHED" in result and not bcfstore.Bcf2Store.loading:
+                bcfstore.Bcf2Store.dirty = True
+            return result
+
+    cls.execute = execute
+
+
+for _cls in list(globals().values()):
+    if (
+        isinstance(_cls, type)
+        and issubclass(_cls, bpy.types.Operator)
+        and _cls.__module__ == __name__
+        and (_cls.__name__.startswith(("Add", "Remove", "Edit")) or _cls.__name__ in _LOADING_OPERATORS)
+    ):
+        _track_changes(_cls)
