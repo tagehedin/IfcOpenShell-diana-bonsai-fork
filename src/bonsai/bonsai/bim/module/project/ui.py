@@ -259,6 +259,8 @@ class BIM_PT_project(Panel):
         row.prop(pprops, "distance_limit")
         row = self.layout.row()
         row.prop(pprops, "false_origin_mode")
+        if pprops.false_origin_mode == "AUTOMATIC":
+            self.layout.prop(pprops, "false_origin_keep_height")
         if pprops.false_origin_mode == "MANUAL":
             row = self.layout.row()
             row.prop(pprops, "false_origin")

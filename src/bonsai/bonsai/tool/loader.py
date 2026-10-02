@@ -773,6 +773,8 @@ class Loader(bonsai.core.tool.Loader):
             return
         placement = ifcopenshell.util.placement.get_local_placement(element.ObjectPlacement)
         offset_point = [placement[0][3], placement[1][3], placement[2][3]]
+        if cls.settings.false_origin_keep_height:
+            offset_point[2] = 0.0
         cls.settings.false_origin = ifcopenshell.util.geolocation.auto_xyz2enh(
             ifc_file, *offset_point, should_return_in_map_units=False
         )
@@ -962,6 +964,8 @@ class Loader(bonsai.core.tool.Loader):
         offset_point = cls.get_offset_point(ifc_file)
         if offset_point is None:
             return
+        if cls.settings.false_origin_keep_height:
+            offset_point[2] = 0.0
         cls.settings.false_origin = ifcopenshell.util.geolocation.auto_xyz2enh(
             ifc_file, *offset_point, should_return_in_map_units=False
         )

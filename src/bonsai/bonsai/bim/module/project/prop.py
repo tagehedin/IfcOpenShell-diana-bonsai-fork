@@ -560,6 +560,14 @@ class BIMProjectProperties(PropertyGroup):
         name="False Origin Mode",
         default="AUTOMATIC",
     )
+    false_origin_keep_height: BoolProperty(
+        name="Keep Real Heights",
+        description=(
+            "Automatic false origin only shifts X/Y, so storeys keep their real heights in Blender. "
+            "Heights are never large enough to cause precision problems"
+        ),
+        default=True,
+    )
     false_origin: StringProperty(
         name="False Origin",
         description="False origin in project units that the Blender origin will correlate to",
@@ -727,6 +735,7 @@ class BIMProjectProperties(PropertyGroup):
         style_limit: int
         distance_limit: float
         false_origin_mode: Literal["AUTOMATIC", "MANUAL", "DISABLED"]
+        false_origin_keep_height: bool
         false_origin: str
         project_north: str
         element_limit_mode: Literal["UNLIMITED", "RANGE"]

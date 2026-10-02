@@ -1285,6 +1285,7 @@ class IfcImportSettings:
         # Users can configure this if they have to handle larger sites but beware of surveying precision
         self.distance_limit = 1000
         self.false_origin_mode = "AUTOMATIC"
+        self.false_origin_keep_height = True
         self.false_origin = None
         self.project_north = None
         self.element_limit_mode = "UNLIMITED"
@@ -1322,6 +1323,7 @@ class IfcImportSettings:
         settings.style_limit = props.style_limit
         settings.distance_limit = props.distance_limit
         settings.false_origin_mode = props.false_origin_mode
+        settings.false_origin_keep_height = props.false_origin_keep_height
         try:
             settings.false_origin = [float(o) for o in props.false_origin.split(",")[:3]]
         except Exception as e:

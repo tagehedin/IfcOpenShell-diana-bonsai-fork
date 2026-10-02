@@ -1628,6 +1628,8 @@ class LinkIfc(bpy.types.Operator, ImportHelper, tool.Ifc.Operator):
         row.label(text="False Origin Mode:")
         row = self.layout.row()
         row.prop(pprops, "false_origin_mode", text="")
+        if pprops.false_origin_mode == "AUTOMATIC":
+            self.layout.prop(pprops, "false_origin_keep_height")
         if pprops.false_origin_mode == "MANUAL":
             row = self.layout.row()
             row.prop(pprops, "false_origin")
@@ -1858,6 +1860,7 @@ def run():
     pprops = tool.Project.get_project_props()
     pprops.distance_limit = {pprops.distance_limit}
     pprops.false_origin_mode = "{pprops.false_origin_mode}"
+    pprops.false_origin_keep_height = {pprops.false_origin_keep_height}
     pprops.false_origin = "{pprops.false_origin}"
     pprops.project_north = "{pprops.project_north}"
     # Use absolute path to be safe from cwd changes.
