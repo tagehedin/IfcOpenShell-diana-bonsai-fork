@@ -46,6 +46,7 @@ modules = {
     "model": None,
     "cad": None,
     "georeference": None,
+    "localize": None,
     "context": None,
     "drawing": None,
     "misc": None,
