@@ -47,6 +47,7 @@ modules = {
     "cad": None,
     "georeference": None,
     "localize": None,
+    "header_tabs": None,
     "context": None,
     "drawing": None,
     "misc": None,
