@@ -26,7 +26,7 @@ import ifcopenshell.util.unit
 from mathutils import Vector
 
 import bonsai.tool as tool
-from bonsai.bim.module.model.decorator import PolylineDecorator
+from bonsai.bim.module.model.decorator import GpuSnapDecorator, PolylineDecorator, ProductDecorator
 from bonsai.bim.module.model.fork_polyline_snap import ForkPolylineSnap
 
 
@@ -388,11 +388,7 @@ class PolylineOperator(ForkPolylineSnap):
             if event.value == "RELEASE" and event.type in {"ESC"}:
                 self.tool_state.axis_method = None
                 self.tool_state.plane_method = None
-                context.workspace.status_text_set(text=None)
-                PolylineDecorator.uninstall()
-                tool.Polyline.clear_polyline()
-                tool.Blender.update_viewport()
-                self._remove_snap_timer(context)
+                self.cleanup(context)
                 return {"CANCELLED"}
 
     def handle_mouse_move(
@@ -416,6 +412,16 @@ class PolylineOperator(ForkPolylineSnap):
                 self._do_snap(context, event)
 
             return {"RUNNING_MODAL"}
+
+    def cleanup(self, context: bpy.Types.Context):
+        context.workspace.status_text_set(text=None)
+        PolylineDecorator.uninstall()
+        GpuSnapDecorator.uninstall()
+        ProductDecorator.uninstall()
+        tool.Polyline.clear_polyline()
+        tool.Raycast.clear_cache()
+        tool.Blender.update_viewport()
+        self._remove_snap_timer(context)  # Fork: Snap Setup 2's 100 ms snap timer
 
     def set_offset(self, context: bpy.types.Context, relating_type: ifcopenshell.entity_instance) -> None:
         props = tool.Model.get_model_props()
@@ -452,6 +458,7 @@ class PolylineOperator(ForkPolylineSnap):
 
     def invoke(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
         PolylineDecorator.install(context)
+        GpuSnapDecorator.install(context, event, detection=tool.Raycast.detect_gpu_snaps)
         tool.Snap.clear_snapping_point()
 
         self.tool_state.use_default_container = False

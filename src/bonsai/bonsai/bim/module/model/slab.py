@@ -1013,9 +1013,7 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
 
         if not self.relating_type:
             self.report({"WARNING"}, "You need to select a slab type.")
-            PolylineDecorator.uninstall()
-            tool.Blender.update_viewport()
-            self._remove_snap_timer(context)
+            self.cleanup(context)
             return {"FINISHED"}
 
         PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
@@ -1061,12 +1059,7 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
             and event.type in {"RET", "NUMPAD_ENTER", "RIGHTMOUSE"}
         ):
             self.create_slab_from_polyline(context)
-            context.workspace.status_text_set(text=None)
-            ProductDecorator.uninstall()
-            PolylineDecorator.uninstall()
-            tool.Polyline.clear_polyline()
-            tool.Blender.update_viewport()
-            self._remove_snap_timer(context)
+            self.cleanup(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -1074,7 +1067,6 @@ class DrawPolylineSlab(bpy.types.Operator, PolylineOperator, tool.Ifc.Operator):
 
         cancel = self.handle_cancelation(context, event)
         if cancel is not None:
-            ProductDecorator.uninstall()
             return cancel
 
         return {"RUNNING_MODAL"}

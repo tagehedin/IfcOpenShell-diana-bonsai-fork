@@ -59,7 +59,7 @@ class ForkPolylineSnap:
     def _handle_snap_timer(self, context: bpy.types.Context, event: bpy.types.Event) -> bool:
         if event.type != "TIMER":
             return False
-        if event.ctrl and not self._is_navigating:
+        if event.ctrl and not self._is_navigating and not self._use_gpu_snapping():
             self._run_scene_ray_snap(context, event)
         return True
 
@@ -252,8 +252,40 @@ class ForkPolylineSnap:
                 return
             self._is_navigating = False
 
+        if self._use_gpu_snapping():
+            self._run_gpu_snap(context, event)
+            return
+
         if not event.ctrl:
             self._run_plane_snap(context, event)
             return
 
         self._run_scene_ray_snap(context, event)
+
+    def _use_gpu_snapping(self) -> bool:
+        return getattr(tool.Snap.get_snap_props(), "use_gpu_snapping", False)
+
+    # "Use GPU Snapping" in the snap menu switches to upstream's own snapping (GPU object detection)
+    # instead of Snap Setup 2 - the same steps as upstream's PolylineOperator.handle_mouse_move. The
+    # objects' screen bounding boxes are rebuilt when the view changes (upstream: after each click).
+    def _run_gpu_snap(self, context: bpy.types.Context, event: bpy.types.Event) -> None:
+        if not self.visible_objs:
+            self.visible_objs = tool.Raycast.get_visible_objects(context)
+        view_matrix = context.region_data.view_matrix.copy()
+        if view_matrix != getattr(self, "_gpu_bbox_view_matrix", None):
+            self._gpu_bbox_view_matrix = view_matrix
+            self.objs_2d_bbox = []
+            for obj in self.visible_objs:
+                if bbox_2d := tool.Raycast.get_on_screen_2d_bounding_boxes(context, obj):
+                    self.objs_2d_bbox.append(bbox_2d)
+
+        detected_snaps = tool.Snap.detect_snapping_points(context, event, self.objs_2d_bbox, self.tool_state)
+        self.snapping_points = tool.Snap.select_snapping_points(context, event, self.tool_state, detected_snaps)
+        should_round = self._requested_should_round
+        if self.snapping_points[0]["type"] not in {"Plane", "Axis"}:
+            should_round = False
+        tool.Polyline.calculate_distance_and_angle(context, self.input_ui, self.tool_state, should_round=should_round)
+        if should_round:
+            tool.Polyline.calculate_x_y_and_z(context, self.input_ui, self.tool_state)
+        PolylineDecorator.update(event, self.tool_state, self.input_ui, self.snapping_points[0])
+        tool.Blender.update_viewport()

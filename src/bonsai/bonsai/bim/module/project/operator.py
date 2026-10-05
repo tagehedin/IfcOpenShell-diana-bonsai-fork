@@ -4229,14 +4229,10 @@ class MeasureTool(bpy.types.Operator, PolylineOperator):
             and event.value == "RELEASE"
             and event.type in {"RET", "NUMPAD_ENTER", "RIGHTMOUSE"}
         ) or single_mode:
-            context.workspace.status_text_set(text=None)
             self.tool_state.plane_method = None
-            PolylineDecorator.uninstall()
             tool.Polyline.move_polyline_to_measure(context, self.input_ui)
-            tool.Polyline.clear_polyline()
             MeasureDecorator.install(context)
-            tool.Blender.update_viewport()
-            self._remove_snap_timer(context)
+            self.cleanup(context)
             return {"FINISHED"}
 
         self.handle_keyboard_input(context, event)
@@ -5069,12 +5065,7 @@ class MeasureFaceAreaTool(bpy.types.Operator, PolylineOperator):
             tool.Blender.update_viewport()
 
         if event.value == "RELEASE" and event.type in {"ESC", "RIGHTMOUSE"}:
-            polyline_props.insertion_polyline.clear()
-            context.workspace.status_text_set(text=None)
-            PolylineDecorator.uninstall()
-            FaceAreaDecorator.uninstall()
-            tool.Blender.update_viewport()
-            self._remove_snap_timer(context)
+            self.cleanup(context)
             return {"CANCELLED"}
 
         return {"RUNNING_MODAL"}
@@ -5085,6 +5076,10 @@ class MeasureFaceAreaTool(bpy.types.Operator, PolylineOperator):
         PolylineDecorator.install(context, ui_only=True)
         FaceAreaDecorator.install(context)
         return {"RUNNING_MODAL"}
+
+    def cleanup(self, context):
+        FaceAreaDecorator.uninstall()
+        super().cleanup(context)
 
 
 class ClearMeasurement(bpy.types.Operator):
@@ -5206,12 +5201,9 @@ class ImageScalingTool(bpy.types.Operator, PolylineOperator):
         return {"RUNNING_MODAL"}
 
     def cancel_tool(self, context: bpy.types.Context) -> set["rna_enums.OperatorReturnItems"]:
-        context.workspace.status_text_set(text=None)
         if hasattr(self, "tool_state"):
             self.tool_state.plane_method = None
-        PolylineDecorator.uninstall()
-        tool.Blender.update_viewport()
-        self._remove_snap_timer(context)
+        self.cleanup(context)
         return {"CANCELLED"}
 
     def handle_custom_instructions(self, context: bpy.types.Context) -> None:
@@ -5282,11 +5274,9 @@ class ImageScalingTool(bpy.types.Operator, PolylineOperator):
 
             self.report({"INFO"}, f"Applied scale factor: {scale_factor:.4f}")
 
-        context.workspace.status_text_set(text=None)
         self.tool_state.plane_method = None
-        PolylineDecorator.uninstall()
-        tool.Blender.update_viewport()
-        self._remove_snap_timer(context)
+        self.cleanup(context)
+
         return {"FINISHED"}
 
 
@@ -5527,21 +5517,6 @@ class BIM_OT_dismiss_pending_opening_cuts(bpy.types.Operator):
 
     def execute(self, context: bpy.types.Context) -> set[str]:
         tool.Project.get_project_props().pending_opening_recut.clear()
-        return {"FINISHED"}
-
-
-class BIM_OT_dismiss_multi_instance_warning(bpy.types.Operator):
-    bl_idname = "bim.dismiss_multi_instance_warning"
-    bl_label = "Dismiss Multi-Instance Warning"
-    bl_description = (
-        "Hide the warning that another Blender instance has this IFC file open. Sticky for the current session."
-    )
-    bl_options = {"REGISTER"}
-
-    def execute(self, context: bpy.types.Context) -> set[str]:
-        from bonsai.bim.ifc import dismiss_multi_instance_warning
-
-        dismiss_multi_instance_warning()
         return {"FINISHED"}
 
 

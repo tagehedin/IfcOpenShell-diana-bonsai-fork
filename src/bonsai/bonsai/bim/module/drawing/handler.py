@@ -32,6 +32,9 @@ def load_post(*args):
         decoration.DecorationsHandler.uninstall()
     bpy.ops.bim.load_layer_styles_from_ifc()
 
+    # CutDecorator is drawing-view-only state and must not survive a new file.
+    decoration.CutDecorator.uninstall()
+
 
 @persistent
 def depsgraph_update_pre_handler(scene):
