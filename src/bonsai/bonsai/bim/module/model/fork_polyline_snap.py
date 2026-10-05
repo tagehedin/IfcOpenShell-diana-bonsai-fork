@@ -27,6 +27,8 @@ tool.Snap.detect_snapping_points is only asked for planes, axes, polylines and m
 empty object list).
 """
 
+import math
+
 import bpy
 import bpy_extras.view3d_utils
 from mathutils import Vector
@@ -276,6 +278,10 @@ class ForkPolylineSnap:
             self._gpu_bbox_view_matrix = view_matrix
             self.objs_2d_bbox = []
             for obj in self.visible_objs:
+                # Upstream's get_on_screen_2d_bounding_boxes crashes on a non-finite bounding box (seen
+                # 2026-10-05: linked E-60 chunks with +/-inf vertex heights from broken source geometry).
+                if not all(math.isfinite(c) for corner in obj.bound_box for c in corner):
+                    continue
                 if bbox_2d := tool.Raycast.get_on_screen_2d_bounding_boxes(context, obj):
                     self.objs_2d_bbox.append(bbox_2d)
 
