@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 class Snap(bonsai.core.tool.Snap):
     tool_state = None
     snap_plane_method = None
-    _increment_cache: dict = {"perspective": None, "key": None, "result": None}
 
     @classmethod
     def get_snap_props(cls) -> BIMSnapProperties:
@@ -67,19 +66,6 @@ class Snap(bonsai.core.tool.Snap):
         rv3d = context.region_data
         assert rv3d
 
-        perspective = rv3d.view_perspective
-        if perspective == "PERSP":
-            cache_key = round(rv3d.view_distance, 1)
-        elif perspective == "ORTHO":
-            window_scale = rv3d.window_matrix.to_scale()
-            cache_key = round(window_scale[1], 3)
-        else:
-            cache_key = None
-
-        cache = cls._increment_cache
-        if cache["perspective"] == perspective and cache["key"] == cache_key:
-            return cache["result"]
-
         factor = 1
         fractions = [100, 20, 10, 2]
         ortho_threshold = [-0.5, -0.25, -0.15, -0.05]
@@ -97,7 +83,7 @@ class Snap(bonsai.core.tool.Snap):
             distances = [3, 6, 10, 20]
 
         increment = 1
-        if perspective == "PERSP":
+        if rv3d.view_perspective == "PERSP":
             if rv3d.view_distance < distances[0]:
                 increment = (1 / fractions[0]) * factor
             elif distances[0] < rv3d.view_distance < distances[1]:
@@ -108,7 +94,9 @@ class Snap(bonsai.core.tool.Snap):
                 increment = (1 / fractions[3]) * factor
             else:
                 increment = 1 * factor
-        if perspective == "ORTHO" or (perspective == "CAMERA" and context.scene.camera.data.type == "ORTHO"):
+        if rv3d.view_perspective == "ORTHO" or (
+            rv3d.view_perspective == "CAMERA" and context.scene.camera.data.type == "ORTHO"
+        ):
             window_scale = rv3d.window_matrix.to_scale()
             if window_scale[1] < ortho_threshold[0]:
                 increment = (1 / fractions[0]) * factor
@@ -121,9 +109,6 @@ class Snap(bonsai.core.tool.Snap):
             else:
                 increment = 1 * factor
 
-        cache["perspective"] = perspective
-        cache["key"] = cache_key
-        cache["result"] = increment
         return increment
 
     @classmethod
@@ -588,13 +573,11 @@ class Snap(bonsai.core.tool.Snap):
                 rv3d = bpy.context.region_data
                 zoom_factor = rv3d.view_distance
                 if snap["type"] == "Vertex":
-                    snap["distance"] /= 1000
+                    snap["distance"] *= zoom_factor / 10
                 if snap["type"] == "Edge Center":
                     snap["distance"] *= zoom_factor / 8
                 if snap["type"] == "Edge Intersection":
                     snap["distance"] *= zoom_factor / 5
-                if snap["type"] == "Perpendicular":
-                    snap["distance"] *= zoom_factor / 6
                 if snap["type"] == "Edge":
                     snap["distance"] *= zoom_factor
                 if snap["type"] in ["Plane", "Axis", "Face"]:

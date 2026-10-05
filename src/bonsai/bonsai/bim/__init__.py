@@ -36,6 +36,7 @@ except ImportError:
 cwd = os.path.dirname(os.path.realpath(__file__))
 
 modules = {
+    "fork_overrides": None,  # first: installs tool/fork_*.py onto upstream tool classes
     "project": None,
     "search": None,
     "bcf": None,
