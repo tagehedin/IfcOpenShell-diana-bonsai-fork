@@ -1270,7 +1270,7 @@ class Geometry(bonsai.core.tool.Geometry):
         if iterator and iterator.initialize():
             while True:
                 shape = iterator.get()
-                assert isinstance(shape, W.TriangulationElement)
+                assert isinstance(shape, W.triangulation_element)
                 element = tool.Ifc.get().by_id(shape.id)
                 if obj := tool.Ifc.get_object(element):
                     # It's possible that there will be multiple shapes for the same context,
@@ -1418,7 +1418,7 @@ class Geometry(bonsai.core.tool.Geometry):
                 continue
             while True:
                 shape = iterator.get()
-                assert isinstance(shape, W.TriangulationElement)
+                assert isinstance(shape, W.triangulation_element)
                 element = ifc_file.by_id(shape.id)
 
                 target_representation = targets.get(element.id())
@@ -2505,7 +2505,7 @@ class Geometry(bonsai.core.tool.Geometry):
         item = tool.Ifc.get().by_id(props.ifc_definition_id)
         allowed_attributes = [
             a.name()
-            for a in item.wrapped_data.declaration().as_entity().all_attributes()
+            for a in item.declaration.as_entity().all_attributes()
             if a.type_of_attribute()._is("IfcLengthMeasure")
         ]
 

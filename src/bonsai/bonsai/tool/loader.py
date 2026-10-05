@@ -879,7 +879,7 @@ class Loader(bonsai.core.tool.Loader):
         cls,
         element: ifcopenshell.entity_instance,
         representation: ifcopenshell.entity_instance,
-        shape: W.TriangulationElement,
+        shape: W.triangulation_element,
     ) -> bpy.types.Camera:
         """Create camera data.
 
@@ -1035,7 +1035,7 @@ class Loader(bonsai.core.tool.Loader):
     @classmethod
     def convert_geometry_to_mesh(
         cls,
-        geometry: W.Triangulation,
+        geometry: W.triangulation,
         mesh: bpy.types.Mesh,
         verts: Optional[npt.NDArray[np.float64]] = None,
         *,
