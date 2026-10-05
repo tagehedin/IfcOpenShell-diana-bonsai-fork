@@ -540,7 +540,7 @@ class RemoveWindow(bpy.types.Operator, tool.Ifc.Operator):
     bl_label = "Remove Window"
     bl_options = {"REGISTER"}
 
-    def _execute(self, context: bpy.types.Context) -> set[str]:  # noqa: ARG002
+    def _execute(self, context: bpy.types.Context) -> set[str]:
         if (obj := context.active_object) is None:
             self.report({"ERROR"}, "No active object.")
             return {"CANCELLED"}

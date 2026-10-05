@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 from collections import defaultdict
+from collections.abc import Iterator
 from math import radians
 from pathlib import Path
 from typing import (

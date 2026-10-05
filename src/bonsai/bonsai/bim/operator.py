@@ -706,9 +706,7 @@ class ReportBug(bpy.types.Operator):
     def execute(self, context):
         title = "Bug report"
         body = (
-            "**Steps to reproduce:**\n\n\n"
-            "**Paste the Python error message from the terminal below:**\n\n"
-            "```\n\n```\n"
+            "**Steps to reproduce:**\n\n\n**Paste the Python error message from the terminal below:**\n\n```\n\n```\n"
         )
         params = urllib.parse.urlencode({"title": title, "body": body})
         webbrowser.open(f"https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/issues/new?{params}")

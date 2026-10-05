@@ -35,6 +35,9 @@ from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.clash.decorator import ClashDecorator
 from bonsai.bim.module.project import clipping_plane_fill
 
+if TYPE_CHECKING:
+    from bonsai.bim.module.clash.prop import BIMSavedView
+
 _preview_collections: dict = {}
 
 
@@ -308,7 +311,7 @@ def _capture_viewport_snapshot(context, filepath: Path) -> bool:
         scene.render.resolution_percentage = old["pct"]
 
 
-def _save_view_state(view: "bonsai.bim.module.clash.prop.BIMSavedView", context) -> None:
+def _save_view_state(view: "BIMSavedView", context) -> None:
     """Write current camera + clip planes into a saved view entry."""
     _, _, rd = _get_view3d_region_data(context)
     if rd:
@@ -1289,7 +1292,7 @@ class SelectSmartGroup(bpy.types.Operator):
             if b_product:
                 products.append(b_product)
 
-            pair = pair_lookup.get(f"{global_ids[i].name}-{global_ids[i+1].name}", "ab")
+            pair = pair_lookup.get(f"{global_ids[i].name}-{global_ids[i + 1].name}", "ab")
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
 

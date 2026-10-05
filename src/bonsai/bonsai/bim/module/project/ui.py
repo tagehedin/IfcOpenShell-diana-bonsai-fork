@@ -739,9 +739,9 @@ class BIM_UL_links(UIList):
                 row.operator("bim.toggle_link_selectability", text="", icon=icon, emboss=False).link_index = index
             icon = "CUBE" if item.is_wireframe else "MESH_CUBE"
             if bulk and item.selected:
-                row.operator("bim.toggle_selected_links_visibility", text="", icon=icon, emboss=False).mode = (
-                    "WIREFRAME"
-                )
+                row.operator(
+                    "bim.toggle_selected_links_visibility", text="", icon=icon, emboss=False
+                ).mode = "WIREFRAME"
             else:
                 op = row.operator("bim.toggle_link_visibility", text="", icon=icon, emboss=False)
                 op.link_index = index

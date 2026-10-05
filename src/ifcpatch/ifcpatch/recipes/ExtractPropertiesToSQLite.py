@@ -21,12 +21,11 @@ import logging
 import tempfile
 from typing import NamedTuple
 
-import numpy as np
-
 import ifcopenshell.geom
 import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.unit
+import numpy as np
 
 import ifcpatch
 

@@ -1253,7 +1253,7 @@ class CreateDrawing(bpy.types.Operator):
             self.serialiser.finalize()
         self._draw_log_msg("[PHASE] finalize() done, reading SVG buffer...")
         results = self.svg_buffer.get_value()
-        self._draw_log_msg(f"[PHASE] SVG buffer {len(results)//1024}KB, parsing XML...")
+        self._draw_log_msg(f"[PHASE] SVG buffer {len(results) // 1024}KB, parsing XML...")
         root = etree.fromstring(results)
         min_mm_raw = ifcopenshell.util.element.get_pset(self.camera_element, "EPset_Drawing", "MinLineLengthMm")
         min_mm = float(min_mm_raw) if min_mm_raw is not None else 0.1

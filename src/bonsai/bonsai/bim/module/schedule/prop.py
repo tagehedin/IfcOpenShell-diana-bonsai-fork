@@ -125,15 +125,17 @@ class BIMScheduleColumn(PropertyGroup):
         name="PSet",
         items=_get_pset_items,
         update=lambda self, ctx: (
-            setattr(self, "pset_name", self.pset_name_enum),
-            update_prop_cache(
-                ctx.scene.BIMScheduleProperties.templates[
-                    ctx.scene.BIMScheduleProperties.active_template_index
-                ].ifc_class,
-                self.pset_name_enum,
-            ),
-        )
-        and None,
+            (
+                setattr(self, "pset_name", self.pset_name_enum),
+                update_prop_cache(
+                    ctx.scene.BIMScheduleProperties.templates[
+                        ctx.scene.BIMScheduleProperties.active_template_index
+                    ].ifc_class,
+                    self.pset_name_enum,
+                ),
+            )
+            and None
+        ),
     )
     prop_name_enum: EnumProperty(
         name="Property",
