@@ -208,6 +208,7 @@ class LoadBcf2Topic(bpy.types.Operator):
         for key, value in data_map.items():
             if value is not None:
                 setattr(new, key, str(value))
+        new.has_viewpoint = bool(tool.Bcf2.get_topic_viewpoint_names(topic))
 
         new.reference_links.clear()
         for reference_link in tool.Bcf2.get_topic_reference_links(topic):
@@ -440,7 +441,9 @@ class ClickBcfTopic(bpy.types.Operator):
 
 def topic_viewpoints(topic_name: str) -> list[str]:
     bcfxml = bcfstore.Bcf2Store.get_bcfxml()
-    return list(bcfxml.topics[topic_name].viewpoints.keys()) if bcfxml and topic_name in bcfxml.topics else []
+    if not bcfxml or topic_name not in bcfxml.topics:
+        return []
+    return tool.Bcf2.get_topic_viewpoint_names(bcfxml.topics[topic_name])
 
 
 def _open_first_viewpoint(op: bpy.types.Operator, topic) -> None:
@@ -1519,6 +1522,12 @@ class ActivateBcfViewpoint(bpy.types.Operator):
             {"INFO"},
             f"[BCF2] Activating topic '{blender_topic.title}' ({blender_topic.name}), viewpoint {viewpoint_guid}",
         )
+
+        # The viewpoint files are read here, on activation - the list only knows their names (from
+        # the markup), so a name whose file is missing from the .bcf is only found out now.
+        if viewpoint_guid not in topic.viewpoints:
+            self.report({"ERROR"}, f"Viewpoint {viewpoint_guid} is listed in the topic but missing from the BCF file.")
+            return {"CANCELLED"}
 
         _save_view_before_bcf(context)
 

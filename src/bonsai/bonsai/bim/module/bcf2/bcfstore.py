@@ -182,6 +182,10 @@ def _resync_topics():
     in_file = set(bcfxml.topics.keys())
     listed = {t.name: t.title for t in props.topics}
     if set(listed) == in_file:
+        # Same topics: just refresh each row's stored viewpoint flag (rows saved before the flag
+        # existed don't have it). Reads only the small markup files, never the viewpoints.
+        for row in props.topics:
+            row.has_viewpoint = bool(tool.Bcf2.get_topic_viewpoint_names(bcfxml.topics[row.name]))
         return None
     lost = [title or guid for guid, title in listed.items() if guid not in in_file]
     bpy.ops.bcf2.load_bcf_topics()

@@ -447,7 +447,7 @@ class BIM_UL_topics2(bpy.types.UIList):
         if item:
             # The name is a button, not an editable field: click selects, double-click opens the
             # first viewpoint. (Renaming is done in the Name field below the list.)
-            topic_columns.draw_item(layout, data.topic_columns, item, index, bool(operator.topic_viewpoints(item.name)))
+            topic_columns.draw_item(layout, data.topic_columns, item, index, item.has_viewpoint)
         else:
             layout.label(text="", translate=False)
 

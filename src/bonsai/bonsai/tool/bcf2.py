@@ -262,6 +262,17 @@ class Bcf2(bonsai.core.tool.Bcf):
                 topic.topic.viewpoints = (topic_viewpoints := bcf.v3.model.TopicViewpoints())
             assert cls.is_list_of(viewpoints, bcf.v3.model.ViewPoint)
             topic_viewpoints.view_point = viewpoints
+        # Every viewpoint add/remove (and its undo/redo) comes through here - keep the list row's
+        # stored flag in step, since the row no longer looks into the file itself.
+        for row in cls.get_bcf_props().topics:
+            if row.name == topic.guid:
+                row.has_viewpoint = bool(viewpoints)
+                break
+
+    @classmethod
+    def get_topic_viewpoint_names(cls, topic: bcf.agnostic.topic.TopicHandler) -> list[str]:
+        """Viewpoint file names listed in the topic's markup, without loading the viewpoints themselves."""
+        return [vp.viewpoint for vp in cls.get_topic_viewpoints(topic) or [] if vp.viewpoint]
 
     ## visinfo
     @classmethod

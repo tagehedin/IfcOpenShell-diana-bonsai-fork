@@ -101,8 +101,10 @@ def getBcfViewpoints(self, context, force_update=False):
         topic = props.active_topic
         # The topic list lives in the .blend, the topics in the .bcf file - they can disagree
         # (e.g. a topic never saved to the .bcf before Blender closed). Show no viewpoints then.
+        # Names come from the topic's markup: selecting a topic must not parse its viewpoint files
+        # (multi-MB component lists) - that only happens when one is actually opened.
         if bcfxml and topic and topic.name in bcfxml.topics:
-            viewpoints = bcfxml.topics[topic.name].viewpoints.keys()
+            viewpoints = tool.Bcf2.get_topic_viewpoint_names(bcfxml.topics[topic.name])
         else:
             viewpoints = []
         bcfviewpoints_enum.extend([(v, f"Viewpoint {i + 1}", "") for i, v in enumerate(viewpoints)])
@@ -209,6 +211,9 @@ class Bcf2Topic(PropertyGroup):
     related_topics: CollectionProperty(name="Related Topics", type=StrProperty)
     comments: CollectionProperty(name="Comments", type=Bcf2Comment)
     is_editable: BoolProperty(name="Edit Topic Attributes", default=False, update=updateBcf2TopicIsEditable)
+    # Stored when the list loads and kept current by tool.Bcf2.set_topic_viewpoints, so drawing a
+    # row never has to read the topic's viewpoint files from the .bcf (up to ~1 s each).
+    has_viewpoint: BoolProperty(name="Has Viewpoint", default=False)
 
     if TYPE_CHECKING:
         name: str
