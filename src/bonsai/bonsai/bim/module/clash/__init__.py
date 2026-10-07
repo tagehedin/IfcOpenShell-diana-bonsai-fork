@@ -24,15 +24,19 @@ from . import decorator, operator, prop, ui
 
 @persistent
 def _init_group_colors(dummy=None):
+    from bonsai.bim.module.clash import storage
     from bonsai.bim.module.clash.prop import ensure_group_colors
 
     try:
-        scenes = bpy.data.scenes
+        bpy.data.texts
     except AttributeError:
-        return  # restricted context during register(), skip
-    for scene in scenes:
-        if hasattr(scene, "BIMClashProperties"):
-            ensure_group_colors(scene.BIMClashProperties)
+        # Restricted context during register(): do it as soon as Blender allows.
+        bpy.app.timers.register(_init_group_colors, first_interval=0.1)
+        return None
+    # Files saved before clash data moved off the Scene: move it over first.
+    storage.migrate_scene_clash_data()
+    ensure_group_colors(storage.ensure_holder().BIMClashProperties)
+    return None
 
 
 @persistent
@@ -99,7 +103,10 @@ classes = (
 
 
 def register():
+    # The clash data lives on a hidden Text datablock (storage.py). The Scene pointer stays registered
+    # only so files saved before that can be read and migrated.
     bpy.types.Scene.BIMClashProperties = bpy.props.PointerProperty(type=prop.BIMClashProperties)
+    bpy.types.Text.BIMClashProperties = bpy.props.PointerProperty(type=prop.BIMClashProperties)
     bpy.app.handlers.load_post.append(_init_group_colors)
     bpy.app.handlers.load_post.append(_reload_icons_if_needed)
     bpy.app.handlers.exit_pre.append(decorator.free_gpu_resources_on_exit)
@@ -121,4 +128,7 @@ def unregister():
         bpy.app.handlers.load_post.remove(_reload_icons_if_needed)
     if decorator.free_gpu_resources_on_exit in bpy.app.handlers.exit_pre:
         bpy.app.handlers.exit_pre.remove(decorator.free_gpu_resources_on_exit)
+    if bpy.app.timers.is_registered(_init_group_colors):
+        bpy.app.timers.unregister(_init_group_colors)
+    del bpy.types.Text.BIMClashProperties
     del bpy.types.Scene.BIMClashProperties

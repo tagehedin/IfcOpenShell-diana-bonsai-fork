@@ -37,7 +37,10 @@ if TYPE_CHECKING:
 class Clash(bonsai.core.tool.Clash):
     @classmethod
     def get_clash_props(cls) -> BIMClashProperties:
-        return bpy.context.scene.BIMClashProperties
+        # On a hidden Text datablock, not the Scene - see bim/module/clash/storage.py.
+        from bonsai.bim.module.clash import storage
+
+        return storage.get_clash_props()
 
     @classmethod
     def get_clash_json_path(cls, clash_set_name: str) -> Path:
