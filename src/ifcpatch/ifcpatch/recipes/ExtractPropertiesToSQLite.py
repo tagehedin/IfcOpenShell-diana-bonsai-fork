@@ -280,6 +280,35 @@ def _fit_mesh_duct_profile(verts):
     return None
 
 
+def _get_representation_layers(element) -> list:
+    """Same result as ifcopenshell.util.element.get_layers, for files where every
+    layer is assigned to a whole IfcShapeRepresentation (the usual case).
+
+    get_layers traverses an element's entire geometry tree - every point of every
+    brep - running is_a() and a schema lookup per entity, which made it ~95% of
+    this recipe's runtime on large architectural models. When layers only sit on
+    representations, walking the representation graph (following mapped items)
+    finds the same assignments without descending into the geometry.
+    """
+    layers = []
+    if representation := getattr(element, "Representation", None):
+        representations = list(representation.Representations or [])
+    else:
+        representations = [m.MappedRepresentation for m in getattr(element, "RepresentationMaps", None) or []]
+    seen = set()
+    while representations:
+        representation = representations.pop(0)
+        if representation.id() in seen:
+            continue
+        seen.add(representation.id())
+        if representation.is_a("IfcShapeRepresentation"):
+            layers.extend(representation.LayerAssignments or [])
+        for item in representation.Items or []:
+            if item.is_a("IfcMappedItem"):
+                representations.append(item.MappingSource.MappedRepresentation)
+    return layers
+
+
 class Patcher(ifcpatch.BasePatcher):
     def __init__(
         self,
@@ -398,14 +427,25 @@ class Patcher(ifcpatch.BasePatcher):
         rectangular_profiles: list[RectangularProfileRow] = []
         id_map = {e.id(): i for i, e in enumerate(elements)}
 
+        layer_assignments = self.file.by_type("IfcPresentationLayerAssignment")
+        # The fast representation-only lookup is exact unless some layer is
+        # assigned to an individual geometry item; fall back to the full walk then.
+        layers_on_representations_only = all(
+            item.is_a("IfcRepresentation") for layer in layer_assignments for item in layer.AssignedItems or []
+        )
+
         total = len(elements)
         mesh_fit_round = 0
         mesh_fit_rect = 0
         mesh_fit_failed = 0
         print(f"[ExtractPropertiesToSQLite] Processing {total} elements...")
 
+        # Report every ~10% rather than every element: big links have tens of
+        # thousands of elements, and a line each floods (and slows) the console.
+        report_every = max(1, total // 10)
         for i, element in enumerate(elements):
-            print(f"[ExtractPropertiesToSQLite] {i + 1}/{total} {element.is_a()} {element[0]}")
+            if (i + 1) % report_every == 0 or i + 1 == total:
+                print(f"[ExtractPropertiesToSQLite] {i + 1}/{total} ({100 * (i + 1) // total}%)", flush=True)
             rows.append(
                 ElementRow(
                     i,
@@ -432,16 +472,12 @@ class Patcher(ifcpatch.BasePatcher):
             elif (found := _get_circular_profile(element)) is not None:
                 radius, axis = found
                 circular_profiles.append(CircularProfileRow(i, radius * unit_scale, axis[0], axis[1], axis[2]))
-                print(
-                    f"[ExtractPropertiesToSQLite]   -> circular profile (parametric): d={radius * unit_scale * 2 * 1000:.0f}mm"
-                )
             elif _has_shell_based_body(element):
                 try:
                     shape = ifcopenshell.geom.create_shape(mesh_settings, element)
                 except Exception:
                     shape = None
                     mesh_fit_failed += 1
-                    print("[ExtractPropertiesToSQLite]   -> mesh tessellation failed")
                 if shape is not None:
                     verts = np.array(shape.geometry.verts).reshape(-1, 3)
                     fit = _fit_mesh_duct_profile(verts)
@@ -449,17 +485,10 @@ class Patcher(ifcpatch.BasePatcher):
                         _, radius, axis, centroid = fit
                         circular_profiles.append(CircularProfileRow(i, radius, *axis, *centroid))
                         mesh_fit_round += 1
-                        print(
-                            f"[ExtractPropertiesToSQLite]   -> round duct/pipe (mesh-fit): d={radius * 2 * 1000:.0f}mm"
-                        )
                     elif fit is not None:
                         _, width, height, axis, ortho, centroid = fit
                         rectangular_profiles.append(RectangularProfileRow(i, width, height, *axis, *ortho, *centroid))
                         mesh_fit_rect += 1
-                        print(
-                            f"[ExtractPropertiesToSQLite]   -> rectangular duct (mesh-fit): "
-                            f"{width * 1000:.0f}x{height * 1000:.0f}mm"
-                        )
 
             material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
             if material:
@@ -501,7 +530,12 @@ class Patcher(ifcpatch.BasePatcher):
                         if category := getattr(material, "Category", None):
                             properties.append(PropertyRow(i, "IFC Material", f"Material {idx + 1} Category", category))
 
-            layers = ifcopenshell.util.element.get_layers(self.file, element)
+            if not layer_assignments:
+                layers = []
+            elif layers_on_representations_only:
+                layers = _get_representation_layers(element)
+            else:
+                layers = ifcopenshell.util.element.get_layers(self.file, element)
             for idx, layer in enumerate(layers):
                 properties.append(PropertyRow(i, "IFC Presentation Layer Assignment", f"Layer {idx + 1}", layer.Name))
 

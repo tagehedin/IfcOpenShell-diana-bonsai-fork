@@ -1730,16 +1730,18 @@ class UnloadLink(bpy.types.Operator, tool.Ifc.Operator):
             bpy.data.objects.remove(obj)
             if library:
                 # Remove ALL data blocks from this library so nothing lingers in the outliner.
-                # Order matters: objects first (they reference meshes/materials), then
-                # collections, then meshes and materials.
-                for o in [b for b in bpy.data.objects if b.library == library]:
-                    bpy.data.objects.remove(o)
-                for col in [b for b in bpy.data.collections if b.library == library]:
-                    bpy.data.collections.remove(col)
-                for mesh in [b for b in bpy.data.meshes if b.library == library]:
-                    bpy.data.meshes.remove(mesh)
-                for mat in [b for b in bpy.data.materials if b.library == library]:
-                    bpy.data.materials.remove(mat)
+                # One batch_remove instead of a remove() per block: each single remove
+                # rescans the whole file for users (~25 ms each with big links loaded),
+                # which made unloading a 1700-object link take a minute; the batch
+                # does one pass (0.2 s).
+                bpy.data.batch_remove(
+                    [
+                        b
+                        for collection in (bpy.data.objects, bpy.data.collections, bpy.data.meshes, bpy.data.materials)
+                        for b in collection
+                        if b.library == library
+                    ]
+                )
                 bpy.data.libraries.remove(library)
         link.is_loaded = False
         ProjectDecorator.uninstall()
@@ -1842,12 +1844,17 @@ class LoadLink(bpy.types.Operator, tool.Ifc.Operator):
             tmp_blend_filepath = blend_filepath.with_suffix(".tmp.blend")
             pprops = tool.Project.get_project_props()
             gprops = tool.Georeference.get_georeference_props()
+            # Wall-clock time just before the spawn, baked into the script so the
+            # child can report how long its own startup took.
+            spawn_time = time.time()
 
             code = f"""
 import bpy
 import sys
+import time
 
 def run():
+    print(f"[Bonsai] Background Blender ready after {{time.time() - {spawn_time!r}:.1f}}s (startup + Bonsai registration)", flush=True)
     import bonsai.tool as tool
     gprops = tool.Georeference.get_georeference_props()
     # Our model origin becomes their host model origin
@@ -1875,7 +1882,10 @@ def run():
         print(f"Failed to load linked project: {{e}}")
         sys.exit(1)
     # Use str instead of as_posix to avoid issues with Windows shared paths.
+    print("[Bonsai] Saving link cache .blend...", flush=True)
+    t = time.time()
     bpy.ops.wm.save_as_mainfile(filepath=r"{str(tmp_blend_filepath)}")
+    print(f"[Bonsai] Saved link cache in {{time.time() - t:.1f}}s", flush=True)
 
 try:
     run()
@@ -1893,7 +1903,11 @@ except Exception as e:
             # own dependency tree) before any of our code below runs - there's no
             # way to get feedback earlier than this from inside that subprocess, so
             # print here instead, on the parent side, right before the wait begins.
-            print(f"[Bonsai] Reloading '{self.filepath_.name}' in a background Blender process...")
+            print(
+                f"[Bonsai] Reloading '{self.filepath_.name}' in a background Blender process "
+                "(starting Blender + Bonsai, usually the longest silent wait)...",
+                flush=True,
+            )
             run = subprocess.run(
                 [
                     bpy.app.binary_path,
@@ -2172,7 +2186,7 @@ class ReloadLatestLinks(bpy.types.Operator):
         total = len(outdated_indices)
         for n, i in enumerate(outdated_indices, start=1):
             link = props.links[i]
-            print(f"[Bonsai] Reload Latest: outdated link {n}/{total} - '{link.name}'")
+            print(f"[Bonsai] Reload Latest: outdated link {n}/{total} - '{link.name}'", flush=True)
             if link.is_loaded:
                 bpy.ops.bim.unload_link(link_index=i)
             bpy.ops.bim.load_link(link_index=i, use_cache=False)
@@ -2194,7 +2208,7 @@ class ReloadAllLinks(bpy.types.Operator):
         props = tool.Project.get_project_props()
         count = len(props.links)
         for i, link in enumerate(props.links):
-            print(f"[Bonsai] Reload All: link {i + 1}/{count} - '{link.name}'")
+            print(f"[Bonsai] Reload All: link {i + 1}/{count} - '{link.name}'", flush=True)
             if link.is_loaded:
                 bpy.ops.bim.unload_link(link_index=i)
             bpy.ops.bim.load_link(link_index=i, use_cache=False)
@@ -2936,13 +2950,14 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
     def execute(self, context):
         import ifcpatch
 
-        start = time.time()
+        self._start = time.time()
 
         pprops = tool.Project.get_project_props()
         gprops = tool.Georeference.get_georeference_props()
 
         self.filepath = Path(self.filepath).as_posix()
-        print("Processing", self.filepath)
+        size_mb = os.path.getsize(self.filepath) / 1e6 if os.path.exists(self.filepath) else 0.0
+        self._log(f"Opening {os.path.basename(self.filepath)} ({size_mb:.0f} MB)...")
 
         self.collection = bpy.data.collections.new("IfcProject/" + os.path.basename(self.filepath))
 
@@ -2954,7 +2969,8 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             return {"CANCELLED"}
 
         tool.Ifc.set(self.file)
-        print("Finished opening")
+        self._log(f"Opened IFC ({self.file.schema})")
+        self._log("Writing property database...")
 
         self.db_filepath = self.filepath + ".cache.sqlite"
         db = ifcpatch.execute(
@@ -2966,7 +2982,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             }
         )
         ifcpatch.write(db, self.db_filepath)
-        print("Finished writing property database")
+        self._log("Wrote property database")
 
         logger = logging.getLogger("ImportIFC")
         self.unit_scale = ifcopenshell.util.unit.calculate_unit_scale(self.file)
@@ -2987,6 +3003,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             else:
                 self.elements |= set(self.file.by_type("IfcSpatialElement"))
             self.elements -= set(self.file.by_type("IfcFeatureElement"))
+        self._log(f"Selected {len(self.elements)} elements, sorting them into storeys...")
 
         # Create storey sub-collections so each storey can be hidden independently in the viewport
         guid_to_storey: dict[str, int | None] = {}
@@ -3012,6 +3029,7 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                 storey = ifcopenshell.util.element.get_container(element, ifc_class="IfcBuildingStorey")
                 guid_to_storey[element.GlobalId] = storey.id() if storey else None
 
+        self._log("Resolving false origin...")
         if tool.Loader.settings.false_origin_mode == "MANUAL" and tool.Loader.settings.false_origin:
             tool.Loader.set_manual_blender_offset(self.file)
         elif tool.Loader.settings.false_origin_mode == "AUTOMATIC":
@@ -3122,8 +3140,13 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             for obj in col.objects:
                 obj.hide_viewport = True
 
-        print("Finished", time.time() - start)
+        self._log("Finished building link geometry")
         return {"FINISHED"}
+
+    def _log(self, message: str) -> None:
+        # Runs inside the background Blender of a link (re)load - flush so each
+        # stage shows up in the parent's terminal as it happens.
+        print(f"[Bonsai] [{time.time() - self._start:6.1f}s] {message}", flush=True)
 
     def bake_geometry_pass(
         self,
@@ -3137,6 +3160,26 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
         per-storey collections (chunked for low-poly geometry, individual objects
         for high-poly geometry). Returns the set of elements that were processed."""
         results: set[ifcopenshell.entity_instance] = set()
+        try:
+            context = self.file.by_id(settings.get("context-ids")[0])
+            context_name = "/".join(
+                str(v)
+                for v in (
+                    context.ContextType,
+                    getattr(context, "ContextIdentifier", None),
+                    getattr(context, "TargetView", None),
+                )
+                if v
+            )
+        except Exception:
+            context_name = "?"
+        pass_label = f"Geometry pass ({len(elements)} elements, context {context_name})"
+        # Initialising can take a while on big element sets, so announce it up
+        # front there. Small leftover passes (other contexts, usually empty)
+        # only get a line once we know they actually found geometry.
+        announced = len(elements) >= 1000
+        if announced:
+            self._log(f"{pass_label}: initialising iterator on {multiprocessing.cpu_count()} threads...")
         iterator = ifcopenshell.geom.iterator(settings, self.file, multiprocessing.cpu_count(), include=elements)
         self.meshes = {}
         self.blender_mats = {}
@@ -3144,7 +3187,6 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
 
         default_mat = np.array([[1, 1, 1, 1]], dtype=np.float32)
         chunk_size = 10000
-        ci = 0
 
         # Chunk buffers keyed by target collection (as returned by get_collection)
         col_bufs: dict[bpy.types.Collection, dict] = {}
@@ -3192,8 +3234,17 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
             )
             col_bufs[target_col] = _empty_buf()
 
-        if iterator.initialize():
+        initialized = iterator.initialize()
+        if initialized:
+            self._log("Iterator ready, baking shapes..." if announced else f"{pass_label}: baking shapes...")
+        elif announced:
+            self._log("Iterator found no geometry in this context")
+        last_reported = 0
+        if initialized:
             while True:  # Main loop.
+                if (progress := iterator.progress()) >= last_reported + 10:
+                    last_reported = progress - progress % 10
+                    self._log(f"  {last_reported}% ({len(results)} shapes baked)")
                 shape = iterator.get()
                 assert isinstance(shape, W.triangulation_element)
                 element = self.file.by_id(shape.id)
@@ -3211,10 +3262,6 @@ class LoadLinkedProject(bpy.types.Operator, ImportHelper):
                             _flush_buf(col)
                         break  # Break from main loop.
                     continue
-
-                ci += 1
-                if ci % 50 == 0:
-                    print("Doing chunk", ci)
 
                 buf = col_bufs.setdefault(target_col, _empty_buf())
 
