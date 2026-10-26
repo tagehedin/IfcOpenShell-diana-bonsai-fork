@@ -56,6 +56,23 @@ CHUNK = 50  # clashes per worker chunk
 WORKER_MIN = 300  # fewer clashes than this are built in-process, no workers
 
 
+def _retry(fn, *args, attempts: int = 10, delay: float = 0.02):
+    """Windows: a just-written file can be briefly locked by antivirus or the search indexer
+    (PermissionError). Short here - this runs on Blender's main thread."""
+    for attempt in range(attempts):
+        try:
+            return fn(*args)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def _load(path: str):
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
 class VolumeJob:
     active: Optional["VolumeJob"] = None
 
@@ -229,7 +246,7 @@ class VolumeJob:
         tmp = os.path.join(self.job_dir, name + ".tmp")
         with open(tmp, "wb") as f:
             pickle.dump(self.pending_chunk, f)
-        os.replace(tmp, os.path.join(self.job_dir, "in", name))
+        _retry(os.replace, tmp, os.path.join(self.job_dir, "in", name), attempts=100)
         self.pending_chunk = []
 
     def _collect_results(self) -> None:
@@ -238,9 +255,14 @@ class VolumeJob:
             if not name.endswith(".pkl"):
                 continue
             path = os.path.join(out, name)
-            with open(path, "rb") as f:
-                results = pickle.load(f)
-            os.remove(path)
+            try:
+                results = _retry(_load, path)
+            except PermissionError:
+                continue  # still locked - next tick
+            try:
+                _retry(os.remove, path)
+            except PermissionError:
+                pass  # re-read next tick; its clashes are already taken off self.items
             for item_id, volume in results:
                 if item := self.items.pop(item_id, None):
                     if volume is not None:
@@ -273,7 +295,9 @@ class VolumeJob:
                 prefix = f"{worker.pid}_"
                 for name in os.listdir(work):
                     if name.startswith(prefix):
-                        os.replace(os.path.join(work, name), os.path.join(self.job_dir, "in", name[len(prefix) :]))
+                        _retry(
+                            os.replace, os.path.join(work, name), os.path.join(self.job_dir, "in", name[len(prefix) :])
+                        )
                 i = self.workers.index(worker)
                 self.workers.pop(i)
                 self.logs.pop(i).close()

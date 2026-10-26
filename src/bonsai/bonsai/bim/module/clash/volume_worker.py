@@ -41,6 +41,23 @@ import traceback
 HEARTBEAT_TIMEOUT = 120.0  # seconds
 
 
+def retry(fn, *args, attempts: int = 40, delay: float = 0.05):
+    """Windows: a just-written file can be briefly locked by antivirus or the search indexer
+    (PermissionError) - wait for it instead of failing."""
+    for attempt in range(attempts):
+        try:
+            return fn(*args)
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def load(path: str):
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
 def log(message: str) -> None:
     # stderr goes to worker_<n>.log in the job dir; main Blender prints it when a worker stops.
     print(f"[worker {os.getpid()}] {message}", file=sys.stderr, flush=True)
@@ -84,8 +101,16 @@ def main() -> str:
                 time.sleep(0.05)
                 continue
             claimed_path = os.path.join(work, prefix + claimed)
-            with open(claimed_path, "rb") as f:
-                items = pickle.load(f)
+            try:
+                items = retry(load, claimed_path)
+            except PermissionError:
+                log(f"{claimed} stayed locked - putting it back")
+                try:
+                    retry(os.rename, claimed_path, os.path.join(inbox, claimed))
+                except OSError:
+                    log(f"couldn't put {claimed} back either:\n{traceback.format_exc()}")
+                time.sleep(0.5)
+                continue
             results = []
             for key, geometry_a, geometry_b in items:
                 try:
@@ -99,8 +124,11 @@ def main() -> str:
             tmp_path = os.path.join(out, claimed + ".tmp")
             with open(tmp_path, "wb") as f:
                 pickle.dump(results, f)
-            os.replace(tmp_path, os.path.join(out, claimed))
-            os.remove(claimed_path)
+            retry(os.replace, tmp_path, os.path.join(out, claimed))
+            try:
+                retry(os.remove, claimed_path)
+            except OSError:
+                log(f"couldn't remove {claimed} after finishing it")
             chunks += 1
             clashes += len(items)
 
