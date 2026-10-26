@@ -178,13 +178,15 @@ def snapshot_png(
     height: int,
 ) -> bytes:
     """Offscreen draw of exactly this view (scene, clipping, fills) - no header, toolbars, gizmos or
-    panels. Python viewport overlays (e.g. clash markers) are not part of an offscreen draw."""
+    panels. Python viewport overlays aren't part of an offscreen draw, so the clash highlights are
+    drawn into it afterwards with the same matrices (see _draw_clash_overlay)."""
     offscreen = gpu.types.GPUOffScreen(width, height)
     try:
         with offscreen.bind():
             offscreen.draw_view3d(
                 context.scene, context.view_layer, space, region, view, projection, do_color_management=True
             )
+            _draw_clash_overlay(region, view, projection, width, height)
             buffer = gpu.state.active_framebuffer_get().read_color(0, 0, width, height, 4, 0, "UBYTE")
         buffer.dimensions = width * height * 4
         pixels = np.asarray(buffer, dtype=np.uint8).astype(np.float32) / 255.0
@@ -204,6 +206,28 @@ def snapshot_png(
     finally:
         bpy.data.images.remove(image)
         os.remove(path)
+
+
+def _draw_clash_overlay(region, view, projection, width: int, height: int) -> None:
+    """The active clash view's highlights and volumes, drawn into the bound offscreen buffer exactly as
+    the viewport shows them (same view/projection, same clipping planes)."""
+    from types import SimpleNamespace
+
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    if not ClashDecorator.is_installed:
+        return
+    # draw_geometry only reads the region's size (line width) and its RegionView3D (clip planes).
+    fake_context = SimpleNamespace(region=SimpleNamespace(width=width, height=height), region_data=region.data)
+    try:
+        with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+            gpu.matrix.load_matrix(view)
+            gpu.matrix.load_projection_matrix(projection)
+            ClashDecorator().draw_geometry(fake_context)
+    except Exception as e:  # a missing overlay must never cost the user their viewpoint
+        print(f"[BCF2] Clash highlights not drawn into the snapshot: {e!r}")
+    finally:
+        gpu.state.blend_set("NONE")
 
 
 def element_visibility(context: bpy.types.Context) -> tuple[set[str], set[str], bool]:
