@@ -47,7 +47,7 @@ import bpy
 from mathutils import Vector
 
 import bonsai.tool as tool
-from bonsai.bim.module.clash import volumes
+from bonsai.bim.module.clash import fast_geometry, volumes
 
 TICK = 0.02  # seconds between slices
 REDRAW_EVERY = 0.5  # seconds - redrawing thousands of highlights is expensive
@@ -210,15 +210,8 @@ class VolumeJob:
         return TICK
 
     def _geometry(self, item: dict):
-        from bonsai.bim.module.clash.decorator import ClashDecorator
-
-        # Reuse what the decorator already resolved, but don't add to its cache: tens of
-        # thousands of elements' geometry would sit in memory for the whole session.
-        cache = ClashDecorator._geom_cache
-        return [
-            cache[item[side]] if item[side] in cache else ClashDecorator.resolve_highlight_geometry(item[side])
-            for side in ("a", "b")
-        ]
+        # numpy arrays, read per mesh once and cached (shared with the decorator's drawing)
+        return [fast_geometry.resolve(item[side]) for side in ("a", "b")]
 
     def _build_here(self, deadline: float) -> None:
         if not self.queue:
@@ -227,7 +220,9 @@ class VolumeJob:
             while self.queue and time.perf_counter() < deadline:
                 item = self.queue.pop(0)
                 geometry_a, geometry_b = self._geometry(item)
-                volume = builder.build(geometry_a, geometry_b) if geometry_a and geometry_b else None
+                volume = (
+                    builder.build(geometry_a, geometry_b) if geometry_a is not None and geometry_b is not None else None
+                )
                 self._apply(item, volume)
 
     def _load(self, i: int) -> int:
@@ -241,13 +236,12 @@ class VolumeJob:
         ):
             item = self.queue.pop(0)
             geometry_a, geometry_b = self._geometry(item)
-            if not (geometry_a and geometry_b):
+            if geometry_a is None or geometry_b is None:
                 self._apply(item, None)
                 continue
             item_id = id(item)
             self.items[item_id] = item
-            plain = lambda g: ([tuple(p) for p in g[0]], [tuple(t) for t in g[1]])
-            self.pending_chunk.append((item_id, plain(geometry_a), plain(geometry_b)))
+            self.pending_chunk.append((item_id, geometry_a, geometry_b))  # numpy pickles compactly
             if len(self.pending_chunk) >= CHUNK or not self.queue:
                 self._write_chunk()
         if self.pending_chunk and not self.queue:

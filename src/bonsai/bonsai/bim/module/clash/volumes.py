@@ -121,8 +121,12 @@ class VolumeBuilder:
     def build(self, geometry_a: Geometry, geometry_b: Geometry) -> Optional[Geometry]:
         """World-space intersection of two (positions, triangles) meshes, or None if they
         don't overlap in volume or the boolean fails."""
-        if not geometry_a or not geometry_b or not all((*geometry_a, *geometry_b)):
+        if geometry_a is None or geometry_b is None or not all(len(x) for x in (*geometry_a, *geometry_b)):
             return None
+        # numpy arrays (fast_geometry) -> plain lists: much faster to iterate for bmesh
+        geometry_a, geometry_b = (
+            [x.tolist() if hasattr(x, "tolist") else x for x in g] for g in (geometry_a, geometry_b)
+        )
         bm_a, bm_b = preclose_bmesh(*geometry_a), preclose_bmesh(*geometry_b)
         try:
             inputs = [(len(bm.verts), _bounds([v.co for v in bm.verts])) for bm in (bm_a, bm_b)]

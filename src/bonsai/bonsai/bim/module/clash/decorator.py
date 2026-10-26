@@ -21,12 +21,14 @@ import time
 import blf
 import bpy
 import gpu
+import numpy as np
 from bpy.app.handlers import persistent
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 import bonsai.tool as tool
+from bonsai.bim.module.clash import fast_geometry
 
 
 def _clip_geometry(positions, triangle_indices, clip_planes):
@@ -75,6 +77,28 @@ def _clip_geometry(positions, triangle_indices, clip_planes):
     return out_pos, out_idx
 
 
+def _clip_geometry_np(positions: np.ndarray, triangles: np.ndarray, clip_planes) -> tuple[np.ndarray, np.ndarray]:
+    """_clip_geometry for big merged meshes: triangles fully inside every plane are kept and
+    fully outside one are dropped with numpy; only those a plane cuts go through the exact
+    (Python) clipper."""
+    corners = positions[triangles]  # (m, 3, 3)
+    inside = np.ones(len(triangles), dtype=bool)
+    outside = np.zeros(len(triangles), dtype=bool)
+    for nx, ny, nz, d in clip_planes:
+        dist = corners @ np.array((nx, ny, nz), dtype=np.float32) + d  # (m, 3)
+        inside &= (dist >= 0).all(axis=1)
+        outside |= (dist < 0).all(axis=1)
+    cut = ~inside & ~outside
+    kept = triangles[inside]
+    if not cut.any():
+        return positions, kept
+    cut_pos, cut_tris = _clip_geometry(positions, triangles[cut].tolist(), clip_planes)
+    if not cut_pos:
+        return positions, kept
+    cut_tris = np.array(cut_tris, dtype=np.int32) + len(positions)
+    return np.vstack((positions, np.array(cut_pos, dtype=np.float32))), np.vstack((kept, cut_tris))
+
+
 class ClashDecorator(tool.Blender.ViewportDecorator):
     draw_methods = (
         ("draw_text", "POST_PIXEL"),
@@ -91,6 +115,11 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
     show_all_intersections = False  # bypass per-pair group gating for intersections only
     _geom_cache: dict = {}  # highlight -> (positions, triangle_indices) world-space, unclipped
     _batch_cache: dict = {}  # (highlight, clip_key) -> GPUBatch
+    # Merged drawing: per pair, one batch for all group-1 highlights, one for group-2, and the
+    # intersection volumes in buckets - a few draw calls instead of one per element (tens of
+    # thousands of clashes made every frame slow). World-space geometry per merged key:
+    _merged_geom: dict = {}  # ("__m__", side, pair, bucket) -> (positions, triangles) | None
+    VOLUME_BUCKET = 256  # volumes per merged batch; a newly built volume only rebuilds its bucket
     _last_clip_key: tuple = ()  # clip_key from the previous frame
     _clip_stable_since: float = 0.0  # time.time() when clip_key last changed
     _stable_clip_key: tuple = ()  # last clip_key that was stable (batches already built)
@@ -114,6 +143,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         super().uninstall()
         cls.pair_highlights = {}
         cls._batch_cache = {}
+        cls._merged_geom = {}
+        fast_geometry.clear()
         cls._last_clip_key = ()
         cls._clip_stable_since = 0.0
         cls._stable_clip_key = ()
@@ -133,6 +164,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         """
         cls._geom_cache.clear()
         cls._batch_cache.clear()
+        cls._merged_geom = {}
+        fast_geometry.clear()
         cls._stable_clip_key = ()
         cls.pair_highlights = {
             pair: [
@@ -154,7 +187,9 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         if not entries or idx >= len(entries):
             return
         entries[idx]["intersection"] = geometry
-        for key in [k for k in cls._batch_cache if k[0] == ("__c__", pair, idx)]:
+        merged = ("__m__", "c", pair, idx // cls.VOLUME_BUCKET)
+        cls._merged_geom.pop(merged, None)
+        for key in [k for k in cls._batch_cache if k[0] == merged]:
             del cls._batch_cache[key]
 
     @staticmethod
@@ -228,6 +263,46 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
             )
         batch = ClashDecorator._batch_cache[key]
         if batch:
+            self.shader.uniform_float("color", color)
+            batch.draw(self.shader)
+
+    @classmethod
+    def _merged_geometry(cls, merged: tuple):
+        """World-space geometry of one merged key, built once (clip planes don't change it)."""
+        if merged in cls._merged_geom:
+            return cls._merged_geom[merged]
+        _, side, pair, bucket = merged
+        entries = cls.pair_highlights.get(pair, [])
+        parts = []
+        if side == "c":
+            for entry in entries[bucket * cls.VOLUME_BUCKET : (bucket + 1) * cls.VOLUME_BUCKET]:
+                if (volume := entry["intersection"]) is not None and len(volume[0]) and len(volume[1]):
+                    parts.append((np.array(volume[0], dtype=np.float32), np.array(volume[1], dtype=np.int32)))
+        else:
+            # An element clashing several times in this pair is drawn once.
+            if (geometry := fast_geometry.resolve_many(entry[side] for entry in entries)) is not None:
+                parts.append(geometry)
+        geometry = None
+        if parts:
+            offsets = np.cumsum([0] + [len(p) for p, _ in parts[:-1]])
+            geometry = (
+                np.vstack([p for p, _ in parts]).astype(np.float32),
+                np.vstack([t + o for (_, t), o in zip(parts, offsets)]).astype(np.int32),
+            )
+        cls._merged_geom[merged] = geometry
+        return geometry
+
+    def draw_merged(self, merged: tuple, color, clip_planes=None, clip_key=()):
+        key = (merged, clip_key)
+        if key not in ClashDecorator._batch_cache:
+            geometry = self._merged_geometry(merged)
+            if geometry is not None and clip_planes:
+                geometry = _clip_geometry_np(geometry[0], geometry[1], clip_planes)
+            batch = None
+            if geometry is not None and len(geometry[1]):
+                batch = batch_for_shader(self.shader, "TRIS", {"pos": geometry[0]}, indices=geometry[1])
+            ClashDecorator._batch_cache[key] = batch
+        if batch := ClashDecorator._batch_cache[key]:
             self.shader.uniform_float("color", color)
             batch.draw(self.shader)
 
@@ -350,24 +425,14 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
                 both_visible = self.show_groups.get(g1, True) and self.show_groups.get(g2, True)
                 color_a = (*self.group_colors.get(g1, (0.5, 0.5, 0.5)), 0.15)
                 color_b = (*self.group_colors.get(g2, (0.5, 0.5, 0.5)), 0.15)
-                for idx, entry in enumerate(entries):
-                    if both_visible:
-                        if entry["a"] is not None and self.show_own_objects.get(g1, True):
-                            self.draw_highlighted_object(entry["a"], color_a, draw_planes, draw_key)
-                        if entry["b"] is not None and self.show_own_objects.get(g2, True):
-                            self.draw_highlighted_object(entry["b"], color_b, draw_planes, draw_key)
-                    raw_geometry = entry["intersection"]
-                    if self.show_volume and raw_geometry is not None and (both_visible or self.show_all_intersections):
-                        key = (("__c__", pair, idx), draw_key)
-                        if key not in ClashDecorator._batch_cache:
-                            draw_geom = (
-                                _clip_geometry(raw_geometry[0], raw_geometry[1], draw_planes)
-                                if draw_planes
-                                else raw_geometry
-                            )
-                            self._draw_tris_cached(key, draw_geom, (1.0, 0.1, 0.1, 0.4))
-                        else:
-                            self._draw_tris_cached(key, None, (1.0, 0.1, 0.1, 0.4))
+                if both_visible:
+                    if self.show_own_objects.get(g1, True):
+                        self.draw_merged(("__m__", "a", pair, 0), color_a, draw_planes, draw_key)
+                    if self.show_own_objects.get(g2, True):
+                        self.draw_merged(("__m__", "b", pair, 0), color_b, draw_planes, draw_key)
+                if self.show_volume and (both_visible or self.show_all_intersections):
+                    for bucket in range((len(entries) + self.VOLUME_BUCKET - 1) // self.VOLUME_BUCKET):
+                        self.draw_merged(("__m__", "c", pair, bucket), (1.0, 0.1, 0.1, 0.4), draw_planes, draw_key)
             gpu.state.depth_test_set(previous_depth_test)
 
 
