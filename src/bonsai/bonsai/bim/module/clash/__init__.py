@@ -19,7 +19,7 @@
 import bpy
 from bpy.app.handlers import persistent
 
-from . import decorator, operator, prop, ui
+from . import decorator, operator, prop, ui, volume_jobs
 
 
 @persistent
@@ -111,6 +111,9 @@ def register():
     bpy.app.handlers.load_post.append(_init_group_colors)
     bpy.app.handlers.load_post.append(_reload_icons_if_needed)
     bpy.app.handlers.exit_pre.append(decorator.free_gpu_resources_on_exit)
+    bpy.app.handlers.load_pre.append(volume_jobs.cancel_on_load)
+    bpy.app.handlers.exit_pre.append(volume_jobs.cancel_on_exit)
+    bpy.types.STATUSBAR_HT_header.append(volume_jobs.draw_status)
     _init_group_colors()
     _reload_icons_if_needed()
 
@@ -121,6 +124,12 @@ def unregister():
     # Extensions "Update" does unregister-old -> register-new in-place, without
     # a process restart, and a still-installed decorator keeps firing its
     # draw_handler_add callback against half-removed state in between).
+    volume_jobs.VolumeJob.cancel()
+    bpy.types.STATUSBAR_HT_header.remove(volume_jobs.draw_status)
+    if volume_jobs.cancel_on_load in bpy.app.handlers.load_pre:
+        bpy.app.handlers.load_pre.remove(volume_jobs.cancel_on_load)
+    if volume_jobs.cancel_on_exit in bpy.app.handlers.exit_pre:
+        bpy.app.handlers.exit_pre.remove(volume_jobs.cancel_on_exit)
     decorator.ClashDecorator.uninstall()
     operator.free_preview_collections()
     if _init_group_colors in bpy.app.handlers.load_post:

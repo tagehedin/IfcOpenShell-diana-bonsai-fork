@@ -32,7 +32,9 @@ from mathutils import Matrix, Vector
 
 import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
+from bonsai.bim.module.clash import volumes
 from bonsai.bim.module.clash.decorator import ClashDecorator
+from bonsai.bim.module.clash.volume_jobs import VolumeJob
 from bonsai.bim.module.project import clipping_plane_fill
 
 if TYPE_CHECKING:
@@ -893,7 +895,31 @@ class SelectClash(bpy.types.Operator):
         return None
 
     @staticmethod
-    def resolve_global_id_highlight(ifc_file: ifcopenshell.file, global_id: str):
+    def build_link_guid_index() -> dict[str, bpy.types.Object]:
+        """GlobalId -> linked object for every loaded link, built once per multi-clash activation.
+        find_linked_obj_by_guid walks every linked object per lookup (~13 ms a clash - minutes for
+        tens of thousands); this visits them once, in the same order, so the first match wins as there."""
+        index: dict[str, bpy.types.Object] = {}
+
+        def visit(collection: bpy.types.Collection) -> None:
+            for obj in collection.objects:
+                for guid in obj.get("guids", []):
+                    index.setdefault(guid, obj)
+            for child in collection.children:
+                visit(child)
+
+        for link in tool.Project.get_project_props().links:
+            if not link.is_loaded:
+                continue
+            handle = tool.Project.get_link_empty_handle(link)
+            if handle and (col := handle.instance_collection):
+                visit(col)
+        return index
+
+    @staticmethod
+    def resolve_global_id_highlight(
+        ifc_file: ifcopenshell.file, global_id: str, link_index: Union[dict[str, bpy.types.Object], None] = None
+    ):
         """Resolve a GlobalId to a highlight (and the IFC product, if any) for
         drawing and selection.
 
@@ -910,6 +936,9 @@ class SelectClash(bpy.types.Operator):
             pass
 
         # Not part of the active IFC file - check loaded link models.
+        if link_index is not None:
+            link_obj = link_index.get(global_id)
+            return ((link_obj, global_id), None) if link_obj else (None, None)
         for link in tool.Project.get_project_props().links:
             if not link.is_loaded:
                 continue
@@ -921,79 +950,14 @@ class SelectClash(bpy.types.Operator):
         return None, None
 
     @staticmethod
-    @staticmethod
-    def _preclose_mesh(pos, tris):
-        """Build a bmesh from raw positions/triangles, merge near-coincident
-        vertices, fill open boundary loops, and return a new bpy.data.Mesh.
-        Gives the boolean solver a better chance on non-manifold IFC geometry."""
-        import bmesh
-
-        bm = bmesh.new()
-        verts = [bm.verts.new(p) for p in pos]
-        bm.verts.ensure_lookup_table()
-        for tri in tris:
-            try:
-                bm.faces.new([verts[i] for i in tri])
-            except ValueError:
-                pass  # duplicate face — skip
-        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=0.001)
-        bm.edges.ensure_lookup_table()
-        boundary = [e for e in bm.edges if e.is_boundary]
-        if boundary:
-            bmesh.ops.holes_fill(bm, edges=boundary, sides=0)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
-        me = bpy.data.meshes.new("_ClashPre")
-        bm.to_mesh(me)
-        bm.free()
-        return me
-
-    @staticmethod
     def compute_intersection_geometry(geometry_a, geometry_b):
         """Compute the boolean intersection volume of two world-space meshes,
         each given as ``(positions, triangle_indices)``. Returns the
         intersection in the same form, or ``None`` if there's no overlap or
-        if the boolean fails (detected by result vertex count matching an input)."""
-        pos_a, tris_a = geometry_a
-        pos_b, tris_b = geometry_b
-        if not pos_a or not tris_a or not pos_b or not tris_b:
-            return None
-
-        mesh_a = SelectClash._preclose_mesh(pos_a, tris_a)
-        mesh_b = SelectClash._preclose_mesh(pos_b, tris_b)
-        clean_a_vcount = len(mesh_a.vertices)
-        clean_b_vcount = len(mesh_b.vertices)
-
-        obj_a = bpy.data.objects.new("_ClashIsectA", mesh_a)
-        obj_b = bpy.data.objects.new("_ClashIsectB", mesh_b)
-
-        bpy.context.scene.collection.objects.link(obj_a)
-        bpy.context.scene.collection.objects.link(obj_b)
-
-        modifier = obj_a.modifiers.new("ClashIntersect", "BOOLEAN")
-        modifier.operation = "INTERSECT"
-        modifier.object = obj_b
-        modifier.solver = "EXACT"
-
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        eval_obj = obj_a.evaluated_get(depsgraph)
-        result_mesh = bpy.data.meshes.new_from_object(eval_obj)
-        result_mesh.calc_loop_triangles()
-
-        positions = [v.co.copy() for v in result_mesh.vertices]
-        triangle_indices = [tuple(tri.vertices) for tri in result_mesh.loop_triangles]
-
-        bpy.data.objects.remove(obj_a, do_unlink=True)
-        bpy.data.objects.remove(obj_b, do_unlink=True)
-        bpy.data.meshes.remove(mesh_a)
-        bpy.data.meshes.remove(mesh_b)
-        bpy.data.meshes.remove(result_mesh)
-
-        if not positions or not triangle_indices:
-            return None
-        # Detect silent failure: boolean returned one of the cleaned inputs unchanged
-        if len(positions) in (clean_a_vcount, clean_b_vcount):
-            return None
-        return positions, triangle_indices
+        the boolean fails. See volumes.py - private scene, Manifold with an
+        Exact fallback (~15 ms instead of ~550 ms in a link-heavy file)."""
+        with volumes.VolumeBuilder() as builder:
+            return builder.build(geometry_a, geometry_b)
 
     def execute(self, context):
         self.props = tool.Clash.get_clash_props()
@@ -1010,11 +974,28 @@ class SelectClash(bpy.types.Operator):
         pair_highlights: dict = defaultdict(list)
 
         total = len(clash_props)
-        print(f"\n[Bonsai Clash] Activating {total} clash(es) in set '{active_clash_set.name}'...")
+        # A single clash always gets its intersection volume; for several, only when the user asked
+        # (a boolean each - hours for tens of thousands). Cached volumes are reused either way.
+        build_volumes = total == 1 or self.props.build_clash_volumes
+        print(
+            f"\n[Bonsai Clash] Activating {total} clash(es) in set '{active_clash_set.name}'"
+            + ("" if build_volumes else " (no new clash volumes - 'Build Clash Volumes' is off)")
+            + "..."
+        )
         _t0 = time.time()
+        # Per-clash detail only for a single clash; otherwise a progress line every 10%.
+        log = print if total == 1 else (lambda *args, **kwargs: None)
+        report_every = max(1, total // 10)
+        link_index = self.build_link_guid_index() if total > 1 else None
+        todo: list[dict] = []
 
         for ci, clash_prop in enumerate(clash_props):
-            print(f"[Bonsai Clash]   [{ci + 1}/{total}] {clash_prop.a_global_id} vs {clash_prop.b_global_id}")
+            if total > 1 and ((ci + 1) % report_every == 0 or ci + 1 == total):
+                print(
+                    f"[Bonsai Clash]   {ci + 1}/{total} ({100 * (ci + 1) // total}%), {time.time() - _t0:.0f}s",
+                    flush=True,
+                )
+            log(f"[Bonsai Clash]   [{ci + 1}/{total}] {clash_prop.a_global_id} vs {clash_prop.b_global_id}")
 
             highlights: list = [None, None]
             for i, global_id in enumerate((clash_prop.a_global_id, clash_prop.b_global_id)):
@@ -1023,10 +1004,17 @@ class SelectClash(bpy.types.Operator):
                     product = tool.Ifc.get().by_guid(global_id)
                     products.append(product)
                     highlights[i] = tool.Ifc.get_object(product)
-                    print(f"[Bonsai Clash]     {side}: found in active IFC ({global_id})")
+                    log(f"[Bonsai Clash]     {side}: found in active IFC ({global_id})")
                     continue
                 except:
                     pass
+                if link_index is not None:
+                    if link_obj := link_index.get(global_id):
+                        highlights[i] = (link_obj, global_id)
+                        log(f"[Bonsai Clash]     {side}: found in a link ({global_id})")
+                    else:
+                        log(f"[Bonsai Clash]     {side}: not found ({global_id})")
+                    continue
                 for link in tool.Project.get_project_props().links:
                     if not link.is_loaded:
                         continue
@@ -1035,36 +1023,50 @@ class SelectClash(bpy.types.Operator):
                         continue
                     if link_obj := self.find_linked_obj_by_guid(col, global_id):
                         highlights[i] = (link_obj, global_id)
-                        print(f"[Bonsai Clash]     {side}: found in link '{link.filepath}' ({global_id})")
+                        log(f"[Bonsai Clash]     {side}: found in link '{link.filepath}' ({global_id})")
                         break
                 else:
-                    print(f"[Bonsai Clash]     {side}: not found ({global_id})")
+                    log(f"[Bonsai Clash]     {side}: not found ({global_id})")
 
             pair = clash_prop.clash_pair or "ab"
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
 
-            print(f"[Bonsai Clash]     Resolving geometry...")
-            _tg = time.time()
-            geometries = [
-                ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h)) for h in highlights
-            ]
-            print(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
-
             intersection = None
-            if geometries[0] and geometries[1]:
-                if clash_prop.has_cached_intersection:
-                    intersection = tool.Clash.read_cached_intersection(clash_prop)
-                    print(f"[Bonsai Clash]     Using cached intersection volume")
-                else:
-                    print(f"[Bonsai Clash]     Computing intersection volume...")
+            if clash_prop.has_cached_intersection:
+                intersection = tool.Clash.read_cached_intersection(clash_prop)
+                log(f"[Bonsai Clash]     Using cached intersection volume")
+            elif total > 1:
+                # Several clashes: shown right away; missing volumes are built afterwards by a
+                # background job (volume_jobs.py), only if asked for.
+                if build_volumes and highlights[0] and highlights[1]:
+                    todo.append(
+                        {
+                            "pair": g1 + g2,
+                            "idx": len(pair_highlights[g1 + g2]),
+                            "a": ClashDecorator._normalize_highlight(highlights[0]),
+                            "b": ClashDecorator._normalize_highlight(highlights[1]),
+                            "key": (clash_prop.a_global_id, clash_prop.b_global_id),
+                            "p1": tuple(clash_prop.p1),
+                        }
+                    )
+            else:
+                log(f"[Bonsai Clash]     Resolving geometry...")
+                _tg = time.time()
+                geometries = [
+                    ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(h))
+                    for h in highlights
+                ]
+                log(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
+                if geometries[0] and geometries[1]:
+                    log(f"[Bonsai Clash]     Computing intersection volume...")
                     _ti = time.time()
                     intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
-                    print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                    log(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
                     if intersection is not None:
                         tool.Clash.write_cached_intersection(clash_prop, intersection)
-            else:
-                print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
+                else:
+                    log(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
             pair_highlights[g1 + g2].append({"a": highlights[0], "b": highlights[1], "intersection": intersection})
 
@@ -1073,6 +1075,7 @@ class SelectClash(bpy.types.Operator):
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(dict(pair_highlights))
+        VolumeJob.start(active_clash_set.name, todo)
         target = Vector(first_clash.p1)
         if self.move_camera:
             tool.Clash.look_at(target, target + Vector((5, 5, 5)))
@@ -1300,18 +1303,34 @@ class SelectSmartGroup(bpy.types.Operator):
         # `global_ids` is a_global_id, b_global_id, a_global_id, b_global_id, ...
         global_ids = list(selected_smart_group.global_ids)
         total = len(global_ids) // 2
-        print(f"\n[Bonsai Clash] Activating smart group '{selected_smart_group.name}' ({total} pair(s))...")
+        build_volumes = total == 1 or props.build_clash_volumes
+        print(
+            f"\n[Bonsai Clash] Activating smart group '{selected_smart_group.name}' ({total} pair(s))"
+            + ("" if build_volumes else " (no new clash volumes - 'Build Clash Volumes' is off)")
+            + "..."
+        )
         _t0 = time.time()
+        log = print if total == 1 else (lambda *args, **kwargs: None)
+        report_every = max(1, total // 10)
+        link_index = SelectClash.build_link_guid_index() if total > 1 else None
+        todo: list[dict] = []
 
         positions = []
         resolved_any = False
         for pi, i in enumerate(range(0, len(global_ids) - 1, 2)):
-            print(f"[Bonsai Clash]   [{pi + 1}/{total}] {global_ids[i].name} vs {global_ids[i + 1].name}")
+            if total > 1 and ((pi + 1) % report_every == 0 or pi + 1 == total):
+                print(
+                    f"[Bonsai Clash]   {pi + 1}/{total} ({100 * (pi + 1) // total}%), {time.time() - _t0:.0f}s",
+                    flush=True,
+                )
+            log(f"[Bonsai Clash]   [{pi + 1}/{total}] {global_ids[i].name} vs {global_ids[i + 1].name}")
 
-            a_highlight, a_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i].name)
-            b_highlight, b_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i + 1].name)
-            print(f"[Bonsai Clash]     A: {'found' if a_highlight else 'not found'} ({global_ids[i].name})")
-            print(f"[Bonsai Clash]     B: {'found' if b_highlight else 'not found'} ({global_ids[i + 1].name})")
+            a_highlight, a_product = SelectClash.resolve_global_id_highlight(ifc_file, global_ids[i].name, link_index)
+            b_highlight, b_product = SelectClash.resolve_global_id_highlight(
+                ifc_file, global_ids[i + 1].name, link_index
+            )
+            log(f"[Bonsai Clash]     A: {'found' if a_highlight else 'not found'} ({global_ids[i].name})")
+            log(f"[Bonsai Clash]     B: {'found' if b_highlight else 'not found'} ({global_ids[i + 1].name})")
 
             if a_product:
                 products.append(a_product)
@@ -1322,33 +1341,51 @@ class SelectSmartGroup(bpy.types.Operator):
             g1 = pair[0] if len(pair) >= 1 else "a"
             g2 = pair[1] if len(pair) >= 2 else "b"
 
-            print(f"[Bonsai Clash]     Resolving geometry...")
-            _tg = time.time()
-            geometry_a = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(a_highlight))
-            geometry_b = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(b_highlight))
-            print(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
-            if geometry_a:
-                positions.extend(geometry_a[0])
-                resolved_any = True
-            if geometry_b:
-                positions.extend(geometry_b[0])
-                resolved_any = True
-
+            cached_clash_prop = clash_prop_lookup.get(f"{global_ids[i].name}-{global_ids[i + 1].name}")
             intersection = None
-            if geometry_a and geometry_b:
-                cached_clash_prop = clash_prop_lookup.get(f"{global_ids[i].name}-{global_ids[i + 1].name}")
-                if cached_clash_prop is not None and cached_clash_prop.has_cached_intersection:
-                    intersection = tool.Clash.read_cached_intersection(cached_clash_prop)
-                    print(f"[Bonsai Clash]     Using cached intersection volume")
-                else:
-                    print(f"[Bonsai Clash]     Computing intersection volume...")
-                    _ti = time.time()
-                    intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
-                    print(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
-                    if intersection is not None and cached_clash_prop is not None:
-                        tool.Clash.write_cached_intersection(cached_clash_prop, intersection)
+            if a_highlight or b_highlight:
+                resolved_any = True
+            if total > 1:
+                # Several clashes: no geometry read here (it's what made big groups slow) - the
+                # camera aims at the clash points, and missing volumes are built afterwards.
+                if cached_clash_prop is not None:
+                    positions.append(Vector(cached_clash_prop.p1))
+                    if cached_clash_prop.has_cached_intersection:
+                        intersection = tool.Clash.read_cached_intersection(cached_clash_prop)
+                    elif build_volumes and a_highlight and b_highlight:
+                        todo.append(
+                            {
+                                "pair": g1 + g2,
+                                "idx": len(pair_highlights[g1 + g2]),
+                                "a": ClashDecorator._normalize_highlight(a_highlight),
+                                "b": ClashDecorator._normalize_highlight(b_highlight),
+                                "key": (cached_clash_prop.a_global_id, cached_clash_prop.b_global_id),
+                                "p1": tuple(cached_clash_prop.p1),
+                            }
+                        )
             else:
-                print(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
+                log(f"[Bonsai Clash]     Resolving geometry...")
+                _tg = time.time()
+                geometry_a = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(a_highlight))
+                geometry_b = ClashDecorator.resolve_highlight_geometry(ClashDecorator._normalize_highlight(b_highlight))
+                log(f"[Bonsai Clash]     Geometry resolved in {time.time() - _tg:.2f}s")
+                if geometry_a:
+                    positions.extend(geometry_a[0])
+                if geometry_b:
+                    positions.extend(geometry_b[0])
+                if geometry_a and geometry_b:
+                    if cached_clash_prop is not None and cached_clash_prop.has_cached_intersection:
+                        intersection = tool.Clash.read_cached_intersection(cached_clash_prop)
+                        log(f"[Bonsai Clash]     Using cached intersection volume")
+                    else:
+                        log(f"[Bonsai Clash]     Computing intersection volume...")
+                        _ti = time.time()
+                        intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
+                        log(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
+                        if intersection is not None and cached_clash_prop is not None:
+                            tool.Clash.write_cached_intersection(cached_clash_prop, intersection)
+                else:
+                    log(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
             pair_highlights[g1 + g2].append({"a": a_highlight, "b": b_highlight, "intersection": intersection})
 
@@ -1360,6 +1397,7 @@ class SelectSmartGroup(bpy.types.Operator):
         tool.Spatial.select_products(products, unhide=True)
         ClashDecorator.install(bpy.context)
         ClashDecorator.set_clash_objects(dict(pair_highlights))
+        VolumeJob.start(props.active_clash_set.name, todo)
         print(f"[Bonsai Clash] Done in {time.time() - _t0:.2f}s\n")
 
         if self.move_camera and positions:

@@ -243,6 +243,13 @@ class BIM_PT_ifcclash(Panel):
             )
             layout.template_list("BIM_UL_clashes", "", props.active_clash_set, "clashes", props, "active_clash_index")
             row = layout.row()
+            row.prop(
+                props,
+                "build_clash_volumes",
+                toggle=True,
+                icon="CHECKBOX_HLT" if props.build_clash_volumes else "CHECKBOX_DEHLT",
+            )
+            row = layout.row()
             row.operator("bim.select_clash", text="Move to Clash", icon="CAMERA_DATA")
             row = layout.row()
             op = row.operator("bim.select_clash", text="Activate Clash", icon="RESTRICT_SELECT_OFF")
@@ -267,6 +274,13 @@ class BIM_PT_ifcclash(Panel):
             "BIM_UL_smart_groups", "", clash_set, "smart_clash_groups", clash_set, "active_smart_group_index"
         )
 
+        row = layout.row(align=True)
+        row.prop(
+            props,
+            "build_clash_volumes",
+            toggle=True,
+            icon="CHECKBOX_HLT" if props.build_clash_volumes else "CHECKBOX_DEHLT",
+        )
         row = layout.row(align=True)
         row.operator("bim.select_smart_group", text="Move to Smart Group", icon="CAMERA_DATA")
         row = layout.row(align=True)

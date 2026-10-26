@@ -146,6 +146,17 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
             for pair, entries in pair_highlights_dict.items()
         }
 
+    @classmethod
+    def set_intersection(cls, pair: str, idx: int, geometry) -> None:
+        """Fill in one clash's intersection volume after activation (volume_jobs.py builds them in
+        the background). Its draw batch is built on the next redraw."""
+        entries = cls.pair_highlights.get(pair)
+        if not entries or idx >= len(entries):
+            return
+        entries[idx]["intersection"] = geometry
+        for key in [k for k in cls._batch_cache if k[0] == ("__c__", pair, idx)]:
+            del cls._batch_cache[key]
+
     @staticmethod
     def _normalize_highlight(value):
         if value is None:

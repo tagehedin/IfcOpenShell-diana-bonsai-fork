@@ -505,6 +505,13 @@ class BIMClashProperties(PropertyGroup):
         default=False,
         update=show_all_intersections_update,
     )
+    build_clash_volumes: BoolProperty(
+        name="Build Clash Volumes",
+        description="When activating several clashes or a smart group, also compute each clash's intersection "
+        "volume (a boolean per clash, ~0.3-0.6 s each - hours for tens of thousands). A single clash always "
+        "gets its volume, and volumes already built are reused either way",
+        default=False,
+    )
     use_link_color_override: BoolProperty(
         name="Override Link Colors",
         description="Switch viewport to per-link solid colors to distinguish models during clash review",
@@ -529,6 +536,7 @@ class BIMClashProperties(PropertyGroup):
         active_clash_set_index: int
         active_clash_index: int
         smart_clash_grouping_max_distance: float
+        build_clash_volumes: bool
         p1: Vector
         p2: Vector
         active_clash_text: str
