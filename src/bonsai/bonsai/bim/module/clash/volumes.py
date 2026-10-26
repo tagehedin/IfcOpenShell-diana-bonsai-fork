@@ -64,6 +64,13 @@ def preclose_bmesh(positions, triangles) -> bmesh.types.BMesh:
     return bm
 
 
+def _bounds(positions) -> tuple:
+    """Bounding box rounded to 0.1 mm - enough to tell an unchanged input from a real result."""
+    if not positions:
+        return ()
+    return tuple(round(f(p[i] for p in positions), 4) for f in (min, max) for i in range(3))
+
+
 def is_watertight(bm: bmesh.types.BMesh) -> bool:
     return all(len(e.link_faces) == 2 for e in bm.edges)
 
@@ -95,16 +102,19 @@ class VolumeBuilder:
         # One batch: a remove() per datablock rescans the whole file each time.
         bpy.data.batch_remove([self.scene, self.obj_a, self.obj_b, self.mesh_a, self.mesh_b])
 
-    def _run(self, solver: str, counts: tuple[int, int]) -> Optional[Geometry]:
+    def _run(self, solver: str, inputs: list[tuple[int, tuple]]) -> Optional[Geometry]:
         self.modifier.solver = solver
         self.depsgraph.update()
         evaluated = self.obj_a.evaluated_get(self.depsgraph)
         mesh = evaluated.to_mesh()
         try:
-            if len(mesh.vertices) in counts:
-                return None  # returned an input unchanged: the boolean failed
+            positions = [v.co.copy() for v in mesh.vertices]
+            # A failed boolean passes an input through unchanged. Vertex count alone can't tell:
+            # two overlapping boxes intersect in a box with the same 8 corners as each input.
+            if (len(positions), _bounds(positions)) in inputs:
+                return None
             mesh.calc_loop_triangles()
-            return [v.co.copy() for v in mesh.vertices], [tuple(t.vertices) for t in mesh.loop_triangles]
+            return positions, [tuple(t.vertices) for t in mesh.loop_triangles]
         finally:
             evaluated.to_mesh_clear()
 
@@ -115,7 +125,7 @@ class VolumeBuilder:
             return None
         bm_a, bm_b = preclose_bmesh(*geometry_a), preclose_bmesh(*geometry_b)
         try:
-            counts = (len(bm_a.verts), len(bm_b.verts))
+            inputs = [(len(bm.verts), _bounds([v.co for v in bm.verts])) for bm in (bm_a, bm_b)]
             watertight = is_watertight(bm_a) and is_watertight(bm_b)
             bm_a.to_mesh(self.mesh_a)
             bm_b.to_mesh(self.mesh_b)
@@ -123,14 +133,14 @@ class VolumeBuilder:
             bm_a.free()
             bm_b.free()
         if watertight:
-            result = self._run("MANIFOLD", counts)
+            result = self._run("MANIFOLD", inputs)
             if result is None:
                 self.stats["fallback"] += 1
             else:
                 self.stats["manifold"] += 1
                 return self._non_empty(result)
         self.stats["exact"] += 1
-        result = self._run("EXACT", counts)
+        result = self._run("EXACT", inputs)
         return self._non_empty(result) if result else None
 
     def _non_empty(self, result: Geometry) -> Optional[Geometry]:
