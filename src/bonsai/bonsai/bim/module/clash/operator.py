@@ -112,6 +112,7 @@ class ImportClashSets(bpy.types.Operator, ImportHelper):
             elif new.mode == "clearance":
                 new.clearance = clash_set["clearance"]
                 new.check_all = clash_set["check_all"]
+            new.skipped_pairs = ",".join(clash_set.get("skip_pairs", []))
             for clash_source in clash_set["a"]:
                 new_source = new.a.add()
                 new_source.name = clash_source["file"]
@@ -191,6 +192,23 @@ def _link_abs_ifc_path(link) -> str:
             if fp:
                 return fp
     return ""
+
+
+class ToggleClashGroupPair(bpy.types.Operator):
+    bl_idname = "bim.toggle_clash_group_pair"
+    bl_label = "Toggle Clash Group Pair"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Tick to check these two groups against each other, untick to skip the pair"
+    pair: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        clash_set = tool.Clash.get_clash_props().active_clash_set
+        if not clash_set:
+            return {"CANCELLED"}
+        skipped = clash_set.get_skipped_pairs()
+        skipped ^= {self.pair}
+        clash_set.skipped_pairs = ",".join(sorted(skipped))
+        return {"FINISHED"}
 
 
 _link_items_cache: list = []

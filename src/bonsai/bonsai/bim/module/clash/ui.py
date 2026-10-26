@@ -195,6 +195,21 @@ class BIM_PT_ifcclash(Panel):
         row.enabled = False
         row.label(text=auto_label, icon="FILE_BLANK")
 
+        # One tickbox per pair of groups with files: unticked pairs are not clash checked.
+        pairs = clash_set.get_group_pairs()
+        if pairs:
+            skipped = clash_set.get_skipped_pairs()
+            layout.label(text="Check Group Pairs:")
+            grid = layout.grid_flow(row_major=True, columns=4, even_columns=True, align=True)
+            for pair in pairs:
+                is_checked = pair not in skipped
+                grid.operator(
+                    "bim.toggle_clash_group_pair",
+                    text=pair.upper(),
+                    icon="CHECKBOX_HLT" if is_checked else "CHECKBOX_DEHLT",
+                    depress=is_checked,
+                ).pair = pair
+
         row = layout.row()
         row.operator("bim.execute_blender_clash", icon="MESH_DATA")
 

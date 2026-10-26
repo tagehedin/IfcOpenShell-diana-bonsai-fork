@@ -460,11 +460,17 @@ class BlenderClasher:
             all_groups["_self"] = all_groups[g]
             group_list = [g, "_self"]
 
+        # Pairs unticked in the clash panel (e.g. architecture vs structure).
+        skip_pairs = set(clash_set.get("skip_pairs", []))
+
         results: dict = {}
         for i, g1 in enumerate(group_list):
             for g2 in group_list[i + 1 :]:
                 pair_name = (g1 + g2).replace("_self", g1)
                 same = g1 == g2 or "_self" in (g1, g2)
+                if not same and pair_name in skip_pairs:
+                    self._log(f"  {pair_name.upper()}: skipped (unticked)")
+                    continue
                 elems1, elems2 = all_groups[g1], all_groups[g2]
                 candidates = self._bbox_filter(elems1, elems2, clearance, same)
                 label = pair_name.upper().replace("_SELF", g1.upper())

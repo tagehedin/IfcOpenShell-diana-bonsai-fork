@@ -63,6 +63,7 @@ classes = (
     operator.AddClashSet,
     operator.AddClashSource,
     operator.AddClashSourceFromLink,
+    operator.ToggleClashGroupPair,
     operator.ExecuteBlenderClash,
     operator.ExecuteIfcClash,
     operator.ExportClashSets,

@@ -71,6 +71,8 @@ class Clash(bonsai.core.tool.Clash):
             for g in ("c", "d", "e", "f", "g", "h"):
                 if groups[g]:
                     clash_set_data[g] = groups[g]
+            if skipped := clash_set.get_skipped_pairs():
+                clash_set_data["skip_pairs"] = sorted(skipped)
             if clash_set.mode == "intersection":
                 clash_set_data["tolerance"] = clash_set.tolerance
                 clash_set_data["check_all"] = clash_set.check_all

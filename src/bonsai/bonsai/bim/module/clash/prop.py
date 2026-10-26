@@ -442,9 +442,13 @@ class ClashSet(PropertyGroup):
         clashes_loaded: bool
         smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
         active_smart_group_index: int
+        skipped_pairs: str
 
     smart_clash_groups: CollectionProperty(name="Smart Clash Groups", type=SmartClashGroup)
     active_smart_group_index: IntProperty(name="Active Smart Group Index")
+    # Group pairs the user unticked above "Execute Blender Clash", e.g. "ab,cd" - stored as the
+    # skipped ones so every pair (also one appearing when a group gets files) is checked by default.
+    skipped_pairs: StringProperty(name="Skipped Group Pairs", default="")
 
     @property
     def active_smart_group(self) -> Union["SmartClashGroup", None]:
@@ -459,6 +463,14 @@ class ClashSet(PropertyGroup):
         self,
     ) -> "dict[tool.Clash.ClashSourceGroup, bpy.types.bpy_prop_collection_idprop[ClashSource]]":
         return {g: self.get_clash_sources_group(g) for g in tool.Clash.CLASH_SOURCE_GROUP_LITERALS}
+
+    def get_group_pairs(self) -> list[str]:
+        """Every pair of groups that have files, e.g. ["ab", "ac", "bc"] - what the clash run checks."""
+        groups = [g for g, sources in self.get_clash_sources().items() if len(sources)]
+        return [g1 + g2 for i, g1 in enumerate(groups) for g2 in groups[i + 1 :]]
+
+    def get_skipped_pairs(self) -> set[str]:
+        return {p for p in self.skipped_pairs.split(",") if p}
 
 
 class BIMClashProperties(PropertyGroup):
