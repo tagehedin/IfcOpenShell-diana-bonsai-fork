@@ -62,6 +62,7 @@ classes = (
     operator.ExportIFC,
     operator.FlipClippingPlane,
     operator.HideQueriedElementIfcClass,
+    operator.IsolateQueriedElementIfcClass,
     operator.HideQueriedLinkedElement,
     operator.IFCFileHandlerOperator,
     operator.ImageScalingTool,

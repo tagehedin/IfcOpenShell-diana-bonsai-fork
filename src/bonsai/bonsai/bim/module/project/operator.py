@@ -3579,6 +3579,38 @@ class HideQueriedElementIfcClass(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class IsolateQueriedElementIfcClass(bpy.types.Operator):
+    bl_idname = "bim.isolate_queried_element_ifc_class"
+    bl_label = "Isolate IFC Class"
+    bl_description = (
+        "Show only the elements of the queried element's IFC class within its linked model "
+        "(other linked models keep their visibility, like Hide All Except). Unhide All restores everything"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context) -> set["rna_enums.OperatorReturnItems"]:
+        from bonsai.bim.module.project.data import LinksData
+
+        props = tool.Project.get_project_props()
+        obj = props.queried_obj
+        if not obj:
+            self.report({"INFO"}, "No object is queried.")
+            return {"FINISHED"}
+        ifc_class = LinksData.linked_data.get("attributes", {}).get("IFC Class")
+        if not ifc_class:
+            self.report({"INFO"}, "Could not determine the queried element's IFC class.")
+            return {"FINISHED"}
+        link = tool.Project.get_link_by_object(obj)
+        if not link:
+            self.report({"INFO"}, "Could not determine which linked model the queried object belongs to.")
+            return {"FINISHED"}
+        print(f"[Isolate IFC Class] Queried object: {obj.name!r} (class={ifc_class!r}) -> link: {link.name!r}")
+        guids = link_visibility.with_geometry(link, link_visibility.class_guids(link, ifc_class))
+        link_visibility.isolate(context, link, guids, label=f"Isolate IFC Class {ifc_class}")
+        self.report({"INFO"}, f"Showing only {len(guids)} {ifc_class} element(s) in {link.name}.")
+        return {"FINISHED"}
+
+
 class AppendInspectedLinkedElement(AppendLibraryElement):
     bl_idname = "bim.append_inspected_linked_element"
     bl_label = "Append Inspected Linked Element"
