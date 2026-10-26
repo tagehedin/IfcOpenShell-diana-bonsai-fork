@@ -94,6 +94,8 @@ class BIM_PT_bcf2(Panel):
         op.save_current_bcf = True
         row.operator("bcf2.save_bcf_project", icon="EXPORT", text="Save Project As...")
         row.operator("bcf2.unload_bcf_project", text="", icon="CANCEL")
+        row = layout.row()
+        row.operator("bcf2.export_html_report", icon="DOCUMENTS")
 
         col = layout.column(align=True)
         if props.bcf_file:
