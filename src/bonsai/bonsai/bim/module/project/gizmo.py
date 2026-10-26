@@ -24,6 +24,10 @@ import bonsai.tool as tool
 from bonsai.bim.module.project import clipping_plane_fill
 
 
+def _matrices_close(a: Matrix, b: Matrix, tolerance: float = 1e-5) -> bool:
+    return all(abs(x - y) <= tolerance for row_a, row_b in zip(a, b) for x, y in zip(row_a, row_b))
+
+
 class ClippingPlane(GizmoGroup):
     bl_idname = "OBJECT_GGT_bim_clipping_plane"
     bl_label = "Clipping Plane"
@@ -75,7 +79,11 @@ class ClippingPlane(GizmoGroup):
         self.gizmo.target_set_handler("offset", get=move_get_x, set=move_set_x)
 
     def refresh(self, context):
-        if self.obj != context.object or self.last_mw != context.object.matrix_world:
+        # Tolerant comparison: a plane whose matrix was assigned with an arbitrary rotation (e.g. one
+        # created from a BCF viewpoint) reads back ~1e-8 different after Blender re-derives it from
+        # loc/rot/scale. An exact != then looked like "moved by someone else" on every redraw and
+        # re-based the drag mid-drag - big jumps, sometimes the wrong way.
+        if self.obj != context.object or not _matrices_close(self.last_mw, context.object.matrix_world):
             self.obj = context.object
             self.offset = 0
             self.mw = context.object.matrix_world.copy()
