@@ -710,7 +710,7 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
     bl_idname = "bim.execute_blender_clash"
     bl_label = "Execute Blender Clash"
     bl_description = (
-        "Run BVH-based clash detection using already-loaded linked model meshes.\n"
+        "Run BVH-based clash detection for the active clash set, using already-loaded linked model meshes.\n"
         "Faster than IFC Clash — no re-tessellation needed.\n\n"
         "ALT+click to run without selecting an output file."
     )
@@ -764,7 +764,13 @@ class ExecuteBlenderClash(bpy.types.Operator, ExportHelper):
 
         clasher = BlenderClasher()
         clasher.settings = settings
-        clasher.clash_sets = tool.Clash.export_clash_sets()
+        # Only the active clash set: it's the one whose results get loaded, and they're written to its
+        # own <set>.json - running every set wasted time and put the other sets' fresh results into
+        # this set's file, where Load Executed Clash for those sets never looks.
+        clash_sets = tool.Clash.export_clash_sets()
+        if active := props.active_clash_set:
+            clash_sets = [s for s in clash_sets if s["name"] == active.name]
+        clasher.clash_sets = clash_sets
         clasher.clash()
         clasher.export()
 
