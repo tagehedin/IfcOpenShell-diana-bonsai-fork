@@ -60,7 +60,8 @@ class _MeshArrays:
         _read(mesh, "position", "vector", mesh.vertices, "co", co)
         co = co.reshape(-1, 3)
         m = np.array(obj.matrix_world, dtype=np.float32)
-        self.positions = co @ m[:3, :3].T + m[:3, 3]
+        with np.errstate(invalid="ignore", over="ignore"):  # broken source geometry (inf vertices)
+            self.positions = co @ m[:3, :3].T + m[:3, 3]
         self.guids: Optional[dict[str, int]] = None
         self.guid_ids: Optional[np.ndarray] = None
         self.hidden: set[int] = set()
