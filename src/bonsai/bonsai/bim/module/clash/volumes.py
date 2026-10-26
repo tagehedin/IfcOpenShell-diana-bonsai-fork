@@ -71,6 +71,13 @@ def _bounds(positions) -> tuple:
     return tuple(round(f(p[i] for p in positions), 4) for f in (min, max) for i in range(3))
 
 
+def _within(bounds: tuple, overlap: tuple, tolerance: float = 0.002) -> bool:
+    """Whether a result's bounding box lies inside the overlap box (2 mm tolerance)."""
+    return all(bounds[i] >= overlap[i] - tolerance for i in range(3)) and all(
+        bounds[i] <= overlap[i] + tolerance for i in range(3, 6)
+    )
+
+
 def is_watertight(bm: bmesh.types.BMesh) -> bool:
     return all(len(e.link_faces) == 2 for e in bm.edges)
 
@@ -83,7 +90,7 @@ class VolumeBuilder:
     """
 
     def __enter__(self) -> "VolumeBuilder":
-        self.stats = {"manifold": 0, "exact": 0, "fallback": 0, "empty": 0}
+        self.stats = {"manifold": 0, "exact": 0, "fallback": 0, "hole_tolerant": 0, "failed": 0, "empty": 0}
         self.scene = bpy.data.scenes.new(SCENE_NAME)
         self.mesh_a = bpy.data.meshes.new(SCENE_NAME + "_A")
         self.mesh_b = bpy.data.meshes.new(SCENE_NAME + "_B")
@@ -102,8 +109,11 @@ class VolumeBuilder:
         # One batch: a remove() per datablock rescans the whole file each time.
         bpy.data.batch_remove([self.scene, self.obj_a, self.obj_b, self.mesh_a, self.mesh_b])
 
-    def _run(self, solver: str, inputs: list[tuple[int, tuple]]) -> Optional[Geometry]:
+    def _run(
+        self, solver: str, inputs: list[tuple[int, tuple]], overlap: tuple, hole_tolerant: bool = False
+    ) -> Optional[Geometry]:
         self.modifier.solver = solver
+        self.modifier.use_hole_tolerant = hole_tolerant
         self.depsgraph.update()
         evaluated = self.obj_a.evaluated_get(self.depsgraph)
         mesh = evaluated.to_mesh()
@@ -112,6 +122,11 @@ class VolumeBuilder:
             # A failed boolean passes an input through unchanged. Vertex count alone can't tell:
             # two overlapping boxes intersect in a box with the same 8 corners as each input.
             if (len(positions), _bounds(positions)) in inputs:
+                return None
+            # A failed boolean can also return a whole (re-triangulated) element - the "whole wall
+            # instead of the perforation" case. A real intersection lies within the overlap of the
+            # two elements' bounding boxes.
+            if positions and not _within(_bounds(positions), overlap):
                 return None
             mesh.calc_loop_triangles()
             return positions, [tuple(t.vertices) for t in mesh.loop_triangles]
@@ -136,16 +151,27 @@ class VolumeBuilder:
         finally:
             bm_a.free()
             bm_b.free()
+        (a_lo, a_hi), (b_lo, b_hi) = ((b[:3], b[3:]) for _, b in inputs)
+        overlap = tuple(max(a, b) for a, b in zip(a_lo, b_lo)) + tuple(min(a, b) for a, b in zip(a_hi, b_hi))
         if watertight:
-            result = self._run("MANIFOLD", inputs)
-            if result is None:
-                self.stats["fallback"] += 1
-            else:
+            result = self._run("MANIFOLD", inputs, overlap)
+            if result is not None:
                 self.stats["manifold"] += 1
                 return self._non_empty(result)
-        self.stats["exact"] += 1
-        result = self._run("EXACT", inputs)
-        return self._non_empty(result) if result else None
+            self.stats["fallback"] += 1
+        else:
+            result = self._run("EXACT", inputs, overlap)
+            if result is not None:
+                self.stats["exact"] += 1
+                return self._non_empty(result)
+        # Failed (input unchanged or whole element): Exact in hole-tolerant mode handles the imperfect
+        # meshes that make both solvers fail - ~240 ms instead of ~15, so only for these (~2%).
+        self.stats["hole_tolerant"] += 1
+        result = self._run("EXACT", inputs, overlap, hole_tolerant=True)
+        if result is None:
+            self.stats["failed"] += 1
+            return None
+        return self._non_empty(result)
 
     def _non_empty(self, result: Geometry) -> Optional[Geometry]:
         if not result[0] or not result[1]:
