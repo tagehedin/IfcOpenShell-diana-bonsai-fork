@@ -193,6 +193,9 @@ def _link_abs_ifc_path(link) -> str:
     return ""
 
 
+_link_items_cache: list = []
+
+
 class AddClashSourceFromLink(bpy.types.Operator):
     bl_idname = "bim.add_clash_source_from_link"
     bl_label = "Add Clash Source from Loaded Link"
@@ -201,6 +204,10 @@ class AddClashSourceFromLink(bpy.types.Operator):
     group: bpy.props.StringProperty(options={"HIDDEN"})
 
     def _link_items(self, context):
+        # Blender only keeps C pointers to an items callback's strings, so the list must outlive the
+        # call - otherwise reading self.link returns freed memory (UnicodeDecodeError on Windows).
+        # See the EnumProperty docs' warning on dynamic items.
+        global _link_items_cache
         proj_props = tool.Project.get_project_props()
         items = []
         for link in proj_props.links:
@@ -209,7 +216,8 @@ class AddClashSourceFromLink(bpy.types.Operator):
                 continue
             display = link.name.replace("\\", "/").rsplit("/", 1)[-1]
             items.append((abs_path, display, abs_path))
-        return items or [("__none__", "(No IFC links loaded)", "", "ERROR", 0)]
+        _link_items_cache = items or [("__none__", "(No IFC links loaded)", "", "ERROR", 0)]
+        return _link_items_cache
 
     link: bpy.props.EnumProperty(name="IFC Link", items=_link_items)
 
