@@ -690,6 +690,93 @@ class ViewBcf2Topic(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _capture_viewpoint(context, bcf_v2: bool, visinfo_guid: str):
+    """Capture what the 3D viewport shows as a BCF viewpoint (camera, snapshot incl. the clash display,
+    clipping planes, element visibility and selection) - shared by Add and Update BCF Viewpoint.
+    Returns (VisualizationInfoHandler, summary text)."""
+    mdl = bcf.v2.model if bcf_v2 else bcf.v3.model
+    _window, _area, space, region = viewpoint_capture.find_view3d(context)
+    view, projection, width, height, source = viewpoint_capture.view_matrices(context, space, region)
+    aspect = width / height
+
+    # Camera - from the same matrices the snapshot is drawn with, so they always match.
+    is_perspective, location, direction, up, extent = viewpoint_capture.camera_from_matrices(view, projection)
+    location, direction, up = viewpoint_capture.to_global(location, direction, up)
+    camera_args = dict(
+        camera_view_point=mdl.Point(x=location.x, y=location.y, z=location.z),
+        camera_direction=mdl.Direction(x=direction.x, y=direction.y, z=direction.z),
+        camera_up_vector=mdl.Direction(x=up.x, y=up.y, z=up.z),
+    )
+    if not bcf_v2:
+        camera_args["aspect_ratio"] = aspect
+    if is_perspective:
+        camera_kwargs = {"perspective_camera": mdl.PerspectiveCamera(field_of_view=extent, **camera_args)}
+    else:
+        camera_kwargs = {"orthogonal_camera": mdl.OrthogonalCamera(view_to_world_scale=extent, **camera_args)}
+
+    # Components - same shape as the reference BCF: Selection and Coloring always present (empty
+    # when unused), Visibility with ViewSetupHints + Exceptions. Written as "show all, hide these"
+    # or "hide all, show these", whichever list is shorter.
+    visible, hidden, spaces_visible = viewpoint_capture.element_visibility(context)
+    default_visibility = len(hidden) <= len(visible)
+    exceptions = sorted(hidden if default_visibility else visible)
+    hints = mdl.ViewSetupHints(spaces_visible=spaces_visible, space_boundaries_visible=False, openings_visible=False)
+    selection = mdl.ComponentSelection(
+        component=[mdl.Component(ifc_guid=g) for g in viewpoint_capture.selected_guids(context)]
+    )
+    visibility_args = dict(
+        default_visibility=default_visibility,
+        exceptions=mdl.ComponentVisibilityExceptions(component=[mdl.Component(ifc_guid=g) for g in exceptions]),
+    )
+    if bcf_v2:
+        components = mdl.Components(
+            view_setup_hints=hints,
+            selection=selection,
+            visibility=mdl.ComponentVisibility(**visibility_args),
+            coloring=mdl.ComponentColoring(),
+        )
+    else:
+        components = mdl.Components(
+            selection=selection,
+            visibility=mdl.ComponentVisibility(view_setup_hints=hints, **visibility_args),
+            coloring=mdl.ComponentColoring(),
+        )
+
+    planes = viewpoint_capture.clipping_planes()
+    clipping = None
+    if planes:
+        clipping = mdl.VisualizationInfoClippingPlanes(
+            clipping_plane=[
+                mdl.ClippingPlane(
+                    location=mdl.Point(x=loc.x, y=loc.y, z=loc.z),
+                    direction=mdl.Direction(x=d.x, y=d.y, z=d.z),
+                )
+                for loc, d in planes
+            ]
+        )
+
+    extra = {} if bcf_v2 else {"bitmaps": mdl.VisualizationInfoBitmaps()}
+    visualization_info = mdl.VisualizationInfo(
+        guid=visinfo_guid, components=components, clipping_planes=clipping, **camera_kwargs, **extra
+    )
+
+    snapshot = viewpoint_capture.snapshot_png(context, space, region, view, projection, width, height)
+
+    handler_module = bcf.v2.visinfo if bcf_v2 else bcf.v3.visinfo
+    vizinfo = handler_module.VisualizationInfoHandler(
+        visualization_info=visualization_info,
+        snapshot=snapshot,
+        xml_handler=None if bcf_v2 else viewpoint_capture.bcf3_xml_handler(),
+    )
+    what = f"{extent:.1f} deg FOV" if is_perspective else f"{extent:.2f} m ortho"
+    mode = f"show all, hide {len(exceptions)}" if default_visibility else f"hide all, show {len(exceptions)}"
+    summary = (
+        f"from the {source}: {what}, aspect {aspect:.3f}, snapshot {width}x{height}, "
+        f"{len(planes)} clipping plane(s), visibility {mode}, {len(selection.component)} selected"
+    )
+    return vizinfo, summary
+
+
 class AddBcfViewpoint(bpy.types.Operator):
     bl_idname = "bcf2.add_bcf_viewpoint"
     bl_label = "Add BCF Viewpoint"
@@ -720,82 +807,7 @@ class AddBcfViewpoint(bpy.types.Operator):
             return {"CANCELLED"}
         topic = bcfxml.topics[blender_topic.name]
 
-        _window, _area, space, region = viewpoint_capture.find_view3d(context)
-        view, projection, width, height, source = viewpoint_capture.view_matrices(context, space, region)
-        aspect = width / height
-
-        # Camera - from the same matrices the snapshot is drawn with, so they always match.
-        is_perspective, location, direction, up, extent = viewpoint_capture.camera_from_matrices(view, projection)
-        location, direction, up = viewpoint_capture.to_global(location, direction, up)
-        camera_args = dict(
-            camera_view_point=mdl.Point(x=location.x, y=location.y, z=location.z),
-            camera_direction=mdl.Direction(x=direction.x, y=direction.y, z=direction.z),
-            camera_up_vector=mdl.Direction(x=up.x, y=up.y, z=up.z),
-        )
-        if not bcf_v2:
-            camera_args["aspect_ratio"] = aspect
-        if is_perspective:
-            camera_kwargs = {"perspective_camera": mdl.PerspectiveCamera(field_of_view=extent, **camera_args)}
-        else:
-            camera_kwargs = {"orthogonal_camera": mdl.OrthogonalCamera(view_to_world_scale=extent, **camera_args)}
-
-        # Components - same shape as the reference BCF: Selection and Coloring always present (empty
-        # when unused), Visibility with ViewSetupHints + Exceptions. Written as "show all, hide these"
-        # or "hide all, show these", whichever list is shorter.
-        visible, hidden, spaces_visible = viewpoint_capture.element_visibility(context)
-        default_visibility = len(hidden) <= len(visible)
-        exceptions = sorted(hidden if default_visibility else visible)
-        hints = mdl.ViewSetupHints(
-            spaces_visible=spaces_visible, space_boundaries_visible=False, openings_visible=False
-        )
-        selection = mdl.ComponentSelection(
-            component=[mdl.Component(ifc_guid=g) for g in viewpoint_capture.selected_guids(context)]
-        )
-        visibility_args = dict(
-            default_visibility=default_visibility,
-            exceptions=mdl.ComponentVisibilityExceptions(component=[mdl.Component(ifc_guid=g) for g in exceptions]),
-        )
-        if bcf_v2:
-            components = mdl.Components(
-                view_setup_hints=hints,
-                selection=selection,
-                visibility=mdl.ComponentVisibility(**visibility_args),
-                coloring=mdl.ComponentColoring(),
-            )
-        else:
-            components = mdl.Components(
-                selection=selection,
-                visibility=mdl.ComponentVisibility(view_setup_hints=hints, **visibility_args),
-                coloring=mdl.ComponentColoring(),
-            )
-
-        planes = viewpoint_capture.clipping_planes()
-        clipping = None
-        if planes:
-            clipping = mdl.VisualizationInfoClippingPlanes(
-                clipping_plane=[
-                    mdl.ClippingPlane(
-                        location=mdl.Point(x=loc.x, y=loc.y, z=loc.z),
-                        direction=mdl.Direction(x=d.x, y=d.y, z=d.z),
-                    )
-                    for loc, d in planes
-                ]
-            )
-
-        visinfo_guid = str(uuid.uuid4())
-        extra = {} if bcf_v2 else {"bitmaps": mdl.VisualizationInfoBitmaps()}
-        visualization_info = mdl.VisualizationInfo(
-            guid=visinfo_guid, components=components, clipping_planes=clipping, **camera_kwargs, **extra
-        )
-
-        snapshot = viewpoint_capture.snapshot_png(context, space, region, view, projection, width, height)
-
-        handler_module = bcf.v2.visinfo if bcf_v2 else bcf.v3.visinfo
-        vizinfo = handler_module.VisualizationInfoHandler(
-            visualization_info=visualization_info,
-            snapshot=snapshot,
-            xml_handler=None if bcf_v2 else viewpoint_capture.bcf3_xml_handler(),
-        )
+        vizinfo, summary = _capture_viewpoint(context, bcf_v2, str(uuid.uuid4()))
         topic.viewpoints[vizinfo.guid + ".bcfv"] = vizinfo
         viewpoints = tool.Bcf2.get_topic_viewpoints(topic)
         viewpoints.append(
@@ -814,14 +826,95 @@ class AddBcfViewpoint(bpy.types.Operator):
         except TypeError:
             pass
 
-        what = f"{extent:.1f} deg FOV" if is_perspective else f"{extent:.2f} m ortho"
-        mode = f"show all, hide {len(exceptions)}" if default_visibility else f"hide all, show {len(exceptions)}"
         self.report(
             {"INFO"},
-            f"[BCF2] Viewpoint added from the {source}: {what}, aspect {aspect:.3f}, snapshot {width}x{height}, "
-            f"{len(planes)} clipping plane(s), visibility {mode}, {len(selection.component)} selected "
-            f"in {(time.perf_counter() - t_start) * 1000:.0f} ms",
+            f"[BCF2] Viewpoint added {summary} in {(time.perf_counter() - t_start) * 1000:.0f} ms",
         )
+        return {"FINISHED"}
+
+
+class UpdateBcfViewpoint(bpy.types.Operator):
+    bl_idname = "bcf2.update_bcf_viewpoint"
+    bl_label = "Update BCF Viewpoint"
+    bl_description = (
+        "Replace the selected viewpoint with what the 3D viewport shows now - camera, snapshot (with the "
+        "clash display), clipping planes and element visibility, like Add BCF Viewpoint. Keeps its place and "
+        "ID, so comments referring to it stay linked"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if not viewpoint_capture.find_view3d(context):
+            cls.poll_message_set("No 3D viewport to capture.")
+            return False
+        topic = tool.Bcf2.get_bcf_props().active_topic
+        if not topic or not tool.Blender.get_enum_safe(topic, "viewpoints"):
+            cls.poll_message_set("No viewpoint selected.")
+            return False
+        return True
+
+    def execute(self, context):
+        t_start = time.perf_counter()
+        bcfxml = bcfstore.Bcf2Store.get_bcfxml()
+        assert bcfxml
+        bcf_v2 = (bcfxml.version.version_id or "").startswith("2")
+        props = tool.Bcf2.get_bcf_props()
+        blender_topic = props.active_topic
+        if not blender_topic or blender_topic.name not in bcfxml.topics:
+            self.report({"ERROR"}, "The active topic isn't in the loaded BCF file (was it saved?).")
+            return {"CANCELLED"}
+        topic = bcfxml.topics[blender_topic.name]
+        key = blender_topic.viewpoints
+        entries = tool.Bcf2.get_topic_viewpoints(topic)
+        entry = next((vp for vp in entries if vp.viewpoint == key), None)
+        if entry is None:
+            self.report({"ERROR"}, f"Viewpoint {key} isn't listed in the topic.")
+            return {"CANCELLED"}
+        guid = entry.guid or key.removesuffix(".bcfv")
+
+        vizinfo, summary = _capture_viewpoint(context, bcf_v2, guid)
+        old_vizinfo = topic.viewpoints[key] if key in topic.viewpoints else None
+        old_snapshot_name = entry.snapshot
+        topic.viewpoints[key] = vizinfo
+        if not entry.snapshot:  # e.g. a received viewpoint without a picture: saved under its own name now
+            entry.snapshot = guid + ".png"
+        tool.Bcf2.set_topic_viewpoints(topic, entries)
+
+        def rollback(data):
+            if data["old"] is not None:
+                data["topic"].viewpoints[data["key"]] = data["old"]
+            data["entry"].snapshot = data["old_snapshot_name"]
+            tool.Bcf2.get_bcf_props().refresh_topic(bpy.context)
+            print(f"[BCF2 undo] Restored viewpoint {data['key']} on topic {data['topic'].guid}")
+
+        def commit(data):
+            data["topic"].viewpoints[data["key"]] = data["new"]
+            if not data["entry"].snapshot:
+                data["entry"].snapshot = data["key"].removesuffix(".bcfv") + ".png"
+            tool.Bcf2.get_bcf_props().refresh_topic(bpy.context)
+            print(f"[BCF2 redo] Re-updated viewpoint {data['key']} on topic {data['topic'].guid}")
+
+        key_undo = Bcf2UndoStore.push(
+            rollback,
+            commit,
+            {
+                "topic": topic,
+                "key": key,
+                "entry": entry,
+                "old": old_vizinfo,
+                "new": vizinfo,
+                "old_snapshot_name": old_snapshot_name,
+            },
+        )
+        props.last_transaction = key_undo
+        Bcf2UndoStore.last_transaction = key_undo
+        props.refresh_topic(context)
+        try:
+            blender_topic.viewpoints = key
+        except TypeError:
+            pass
+        self.report({"INFO"}, f"[BCF2] Viewpoint updated {summary} in {(time.perf_counter() - t_start) * 1000:.0f} ms")
         return {"FINISHED"}
 
 
@@ -2134,7 +2227,7 @@ class BIM_FH_import_bcf(bpy.types.FileHandler):
 
 
 # --- Unsaved-change tracking -------------------------------------------------------------------
-# Every Add*/Remove*/Edit* operator changes BCF data that only reaches disk via Save Current
+# Every Add*/Remove*/Edit*/Update* operator changes BCF data that only reaches disk via Save Current
 # Project / Save Project As, so a successful run marks the project dirty - except while loading,
 # when filling in the panel's fields runs Edit* operators through their update callbacks.
 _LOADING_OPERATORS = ("LoadBcfProject", "LoadBcf2Topics", "LoadBcf2Topic", "LoadBcf2Comments")
@@ -2167,6 +2260,6 @@ for _cls in list(globals().values()):
         isinstance(_cls, type)
         and issubclass(_cls, bpy.types.Operator)
         and _cls.__module__ == __name__
-        and (_cls.__name__.startswith(("Add", "Remove", "Edit")) or _cls.__name__ in _LOADING_OPERATORS)
+        and (_cls.__name__.startswith(("Add", "Remove", "Edit", "Update")) or _cls.__name__ in _LOADING_OPERATORS)
     ):
         _track_changes(_cls)

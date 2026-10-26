@@ -158,6 +158,7 @@ class BIM_PT_bcf2(Panel):
             row.operator("bcf2.activate_bcf_viewpoint", icon="SCENE", text="")
             row.operator("bcf2.close_bcf_viewpoint", icon="LOOP_BACK", text="")
             row.operator("bcf2.add_bcf_viewpoint", icon="ADD", text="")
+            row.operator("bcf2.update_bcf_viewpoint", icon="FILE_REFRESH", text="")
             row.operator("bcf2.remove_bcf_viewpoint", icon="X", text="")
 
             columns = props.topic_columns

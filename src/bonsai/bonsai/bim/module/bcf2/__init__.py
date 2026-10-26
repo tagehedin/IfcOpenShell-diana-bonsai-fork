@@ -35,6 +35,7 @@ classes = (
     operator.AddBcfRelatedTopic,
     operator.AddBcf2Topic,
     operator.AddBcfViewpoint,
+    operator.UpdateBcfViewpoint,
     operator.BCFFileHandlerOperator,
     operator.BIM_FH_import_bcf,
     operator.ClickBcfTopic,
