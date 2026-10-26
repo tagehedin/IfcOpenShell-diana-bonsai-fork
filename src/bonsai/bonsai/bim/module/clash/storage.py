@@ -40,6 +40,13 @@ if TYPE_CHECKING:
     from bonsai.bim.module.clash.prop import BIMClashProperties
 
 HOLDER_NAME = ".BonsaiClashData"
+# Layout 2: every small collection stored before the big ones, clash volumes packed.
+# Blender's data-path search (every property edit, tooltip, ...) walks a group's stored items in
+# order, and walking past a collection costs ~O(n^2): with 45k clashes a click on a link colour
+# row stored after `clash_sets` took minutes. Stored order is creation order, so priming the small
+# collections first keeps them in front.
+LAYOUT = 2
+BIG = {"clash_sets", "clashes", "cached_intersection_verts", "cached_intersection_tris"}
 HOLDER_TEXT = "Bonsai keeps this file's clash sets and results on this text block. Do not delete it.\n"
 
 
@@ -51,10 +58,34 @@ def ensure_holder() -> bpy.types.Text:
     """Create the holder if needed. Not allowed while drawing - only call from operators/handlers."""
     holder = get_holder()
     if holder is None:
-        holder = bpy.data.texts.new(HOLDER_NAME)
-        holder.use_fake_user = True
-        holder.write(HOLDER_TEXT)
+        holder = _new_holder(HOLDER_NAME)
     return holder
+
+
+def _new_holder(name: str) -> bpy.types.Text:
+    holder = bpy.data.texts.new(name)
+    holder.use_fake_user = True
+    holder.write(HOLDER_TEXT)
+    props = holder.BIMClashProperties
+    prime(props)
+    props.storage_version = LAYOUT
+    return holder
+
+
+def prime(group: bpy.types.PropertyGroup) -> None:
+    """Create the group's small collections now (add + remove an item), so they're stored before
+    the big ones - see LAYOUT."""
+    for prop in group.bl_rna.properties:
+        if prop.type == "COLLECTION" and prop.identifier not in BIG:
+            collection = getattr(group, prop.identifier)
+            if not len(collection):
+                collection.add()
+                collection.remove(0)
+
+
+def prepare_clash_set(clash_set: bpy.types.PropertyGroup) -> None:
+    """Call right after adding a ClashSet: its sources and smart groups go before its clashes."""
+    prime(clash_set)
 
 
 def get_clash_props() -> "BIMClashProperties":
@@ -85,11 +116,19 @@ def _normalised(value):
 def copy_props(src: bpy.types.PropertyGroup, dst: bpy.types.PropertyGroup) -> None:
     """Deep-copy a property group through the RNA API. Only values that differ from the (fresh)
     target are written, so update callbacks only fire for real data - e.g. writing a clash set's
-    default clashes_loaded=False would otherwise clear the active set's results."""
-    for prop in src.bl_rna.properties:
+    default clashes_loaded=False would otherwise clear the active set's results.
+
+    Writes in LAYOUT order (small collections first, big ones last) and packs clash volumes
+    stored in the old per-vertex format."""
+    import bonsai.tool as tool
+
+    props = [p for p in src.bl_rna.properties if p.identifier != "rna_type"]
+    props.sort(key=lambda p: p.identifier in BIG)  # stable: big collections last
+    prime(dst)
+    for prop in props:
         name = prop.identifier
-        if name == "rna_type":
-            continue
+        if name in ("cached_intersection_verts", "cached_intersection_tris"):
+            continue  # packed below
         if prop.type == "COLLECTION":
             target = getattr(dst, name)
             for item in getattr(src, name):
@@ -102,7 +141,29 @@ def copy_props(src: bpy.types.PropertyGroup, dst: bpy.types.PropertyGroup) -> No
                 try:
                     setattr(dst, name, value)
                 except (TypeError, ValueError) as e:
-                    print(f"[Clash] Couldn't copy {src.path_from_id(name)}: {e}")
+                    print(f"[Clash] Couldn't copy {name}: {e}")
+    if getattr(src, "has_cached_intersection", False) and not src.cached_intersection:
+        tool.Clash.write_cached_intersection(dst, tool.Clash.read_cached_intersection(src))
+
+
+def migrate_layout() -> None:
+    """Rebuild a holder saved with an older layout: copy everything into a fresh holder in LAYOUT
+    order (packing clash volumes on the way), then replace the old one. Once per file."""
+    import time
+
+    holder = get_holder()
+    if holder is None or holder.BIMClashProperties.storage_version >= LAYOUT:
+        return
+    old = holder.BIMClashProperties
+    clashes = sum(len(s.clashes) for s in old.clash_sets)
+    print(f"[Clash] Rearranging clash data for faster editing ({clashes} clashes) - once for this file...")
+    start = time.time()
+    new_holder = _new_holder(HOLDER_NAME + ".rebuild")
+    copy_props(old, new_holder.BIMClashProperties)
+    new_holder.BIMClashProperties.storage_version = LAYOUT
+    bpy.data.texts.remove(holder)
+    new_holder.name = HOLDER_NAME
+    print(f"[Clash] Clash data rearranged in {time.time() - start:.0f}s - save the file to keep it.")
 
 
 def migrate_scene_clash_data() -> None:

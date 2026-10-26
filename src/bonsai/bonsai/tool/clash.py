@@ -19,10 +19,12 @@
 from __future__ import annotations
 
 import json
+import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Union
 
 import bpy
+import numpy as np
 from ifcclash import ifcclash
 from ifcclash.ifcclash import ClashSource
 from mathutils import Vector
@@ -98,21 +100,26 @@ class Clash(bonsai.core.tool.Clash):
         """Cache a computed intersection volume onto its ``Clash`` PropertyGroup
         entry - see the comment above ``has_cached_intersection`` in clash/prop.py.
         ``clash_prop`` is one row of ``ClashSet.clashes`` (real, persisted)."""
-        positions, triangle_indices = geometry
-        clash_prop.cached_intersection_verts.clear()
-        for pos in positions:
-            v = clash_prop.cached_intersection_verts.add()
-            v.co = pos
-        clash_prop.cached_intersection_tris.clear()
-        for tri in triangle_indices:
-            t = clash_prop.cached_intersection_tris.add()
-            t.v0, t.v1, t.v2 = tri
+        positions = np.asarray([tuple(p) for p in geometry[0]], dtype=np.float32).reshape(-1, 3)
+        triangles = np.asarray(geometry[1], dtype=np.int32).reshape(-1, 3)
+        header = np.array((len(positions), len(triangles)), dtype=np.uint32).tobytes()
+        clash_prop.cached_intersection = zlib.compress(header + positions.tobytes() + triangles.tobytes(), 1)
+        if len(clash_prop.cached_intersection_verts) or len(clash_prop.cached_intersection_tris):
+            clash_prop.cached_intersection_verts.clear()  # old per-item format
+            clash_prop.cached_intersection_tris.clear()
         clash_prop.has_cached_intersection = True
 
     @classmethod
     def read_cached_intersection(cls, clash_prop) -> tuple[list[Vector], list[tuple[int, int, int]]]:
         """The read-side counterpart to write_cached_intersection - only call
         when ``clash_prop.has_cached_intersection`` is True."""
+        if blob := clash_prop.cached_intersection:
+            data = zlib.decompress(blob)
+            n_verts, n_tris = np.frombuffer(data[:8], dtype=np.uint32)
+            positions = np.frombuffer(data, dtype=np.float32, count=n_verts * 3, offset=8).reshape(-1, 3)
+            triangles = np.frombuffer(data, dtype=np.int32, count=n_tris * 3, offset=8 + n_verts * 12).reshape(-1, 3)
+            return positions, triangles
+        # Files saved before the packed format
         positions = [Vector(v.co) for v in clash_prop.cached_intersection_verts]
         triangle_indices = [(t.v0, t.v1, t.v2) for t in clash_prop.cached_intersection_tris]
         return positions, triangle_indices

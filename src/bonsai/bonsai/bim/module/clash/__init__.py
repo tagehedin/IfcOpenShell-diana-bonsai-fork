@@ -35,6 +35,7 @@ def _init_group_colors(dummy=None):
         return None
     # Files saved before clash data moved off the Scene: move it over first.
     storage.migrate_scene_clash_data()
+    storage.migrate_layout()
     ensure_group_colors(storage.ensure_holder().BIMClashProperties)
     return None
 

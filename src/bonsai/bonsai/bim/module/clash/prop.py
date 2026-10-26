@@ -241,6 +241,12 @@ class Clash(PropertyGroup):
     # not a new risk. Only cleared by rebuilding this collection (fresh detection
     # or Load Executed Clash), never proactively invalidated.
     has_cached_intersection: BoolProperty(default=False)
+    # Packed volume: zlib(uint32 vertex/triangle counts + float32 positions + int32 triangles), see
+    # tool.Clash.write_cached_intersection. One value per clash: the per-vertex/per-triangle
+    # collections below made files huge (~5 KB a clash) and Blender's data-path search walks
+    # every item - with tens of thousands of clashes a click on a list stored after them hung
+    # Blender for minutes. The collections are only read for files saved before this.
+    cached_intersection: StringProperty(subtype="BYTE_STRING")
     cached_intersection_verts: CollectionProperty(type=ClashIntersectionVert)
     cached_intersection_tris: CollectionProperty(type=ClashIntersectionTri)
 
@@ -257,6 +263,7 @@ class Clash(PropertyGroup):
         p2: tuple[float, float, float]
         distance: float
         has_cached_intersection: bool
+        cached_intersection: bytes
         cached_intersection_verts: bpy.types.bpy_prop_collection_idprop[ClashIntersectionVert]
         cached_intersection_tris: bpy.types.bpy_prop_collection_idprop[ClashIntersectionTri]
 
@@ -474,6 +481,8 @@ class ClashSet(PropertyGroup):
 
 
 class BIMClashProperties(PropertyGroup):
+    # Stored-layout version of the clash data holder - see clash/storage.py (LAYOUT).
+    storage_version: IntProperty(default=0)
     blender_clash_set_a: CollectionProperty(name="Blender Clash Set A", type=StrProperty)
     blender_clash_set_b: CollectionProperty(name="Blender Clash Set B", type=StrProperty)
     clash_sets: CollectionProperty(name="Clash Sets", type=ClashSet)

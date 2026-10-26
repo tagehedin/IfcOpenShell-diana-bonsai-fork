@@ -32,7 +32,7 @@ from mathutils import Matrix, Vector
 
 import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
-from bonsai.bim.module.clash import volumes
+from bonsai.bim.module.clash import storage, volumes
 from bonsai.bim.module.clash.decorator import ClashDecorator
 from bonsai.bim.module.clash.volume_jobs import VolumeJob
 from bonsai.bim.module.project import clipping_plane_fill
@@ -104,6 +104,7 @@ class ImportClashSets(bpy.types.Operator, ImportHelper):
         props.clash_sets.clear()
         for clash_set in tool.Clash.get_clash_sets():
             new = props.clash_sets.add()
+            storage.prepare_clash_set(new)
             new.name = clash_set["name"]
             new.mode = clash_set["mode"]
             if new.mode == "intersection":
@@ -143,6 +144,7 @@ class AddClashSet(bpy.types.Operator):
 
         props = tool.Clash.get_clash_props()
         new = props.clash_sets.add()
+        storage.prepare_clash_set(new)
         new.name = "New Clash Set"
         ensure_group_colors(props)
         return {"FINISHED"}
