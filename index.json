@@ -42,13 +42,13 @@
       "python_versions": [
         "3.13"
       ],
-      "version": "0.9.1-diana-bonsai-fork-2610260857",
+      "version": "0.9.1-diana-bonsai-fork-2610260913",
       "platforms": [
         "linux-x64"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260857/bonsai_py313-0.9.1-alpha2610260857-linux-x64.zip",
-      "archive_size": 180985971,
-      "archive_hash": "sha256:8cf67de468e53f148d36d781d7b10b0dd99a76a3081b2428560f2b5266c48a6b"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260913/bonsai_py313-0.9.1-alpha2610260913-linux-x64.zip",
+      "archive_size": 180986720,
+      "archive_hash": "sha256:09afba65ac83fcbcbe693e40130e050d08bb831e8a80bf334b5f33cb7d46094a"
     },
     {
       "schema_version": "1.0.0",
@@ -90,13 +90,13 @@
       "python_versions": [
         "3.13"
       ],
-      "version": "0.9.1-diana-bonsai-fork-2610260857",
+      "version": "0.9.1-diana-bonsai-fork-2610260913",
       "platforms": [
         "macos-arm64"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260857/bonsai_py313-0.9.1-alpha2610260857-macos-arm64.zip",
-      "archive_size": 148657943,
-      "archive_hash": "sha256:5f303e759c086dc10f845343ee47e77363b921f4dfea4fed23ccbde1e69ab55b"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260913/bonsai_py313-0.9.1-alpha2610260913-macos-arm64.zip",
+      "archive_size": 148658677,
+      "archive_hash": "sha256:d42ec01845d826e07cc37653e2a6e2f4646b9d7f4dde59ff5f5c13a6a48860b9"
     },
     {
       "schema_version": "1.0.0",
@@ -138,13 +138,13 @@
       "python_versions": [
         "3.13"
       ],
-      "version": "0.9.1-diana-bonsai-fork-2610260857",
+      "version": "0.9.1-diana-bonsai-fork-2610260913",
       "platforms": [
         "windows-x64"
       ],
-      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260857/bonsai_py313-0.9.1-alpha2610260857-windows-x64.zip",
-      "archive_size": 152855989,
-      "archive_hash": "sha256:dba37e5c21a6a6e9652e77463af34f8e207a0d77ca6358052a627e92c9da2801"
+      "archive_url": "https://github.com/tagehedin/IfcOpenShell-diana-bonsai-fork/releases/download/v0.9.1-alpha2610260913/bonsai_py313-0.9.1-alpha2610260913-windows-x64.zip",
+      "archive_size": 152856759,
+      "archive_hash": "sha256:0e84887e74f40acaa1e96c1523100d30da73223caf39d3ec72d2e1f8d00cafa4"
     }
   ]
 }
