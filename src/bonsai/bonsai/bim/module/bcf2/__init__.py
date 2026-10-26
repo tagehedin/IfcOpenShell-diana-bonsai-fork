@@ -19,12 +19,13 @@
 # This file was generated with the assistance of an AI coding tool.
 import bpy
 
-from . import bcfstore, operator, prop, report, topic_columns, ui, undo, viewpoint_camera
+from . import bcfstore, operator, prop, refresh_snapshots, report, topic_columns, ui, undo, viewpoint_camera
 
 addon_keymaps = []
 
 classes = (
     report.ExportBcf2HtmlReport,
+    refresh_snapshots.RefreshBcf2Snapshots,
     operator.ActivateBcfViewpoint,
     operator.AddBcf2BimSnippet,
     operator.AddBcf2Comment,
