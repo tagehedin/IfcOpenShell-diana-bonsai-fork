@@ -108,9 +108,13 @@ class VolumeJob:
         self.started = time.time()
         self.next_report = max(1, self.total // 10)
         self.items: dict[int, dict] = {}  # id(item) -> item, for clashes handed to workers and not back yet
+        self.owned: dict[str, tuple[int, list[int]]] = {}  # chunk name -> (worker pid, item ids)
+        self.applied: set[int] = set()  # id(item) of clashes already counted (guards double results)
+        self.inboxes: list[str] = []
         self.index: dict[tuple[str, str], int] = {}
         self.workers: list[subprocess.Popen] = []
         self.logs: list = []
+        self.retired_logs: list = []  # logs of workers that stopped early, closed at the end
         self.job_dir: Optional[str] = None
         self.pending_chunk: list = []
         self.chunk_no = 0
@@ -141,23 +145,28 @@ class VolumeJob:
     def _start_workers(self) -> None:
         count = max(1, min(8, (os.cpu_count() or 2) // 2))
         try:
-            self.job_dir = tempfile.mkdtemp(prefix="bonsai_clash_volumes_")
-            for sub in ("in", "work", "out"):
-                os.mkdir(os.path.join(self.job_dir, sub))
+            if not self.job_dir:
+                self.job_dir = tempfile.mkdtemp(prefix="bonsai_clash_volumes_")
+                os.mkdir(os.path.join(self.job_dir, "out"))
             self._heartbeat()
             worker = os.path.join(os.path.dirname(__file__), "volume_worker.py")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            for n in range(count):
-                self.logs.append(open(os.path.join(self.job_dir, f"worker_{len(self.logs)}.log"), "w"))
-                self.workers.append(
-                    subprocess.Popen(
-                        [bpy.app.binary_path, "-b", "--factory-startup", "--python", worker, "--"]
-                        + [self.job_dir, volumes.__file__],
-                        stdout=subprocess.DEVNULL,
-                        stderr=self.logs[-1],
-                        creationflags=flags,
-                    )
+            for _ in range(count):
+                # Each worker has its own inbox: workers never compete for (rename) chunk files.
+                n = len(self.logs) + len(self.retired_logs)
+                inbox = os.path.join(self.job_dir, f"in_{n}")
+                os.mkdir(inbox)
+                log = open(os.path.join(self.job_dir, f"worker_{n}.log"), "w")
+                process = subprocess.Popen(
+                    [bpy.app.binary_path, "-b", "--factory-startup", "--python", worker, "--"]
+                    + [self.job_dir, volumes.__file__, inbox],
+                    stdout=subprocess.DEVNULL,
+                    stderr=log,
+                    creationflags=flags,
                 )
+                self.workers.append(process)
+                self.logs.append(log)
+                self.inboxes.append(inbox)
         except OSError as e:
             print(f"[Bonsai Clash] Couldn't start volume workers ({e}) - building in Blender instead.")
             self._stop_workers()
@@ -221,10 +230,15 @@ class VolumeJob:
                 volume = builder.build(geometry_a, geometry_b) if geometry_a and geometry_b else None
                 self._apply(item, volume)
 
+    def _load(self, i: int) -> int:
+        pid = self.workers[i].pid
+        return sum(1 for owner, _ in self.owned.values() if owner == pid)
+
     def _feed_workers(self, deadline: float) -> None:
-        # Keep a few chunks queued per worker, no more - the queue stays nearest-first.
-        waiting = len(os.listdir(os.path.join(self.job_dir, "in")))
-        while self.queue and waiting < 2 * len(self.workers) and time.perf_counter() < deadline:
+        # Keep up to two chunks per worker - the queue stays nearest-first.
+        while (
+            self.queue and min(self._load(i) for i in range(len(self.workers))) < 2 and time.perf_counter() < deadline
+        ):
             item = self.queue.pop(0)
             geometry_a, geometry_b = self._geometry(item)
             if not (geometry_a and geometry_b):
@@ -236,25 +250,41 @@ class VolumeJob:
             self.pending_chunk.append((item_id, plain(geometry_a), plain(geometry_b)))
             if len(self.pending_chunk) >= CHUNK or not self.queue:
                 self._write_chunk()
-                waiting += 1
         if self.pending_chunk and not self.queue:
             self._write_chunk()
 
     def _write_chunk(self) -> None:
+        """Give the pending chunk to the least busy worker."""
+        i = min(range(len(self.workers)), key=self._load)
         name = f"chunk_{self.chunk_no:06d}.pkl"
         self.chunk_no += 1
         tmp = os.path.join(self.job_dir, name + ".tmp")
         with open(tmp, "wb") as f:
             pickle.dump(self.pending_chunk, f)
-        _retry(os.replace, tmp, os.path.join(self.job_dir, "in", name), attempts=100)
+        _retry(os.replace, tmp, os.path.join(self.inboxes[i], name), attempts=100)
+        self.owned[name] = (self.workers[i].pid, [item_id for item_id, _, _ in self.pending_chunk])
         self.pending_chunk = []
+
+    def _requeue(self, item_ids: list[int]) -> None:
+        """Put clashes a worker didn't return back at the front of the queue."""
+        self.queue = [self.items.pop(i) for i in item_ids if i in self.items] + self.queue
 
     def _collect_results(self) -> None:
         out = os.path.join(self.job_dir, "out")
         for name in sorted(os.listdir(out)):
+            path = os.path.join(out, name)
+            if name.endswith(".failed"):
+                # The worker couldn't read this chunk - someone else builds it.
+                chunk = name[: -len(".failed")] + ".pkl"
+                if chunk in self.owned:
+                    self._requeue(self.owned.pop(chunk)[1])
+                try:
+                    _retry(os.remove, path)
+                except PermissionError:
+                    pass
+                continue
             if not name.endswith(".pkl"):
                 continue
-            path = os.path.join(out, name)
             try:
                 results = _retry(_load, path)
             except PermissionError:
@@ -263,6 +293,7 @@ class VolumeJob:
                 _retry(os.remove, path)
             except PermissionError:
                 pass  # re-read next tick; its clashes are already taken off self.items
+            self.owned.pop(name, None)
             for item_id, volume in results:
                 if item := self.items.pop(item_id, None):
                     if volume is not None:
@@ -285,31 +316,27 @@ class VolumeJob:
         dead = [w for w in self.workers if w.poll() is not None]
         if not dead:
             return
+        self._collect_results()  # take whatever they finished before stopping
         for worker in dead:
             print(f"[Bonsai Clash] Volume worker {worker.pid} stopped early (exit code {worker.returncode}):")
             print(self._worker_log(worker) or "    (no log output)")
-        if len(dead) < len(self.workers):
-            # Hand a dead worker's claimed chunk back to the others.
-            work = os.path.join(self.job_dir, "work")
-            for worker in dead:
-                prefix = f"{worker.pid}_"
-                for name in os.listdir(work):
-                    if name.startswith(prefix):
-                        _retry(
-                            os.replace, os.path.join(work, name), os.path.join(self.job_dir, "in", name[len(prefix) :])
-                        )
-                i = self.workers.index(worker)
-                self.workers.pop(i)
-                self.logs.pop(i).close()
+            for chunk, (owner, item_ids) in list(self.owned.items()):
+                if owner == worker.pid:
+                    del self.owned[chunk]
+                    self._requeue(item_ids)
+            i = self.workers.index(worker)
+            self.workers.pop(i)
+            self.retired_logs.append(self.logs.pop(i))
+            shutil.rmtree(self.inboxes.pop(i), ignore_errors=True)
+        if self.workers:
             print(f"[Bonsai Clash] {len(dead)} volume worker(s) stopped - {len(self.workers)} left.")
             return
-        # All gone: requeue everything not returned yet (nearest first as before), then restart
-        # the workers once - or, the second time, build the rest in Blender.
-        self._collect_results()
-        self.queue = list(self.items.values()) + self.queue
-        self.items = {}
+        # All gone: their clashes are back in the queue (nearest first as before). Restart the
+        # workers once - or, the second time, build the rest in Blender.
+        self._requeue([i for _, ids in self.owned.values() for i in ids])
+        self.owned = {}
+        self.queue = [self.items.pop(i) for i in list(self.items)] + self.queue
         self.pending_chunk = []
-        self._stop_workers()
         if not self.restarted and len(self.queue) >= WORKER_MIN:
             self.restarted = True
             print("[Bonsai Clash] Volume workers stopped - restarting them.")
@@ -322,6 +349,9 @@ class VolumeJob:
     def _apply(self, item: dict, volume) -> None:
         from bonsai.bim.module.clash.decorator import ClashDecorator
 
+        if id(item) in self.applied:
+            return  # a result for the same clash arrived twice (e.g. after a worker was replaced)
+        self.applied.add(id(item))
         self.done += 1
         if volume is not None:
             self.built += 1
@@ -379,9 +409,9 @@ class VolumeJob:
             last = self._worker_log(worker, lines=1).replace(f"[worker {worker.pid}] ", "")
             print(f"[Bonsai Clash]   volume worker {worker.pid}: {last or 'no log output'}")
         self.workers = []
-        for log in self.logs:
+        for log in self.logs + self.retired_logs:
             log.close()
-        self.logs = []
+        self.logs, self.retired_logs, self.inboxes = [], [], []
         if self.job_dir:
             shutil.rmtree(self.job_dir, ignore_errors=True)
             self.job_dir = None

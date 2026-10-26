@@ -21,11 +21,13 @@
 """Background worker for clash volumes - see volume_jobs.py.
 
 Runs in its own plain Blender (no Bonsai needed):
-    blender -b --factory-startup --python volume_worker.py -- <job dir> <volumes.py path>
+    blender -b --factory-startup --python volume_worker.py -- <job dir> <volumes.py path> <inbox dir>
 
-Claims chunk files from <job dir>/in by renaming them into <job dir>/work, builds their
-volumes and writes <job dir>/out/<chunk>. Stops when <job dir>/stop exists, or when the
-heartbeat file main Blender keeps touching goes stale (main Blender closed or crashed).
+Main Blender puts chunk files in this worker's own <inbox dir> - workers never compete for or
+rename files (on Windows, renames racing each other and the antivirus lost chunks). For each
+chunk it writes <job dir>/out/<chunk>, or <chunk>.failed if the chunk couldn't be read, then
+deletes it from the inbox. Stops when <job dir>/stop exists, or when the heartbeat file main
+Blender keeps touching goes stale (main Blender closed or crashed).
 """
 
 import importlib.util
@@ -58,29 +60,50 @@ def load(path: str):
         return pickle.load(f)
 
 
+def write(path: str, data) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(data, f)
+    retry(os.replace, tmp, path)
+
+
 def log(message: str) -> None:
     # stderr goes to worker_<n>.log in the job dir; main Blender prints it when a worker stops.
     print(f"[worker {os.getpid()}] {message}", file=sys.stderr, flush=True)
 
 
+def build_chunk(builder, items) -> list:
+    results = []
+    for key, geometry_a, geometry_b in items:
+        try:
+            volume = builder.build(geometry_a, geometry_b)
+        except Exception:
+            log(f"boolean failed:\n{traceback.format_exc()}")
+            volume = None
+        if volume is not None:
+            volume = ([tuple(p) for p in volume[0]], volume[1])
+        results.append((key, volume))
+    return results
+
+
 def main() -> str:
     """Returns why the worker stopped."""
-    job_dir, volumes_path = sys.argv[sys.argv.index("--") + 1 :][:2]
+    job_dir, volumes_path, inbox = sys.argv[sys.argv.index("--") + 1 :][:3]
     parent = os.getppid()
     spec = importlib.util.spec_from_file_location("bonsai_clash_volumes", volumes_path)
     volumes = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(volumes)
 
-    inbox, work, out = (os.path.join(job_dir, d) for d in ("in", "work", "out"))
+    out = os.path.join(job_dir, "out")
     heartbeat = os.path.join(job_dir, "heartbeat")
-    prefix = f"{os.getpid()}_"
-    chunks = clashes = 0
+    finished: set[str] = set()  # chunks done whose inbox file couldn't be deleted yet
+    chunks = clashes = failed = 0
     log("started")
 
     with volumes.VolumeBuilder() as builder:
         while True:
             if os.path.exists(os.path.join(job_dir, "stop")):
-                return f"job finished or cancelled (stop file) after {chunks} chunk(s), {clashes} clash(es)"
+                return f"job finished or cancelled (stop file) after {chunks} chunk(s), {clashes} clash(es), {failed} failed"
             try:
                 stale = time.time() - os.path.getmtime(heartbeat)
             except OSError:
@@ -89,48 +112,29 @@ def main() -> str:
                 return f"main Blender silent for {stale:.0f}s (heartbeat) after {chunks} chunk(s)"
             if os.name != "nt" and os.getppid() != parent:
                 return f"main Blender exited after {chunks} chunk(s)"
-            claimed = None
-            for name in sorted(os.listdir(inbox)):
-                try:
-                    os.rename(os.path.join(inbox, name), os.path.join(work, prefix + name))
-                    claimed = name
-                    break
-                except OSError:
-                    continue  # another worker got it first
-            if not claimed:
+            names = [n for n in sorted(os.listdir(inbox)) if n.endswith(".pkl") and n not in finished]
+            if not names:
                 time.sleep(0.05)
                 continue
-            claimed_path = os.path.join(work, prefix + claimed)
+            name = names[0]
+            path = os.path.join(inbox, name)
             try:
-                items = retry(load, claimed_path)
-            except PermissionError:
-                log(f"{claimed} stayed locked - putting it back")
+                items = retry(load, path)
+                write(os.path.join(out, name), build_chunk(builder, items))
+                chunks += 1
+                clashes += len(items)
+            except Exception:
+                # Never die on one chunk: report it, main Blender hands it to someone else.
+                log(f"{name} failed:\n{traceback.format_exc()}")
+                failed += 1
                 try:
-                    retry(os.rename, claimed_path, os.path.join(inbox, claimed))
-                except OSError:
-                    log(f"couldn't put {claimed} back either:\n{traceback.format_exc()}")
-                time.sleep(0.5)
-                continue
-            results = []
-            for key, geometry_a, geometry_b in items:
-                try:
-                    volume = builder.build(geometry_a, geometry_b)
+                    write(os.path.join(out, name[: -len(".pkl")] + ".failed"), None)
                 except Exception:
-                    log(f"boolean failed in {claimed}:\n{traceback.format_exc()}")
-                    volume = None
-                if volume is not None:
-                    volume = ([tuple(p) for p in volume[0]], volume[1])
-                results.append((key, volume))
-            tmp_path = os.path.join(out, claimed + ".tmp")
-            with open(tmp_path, "wb") as f:
-                pickle.dump(results, f)
-            retry(os.replace, tmp_path, os.path.join(out, claimed))
+                    log(f"couldn't report {name} as failed:\n{traceback.format_exc()}")
             try:
-                retry(os.remove, claimed_path)
+                retry(os.remove, path)
             except OSError:
-                log(f"couldn't remove {claimed} after finishing it")
-            chunks += 1
-            clashes += len(items)
+                finished.add(name)  # don't process it again
 
 
 try:
