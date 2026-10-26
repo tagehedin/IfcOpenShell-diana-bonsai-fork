@@ -181,6 +181,10 @@ def snapshot_png(
     panels. Python viewport overlays aren't part of an offscreen draw, so the clash highlights are
     drawn into it afterwards with the same matrices (see _draw_clash_overlay)."""
     offscreen = gpu.types.GPUOffScreen(width, height)
+    # Viewport extras (grid, 3D cursor, selection outlines, wireframe frames, info text) don't belong in
+    # a BCF picture: overlays off for this draw only.
+    overlays = space.overlay.show_overlays
+    space.overlay.show_overlays = False
     try:
         with offscreen.bind():
             offscreen.draw_view3d(
@@ -191,6 +195,7 @@ def snapshot_png(
         buffer.dimensions = width * height * 4
         pixels = np.asarray(buffer, dtype=np.uint8).astype(np.float32) / 255.0
     finally:
+        space.overlay.show_overlays = overlays
         offscreen.free()
     pixels[3::4] = 1.0  # opaque, like the reference snapshots
     image = bpy.data.images.new("BCF2 snapshot", width, height, alpha=False)
