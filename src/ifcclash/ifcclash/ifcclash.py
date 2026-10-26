@@ -268,26 +268,61 @@ class Clasher:
         singleton cluster. Returns a list of cluster ids, one per point, in
         input order.
         """
-        data = np.array(positions)
-        diffs = data[:, np.newaxis, :] - data[np.newaxis, :, :]
-        distances = np.sqrt((diffs**2).sum(axis=2))
-        np.fill_diagonal(distances, np.inf)
-        neighbours = distances <= max_distance
+        # Grid + union-find instead of an n x n distance matrix (which needed ~70 GB at 45k
+        # clashes). Cells are max_distance / sqrt(3) wide, so any two points sharing a cell are
+        # within max_distance and are joined without measuring; only points in nearby cells
+        # (up to 2 cells away) are compared, and a cell pair stops at its first match. Gives the
+        # same clusters, numbered the same way, as the matrix version.
+        import itertools
+        import math
 
-        labels = [-1] * len(positions)
-        next_label = 0
-        for i in range(len(positions)):
-            if labels[i] != -1:
-                continue
-            stack = [i]
-            labels[i] = next_label
-            while stack:
-                j = stack.pop()
-                for k in np.nonzero(neighbours[j])[0]:
-                    if labels[k] == -1:
-                        labels[k] = next_label
-                        stack.append(int(k))
-            next_label += 1
+        data = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+        n = len(data)
+        if n == 0:
+            return []
+        parent = list(range(n))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+
+        size = max(max_distance, 1e-9) / math.sqrt(3)
+        keys = np.floor(data / size).astype(np.int64)
+        cells: dict[tuple, list[int]] = {}
+        for i, key in enumerate(map(tuple, keys)):
+            cells.setdefault(key, []).append(i)
+        for members in cells.values():
+            for i in members[1:]:
+                union(members[0], i)
+
+        reach = 2  # cells of width d/sqrt(3): a neighbour within d is at most 2 cells away per axis
+        offsets = [o for o in itertools.product(range(-reach, reach + 1), repeat=3) if o > (0, 0, 0)]
+        max_sq = max_distance * max_distance
+        for key, members in cells.items():
+            a = data[members]
+            for offset in offsets:
+                other = cells.get((key[0] + offset[0], key[1] + offset[1], key[2] + offset[2]))
+                if other is None or find(members[0]) == find(other[0]):
+                    continue
+                b = data[other]
+                for start in range(0, len(a), 1024):
+                    block = a[start : start + 1024]
+                    close = ((block[:, None, :] - b[None, :, :]) ** 2).sum(axis=2) <= max_sq
+                    if close.any():
+                        union(members[0], other[0])
+                        break
+
+        labels: list[int] = []
+        numbering: dict[int, int] = {}
+        for i in range(n):
+            labels.append(numbering.setdefault(find(i), len(numbering)))
         return labels
 
     def smart_group_clashes(self, clash_sets: list[ClashSet], max_clustering_distance: float):
