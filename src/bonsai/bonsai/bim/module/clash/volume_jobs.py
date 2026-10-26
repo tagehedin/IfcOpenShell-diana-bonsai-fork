@@ -131,7 +131,7 @@ class VolumeJob:
             worker = os.path.join(os.path.dirname(__file__), "volume_worker.py")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             for n in range(count):
-                self.logs.append(open(os.path.join(self.job_dir, f"worker_{n}.log"), "w"))
+                self.logs.append(open(os.path.join(self.job_dir, f"worker_{len(self.logs)}.log"), "w"))
                 self.workers.append(
                     subprocess.Popen(
                         [bpy.app.binary_path, "-b", "--factory-startup", "--python", worker, "--"]
@@ -247,10 +247,25 @@ class VolumeJob:
                         volume = ([Vector(p) for p in volume[0]], [tuple(t) for t in volume[1]])
                     self._apply(item, volume)
 
+    def _worker_log(self, worker: subprocess.Popen, lines: int = 12) -> str:
+        """Last lines of a worker's log (its stderr: start, stop reason, errors)."""
+        log = self.logs[self.workers.index(worker)] if worker in self.workers else None
+        if not log:
+            return ""
+        try:
+            log.flush()
+            with open(log.name, errors="replace") as f:
+                return "".join(f.readlines()[-lines:]).rstrip()
+        except OSError:
+            return ""
+
     def _handle_dead_workers(self) -> None:
         dead = [w for w in self.workers if w.poll() is not None]
         if not dead:
             return
+        for worker in dead:
+            print(f"[Bonsai Clash] Volume worker {worker.pid} stopped early (exit code {worker.returncode}):")
+            print(self._worker_log(worker) or "    (no log output)")
         if len(dead) < len(self.workers):
             # Hand a dead worker's claimed chunk back to the others.
             work = os.path.join(self.job_dir, "work")
@@ -259,7 +274,9 @@ class VolumeJob:
                 for name in os.listdir(work):
                     if name.startswith(prefix):
                         os.replace(os.path.join(work, name), os.path.join(self.job_dir, "in", name[len(prefix) :]))
-                self.workers.remove(worker)
+                i = self.workers.index(worker)
+                self.workers.pop(i)
+                self.logs.pop(i).close()
             print(f"[Bonsai Clash] {len(dead)} volume worker(s) stopped - {len(self.workers)} left.")
             return
         # All gone: requeue everything not returned yet (nearest first as before), then restart
@@ -333,6 +350,10 @@ class VolumeJob:
                 worker.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 worker.kill()
+                print(f"[Bonsai Clash]   volume worker {worker.pid}: didn't stop in 2 s - killed")
+                continue
+            last = self._worker_log(worker, lines=1).replace(f"[worker {worker.pid}] ", "")
+            print(f"[Bonsai Clash]   volume worker {worker.pid}: {last or 'no log output'}")
         self.workers = []
         for log in self.logs:
             log.close()

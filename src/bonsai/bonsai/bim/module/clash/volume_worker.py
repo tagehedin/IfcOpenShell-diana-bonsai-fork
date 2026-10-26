@@ -41,7 +41,13 @@ import traceback
 HEARTBEAT_TIMEOUT = 120.0  # seconds
 
 
-def main() -> None:
+def log(message: str) -> None:
+    # stderr goes to worker_<n>.log in the job dir; main Blender prints it when a worker stops.
+    print(f"[worker {os.getpid()}] {message}", file=sys.stderr, flush=True)
+
+
+def main() -> str:
+    """Returns why the worker stopped."""
     job_dir, volumes_path = sys.argv[sys.argv.index("--") + 1 :][:2]
     parent = os.getppid()
     spec = importlib.util.spec_from_file_location("bonsai_clash_volumes", volumes_path)
@@ -51,16 +57,21 @@ def main() -> None:
     inbox, work, out = (os.path.join(job_dir, d) for d in ("in", "work", "out"))
     heartbeat = os.path.join(job_dir, "heartbeat")
     prefix = f"{os.getpid()}_"
+    chunks = clashes = 0
+    log("started")
 
     with volumes.VolumeBuilder() as builder:
-        while not os.path.exists(os.path.join(job_dir, "stop")):
+        while True:
+            if os.path.exists(os.path.join(job_dir, "stop")):
+                return f"job finished or cancelled (stop file) after {chunks} chunk(s), {clashes} clash(es)"
             try:
-                if time.time() - os.path.getmtime(heartbeat) > HEARTBEAT_TIMEOUT:
-                    return
+                stale = time.time() - os.path.getmtime(heartbeat)
             except OSError:
-                return  # job dir removed
+                return f"job folder removed after {chunks} chunk(s)"
+            if stale > HEARTBEAT_TIMEOUT:
+                return f"main Blender silent for {stale:.0f}s (heartbeat) after {chunks} chunk(s)"
             if os.name != "nt" and os.getppid() != parent:
-                return  # main Blender exited (we were re-parented)
+                return f"main Blender exited after {chunks} chunk(s)"
             claimed = None
             for name in sorted(os.listdir(inbox)):
                 try:
@@ -80,7 +91,7 @@ def main() -> None:
                 try:
                     volume = builder.build(geometry_a, geometry_b)
                 except Exception:
-                    traceback.print_exc()
+                    log(f"boolean failed in {claimed}:\n{traceback.format_exc()}")
                     volume = None
                 if volume is not None:
                     volume = ([tuple(p) for p in volume[0]], volume[1])
@@ -90,6 +101,12 @@ def main() -> None:
                 pickle.dump(results, f)
             os.replace(tmp_path, os.path.join(out, claimed))
             os.remove(claimed_path)
+            chunks += 1
+            clashes += len(items)
 
 
-main()
+try:
+    log(f"stopped: {main()}")
+except Exception:
+    log(f"stopped by an error:\n{traceback.format_exc()}")
+    sys.exit(1)
