@@ -20,7 +20,7 @@ import bpy
 
 import bonsai.tool as tool
 
-from . import clipping_plane_fill, decorator, gizmo, link_visibility, operator, prop, ui, workspace
+from . import clipping_plane_fill, decorator, gizmo, link_visibility, operator, prop, query_overlay, ui, workspace
 
 classes = (
     clipping_plane_fill.ToggleClippingPlaneFill,
@@ -149,6 +149,8 @@ def register():
         bpy.utils.register_tool(workspace.ExploreTool, after={"builtin.transform"}, separator=True, group=False)
     bpy.types.Scene.BIMProjectProperties = bpy.props.PointerProperty(type=prop.BIMProjectProperties)
     bpy.types.Scene.MeasureToolSettings = bpy.props.PointerProperty(type=prop.MeasureToolSettings)
+    if not bpy.app.background:
+        query_overlay.QueryInfoOverlay.install()
     bpy.app.handlers.load_post.append(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
     bpy.app.handlers.load_post.append(decorator.restore_measurement_widgets_on_load)
@@ -201,6 +203,7 @@ def unregister():
         decorator.ClippingPlaneDecorator,
     ):
         dec.uninstall()
+    query_overlay.QueryInfoOverlay.uninstall()
     del bpy.types.Scene.BIMProjectProperties
     del bpy.types.Scene.MeasureToolSettings
     bpy.app.handlers.load_post.remove(decorator.check_outdated_links_on_load)
