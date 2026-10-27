@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, assert_never
 import bpy
 from bpy.types import Panel
 
-import bonsai.bim.helper
 import bonsai.tool as tool
 from bonsai.bim.module.clash.data import ClashData
 
@@ -104,6 +103,7 @@ class BIM_PT_ifcclash(Panel):
                 icon_own = "RESTRICT_SELECT_OFF" if color_item.show_own_objects else "RESTRICT_SELECT_ON"
                 row.prop(color_item, "show_own_objects", text="", icon=icon_own, toggle=True)
                 row.prop(color_item, "color", text="")
+            rule = clash_set.get_group_rule(group)
             row.label(text=f"Group {group.upper()}:", icon="OUTLINER_OB_POINTCLOUD")
             row.operator("bim.add_clash_source_from_link", icon="LINKED", text="").group = group
             row.operator("bim.add_clash_source", icon="ADD", text="").group = group
@@ -112,6 +112,28 @@ class BIM_PT_ifcclash(Panel):
             if not sources:
                 return
             layout_ = layout.box()
+
+            # Group rule: which IFC classes take part, and the group's own clearance
+            row = layout_.row(align=True)
+            row.prop(rule, "filter_mode", text="")
+            if rule.filter_mode != "ALL":
+                row.operator("bim.add_clash_group_class", text="Add Class", icon="ADD").group = group
+            row.separator()
+            row.prop(rule, "use_clearance", toggle=True, icon="CON_DISTLIMIT")
+            sub = row.row(align=True)
+            sub.active = rule.use_clearance
+            sub.prop(rule, "clearance", text="")
+            if rule.filter_mode != "ALL":
+                if rule.classes:
+                    grid = layout_.grid_flow(row_major=True, columns=3, even_columns=True, align=True)
+                    for class_index, ifc_class in enumerate(rule.classes):
+                        cell = grid.row(align=True)
+                        cell.label(text=ifc_class.name, icon="FILTER")
+                        op = cell.operator("bim.remove_clash_group_class", text="", icon="X")
+                        op.group = group
+                        op.index = class_index
+                else:
+                    layout_.label(text="No classes yet - every element takes part until you add one", icon="INFO")
             for index, source in enumerate(sources):
                 row = layout_.row(align=True)
                 row.column().label(text="", icon="POINTCLOUD_POINT")
@@ -127,29 +149,11 @@ class BIM_PT_ifcclash(Panel):
                 # Make sure file selection sticks to "name" field.
                 row.label(text="", icon="BLANK1")
 
-                row.prop(source, "mode", text="")
+                # The upstream per-file filter (source.mode / filter_groups) isn't used by Blender Clash -
+                # filtering is per group (the rule row above), so it isn't shown here.
                 op = row.operator("bim.remove_clash_source", icon="X", text="")
                 op.index = index
                 op.group = group
-
-                if source.mode != "a":
-
-                    def draw_filter(layout: bpy.types.UILayout, context: bpy.types.Context) -> None:
-                        bonsai.bim.helper.draw_filter(
-                            layout,
-                            source.filter_groups,
-                            ClashData,
-                            f"clash_{props.active_clash_set_index}_{group}_{index}",
-                        )
-
-                    bonsai.bim.helper.draw_expandable_panel(
-                        layout_,
-                        context,
-                        "Filter",
-                        draw_filter,
-                        default_closed=True,
-                        panel_id=f"filter_{group}_{index}",
-                    )
 
         layout.separator()
         # Always show A and B; show each further group only if the previous has sources
@@ -200,7 +204,7 @@ class BIM_PT_ifcclash(Panel):
         if pairs:
             skipped = clash_set.get_skipped_pairs()
             layout.label(text="Check Group Pairs:")
-            grid = layout.grid_flow(row_major=True, columns=4, even_columns=True, align=True)
+            grid = layout.grid_flow(row_major=True, columns=6, even_columns=True, align=True)
             for pair in pairs:
                 is_checked = pair not in skipped
                 grid.operator(

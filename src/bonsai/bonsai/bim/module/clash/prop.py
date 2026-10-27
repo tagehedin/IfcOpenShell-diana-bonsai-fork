@@ -26,6 +26,7 @@ from bpy.props import (
     FloatProperty,
     FloatVectorProperty,
     IntProperty,
+    PointerProperty,
     StringProperty,
 )
 from bpy.types import PropertyGroup
@@ -35,7 +36,7 @@ from mathutils import Vector
 import bonsai.tool as tool
 from bonsai.bim.prop import BIMFilterGroup, StrProperty
 
-GROUP_NAMES = ("a", "b", "c", "d", "e", "f", "g", "h")
+GROUP_NAMES = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l")
 _GROUP_DEFAULT_COLORS: dict[str, tuple] = {
     "a": (0.2, 0.9, 0.2),
     "b": (0.0, 0.4, 1.0),
@@ -45,6 +46,10 @@ _GROUP_DEFAULT_COLORS: dict[str, tuple] = {
     "f": (0.8, 0.0, 0.8),
     "g": (0.6, 1.0, 0.4),
     "h": (1.0, 0.4, 0.6),
+    "i": (0.55, 0.35, 1.0),
+    "j": (1.0, 0.25, 0.25),
+    "k": (0.35, 0.65, 0.35),
+    "l": (0.7, 0.55, 0.3),
 }
 
 
@@ -184,6 +189,47 @@ class ClashSource(PropertyGroup):
         name: str
         filter_groups: bpy.types.bpy_prop_collection_idprop[BIMFilterGroup]
         mode: Literal["a", "i", "e"]
+
+
+class ClashGroupRule(PropertyGroup):
+    """What a clash group contributes beyond its files: a class filter and its own clearance -
+    e.g. "only IfcCovering, 50 mm clearance" checked against every other group."""
+
+    filter_mode: EnumProperty(
+        name="Filter",
+        items=[
+            ("ALL", "All Elements", "Every element of the group's files takes part"),
+            ("INCLUDE", "Only Classes", "Only elements of the listed IFC classes take part"),
+            ("EXCLUDE", "All Except Classes", "Every element except the listed IFC classes takes part"),
+        ],
+        default="ALL",
+    )
+    classes: CollectionProperty(name="IFC Classes", type=StrProperty)
+    use_clearance: BoolProperty(
+        name="Clearance",
+        description="Also report elements of this group closer than the clearance distance to another group's "
+        "elements (touching or overlapping ones are always reported). The larger clearance wins in a pair",
+        default=False,
+    )
+    clearance: FloatProperty(name="Clearance", default=0.05, min=0.0, soft_max=1.0, subtype="DISTANCE")
+
+    if TYPE_CHECKING:
+        filter_mode: Literal["ALL", "INCLUDE", "EXCLUDE"]
+        classes: bpy.types.bpy_prop_collection_idprop[StrProperty]
+        use_clearance: bool
+        clearance: float
+
+    def is_active(self) -> bool:
+        return (self.filter_mode != "ALL" and len(self.classes) > 0) or self.use_clearance
+
+    def summary(self) -> str:
+        parts = []
+        if self.filter_mode != "ALL" and len(self.classes):
+            names = ", ".join(c.name for c in self.classes)
+            parts.append(("only " if self.filter_mode == "INCLUDE" else "except ") + names)
+        if self.use_clearance:
+            parts.append(f"clearance {self.clearance * 1000:g} mm")
+        return " · ".join(parts)
 
 
 class ClashIntersectionVert(PropertyGroup):
@@ -424,6 +470,22 @@ class ClashSet(PropertyGroup):
     f: CollectionProperty(name="Group F", type=ClashSource)
     g: CollectionProperty(name="Group G", type=ClashSource)
     h: CollectionProperty(name="Group H", type=ClashSource)
+    i: CollectionProperty(name="Group I", type=ClashSource)
+    j: CollectionProperty(name="Group J", type=ClashSource)
+    k: CollectionProperty(name="Group K", type=ClashSource)
+    l: CollectionProperty(name="Group L", type=ClashSource)
+    rule_a: PointerProperty(type=ClashGroupRule)
+    rule_b: PointerProperty(type=ClashGroupRule)
+    rule_c: PointerProperty(type=ClashGroupRule)
+    rule_d: PointerProperty(type=ClashGroupRule)
+    rule_e: PointerProperty(type=ClashGroupRule)
+    rule_f: PointerProperty(type=ClashGroupRule)
+    rule_g: PointerProperty(type=ClashGroupRule)
+    rule_h: PointerProperty(type=ClashGroupRule)
+    rule_i: PointerProperty(type=ClashGroupRule)
+    rule_j: PointerProperty(type=ClashGroupRule)
+    rule_k: PointerProperty(type=ClashGroupRule)
+    rule_l: PointerProperty(type=ClashGroupRule)
     clashes: CollectionProperty(name="Clashes", type=Clash)
     clashes_loaded: BoolProperty(
         name="Clash Results Are Loaded",
@@ -445,6 +507,10 @@ class ClashSet(PropertyGroup):
         f: bpy.types.bpy_prop_collection_idprop[ClashSource]
         g: bpy.types.bpy_prop_collection_idprop[ClashSource]
         h: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        i: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        j: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        k: bpy.types.bpy_prop_collection_idprop[ClashSource]
+        l: bpy.types.bpy_prop_collection_idprop[ClashSource]
         clashes: bpy.types.bpy_prop_collection_idprop[Clash]
         clashes_loaded: bool
         smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
@@ -470,6 +536,9 @@ class ClashSet(PropertyGroup):
         self,
     ) -> "dict[tool.Clash.ClashSourceGroup, bpy.types.bpy_prop_collection_idprop[ClashSource]]":
         return {g: self.get_clash_sources_group(g) for g in tool.Clash.CLASH_SOURCE_GROUP_LITERALS}
+
+    def get_group_rule(self, group: tool.Clash.ClashSourceGroup) -> ClashGroupRule:
+        return getattr(self, f"rule_{group}")
 
     def get_group_pairs(self) -> list[str]:
         """Every pair of groups that have files, e.g. ["ab", "ac", "bc"] - what the clash run checks."""

@@ -63,6 +63,7 @@ def _reload_icons_if_needed(dummy=None):
 classes = (
     operator.AddClashSet,
     operator.AddClashSource,
+    operator.AddClashGroupClass,
     operator.AddClashSourceFromLink,
     operator.ToggleClashGroupPair,
     operator.ExecuteBlenderClash,
@@ -76,6 +77,7 @@ classes = (
     operator.ReloadClashView,
     operator.RemoveClashSet,
     operator.RemoveClashSource,
+    operator.RemoveClashGroupClass,
     operator.RemoveClashView,
     operator.SaveClashView,
     operator.SelectAllClashes,
@@ -92,6 +94,7 @@ classes = (
     prop.ClashIntersectionTri,
     prop.Clash,
     prop.ClashSource,
+    prop.ClashGroupRule,
     prop.SmartClashGroup,
     prop.ClashSet,
     prop.BIMClashProperties,

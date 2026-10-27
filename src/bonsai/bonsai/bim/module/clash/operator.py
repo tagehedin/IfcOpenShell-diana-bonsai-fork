@@ -106,29 +106,7 @@ class ImportClashSets(bpy.types.Operator, ImportHelper):
             new = props.clash_sets.add()
             storage.prepare_clash_set(new)
             new.name = clash_set["name"]
-            new.mode = clash_set["mode"]
-            if new.mode == "intersection":
-                new.tolerance = clash_set["tolerance"]
-                new.check_all = clash_set["check_all"]
-            elif new.mode == "collision":
-                new.allow_touching = clash_set["allow_touching"]
-            elif new.mode == "clearance":
-                new.clearance = clash_set["clearance"]
-                new.check_all = clash_set["check_all"]
-            new.skipped_pairs = ",".join(clash_set.get("skip_pairs", []))
-            for clash_source in clash_set["a"]:
-                new_source = new.a.add()
-                new_source.name = clash_source["file"]
-                if "selector" in clash_source:
-                    tool.Search.import_filter_query(clash_source["selector"], new_source.filter_groups)
-                    new_source.mode = clash_source["mode"]
-            if "b" in clash_set and clash_set["b"]:
-                for clash_source in clash_set["b"]:
-                    new_source = new.b.add()
-                    new_source.name = clash_source["file"]
-                    if "selector" in clash_source:
-                        tool.Search.import_filter_query(clash_source["selector"], new_source.filter_groups)
-                        new_source.mode = clash_source["mode"]
+            tool.Clash.apply_clash_set_config(new, clash_set)
         tool.Clash.import_active_clashes()
         return {"FINISHED"}
 
@@ -273,6 +251,85 @@ class RemoveClashSource(bpy.types.Operator):
         clash_set = props.active_clash_set
         assert clash_set
         clash_set.get_clash_sources_group(self.group).remove(self.index)
+        return {"FINISHED"}
+
+
+_NOT_CLASHABLE = {"IfcProject", "IfcSite", "IfcBuilding", "IfcBuildingStorey", "IfcGroup", "IfcSystem", "IfcZone"}
+_group_class_items: list[tuple[str, str, str]] = []
+
+
+def _group_classes(clash_set, group: str) -> list[tuple[str, int]]:
+    """(IFC class, element count) in a group's files, from each link's SQLite cache."""
+    import sqlite3
+
+    counts: dict[str, int] = {}
+    for source in clash_set.get_clash_sources_group(group):
+        db = bpy.path.abspath(source.name) + ".cache.sqlite"
+        if not source.name or not Path(db).is_file():
+            continue
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            for ifc_class, count in con.execute("SELECT ifc_class, COUNT(*) FROM elements GROUP BY ifc_class"):
+                if ifc_class and not ifc_class.endswith(("Type", "Style")) and ifc_class not in _NOT_CLASHABLE:
+                    counts[ifc_class] = counts.get(ifc_class, 0) + count
+        finally:
+            con.close()
+    return sorted(counts.items())
+
+
+def _group_class_enum(self, context):
+    _group_class_items.clear()
+    clash_set = tool.Clash.get_clash_props().active_clash_set
+    if clash_set:
+        taken = {c.name for c in clash_set.get_group_rule(self.group).classes}
+        for ifc_class, count in _group_classes(clash_set, self.group):
+            if ifc_class not in taken:
+                _group_class_items.append((ifc_class, f"{ifc_class}  ({count})", ""))
+    if not _group_class_items:
+        _group_class_items.append(("NONE", "No classes found - add loaded link files to the group first", ""))
+    return _group_class_items
+
+
+class AddClashGroupClass(bpy.types.Operator):
+    bl_idname = "bim.add_clash_group_class"
+    bl_label = "Add IFC Class"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Add an IFC class to this group's filter, picked from the classes in the group's files"
+    bl_property = "ifc_class"
+    group: bpy.props.StringProperty()
+    ifc_class: bpy.props.EnumProperty(items=_group_class_enum)
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {"FINISHED"}
+
+    def execute(self, context):
+        clash_set = tool.Clash.get_clash_props().active_clash_set
+        if not clash_set or self.ifc_class == "NONE":
+            return {"CANCELLED"}
+        rule = clash_set.get_group_rule(self.group)
+        if self.ifc_class not in {c.name for c in rule.classes}:
+            rule.classes.add().name = self.ifc_class
+        if rule.filter_mode == "ALL":
+            rule.filter_mode = "INCLUDE"
+        return {"FINISHED"}
+
+
+class RemoveClashGroupClass(bpy.types.Operator):
+    bl_idname = "bim.remove_clash_group_class"
+    bl_label = "Remove IFC Class"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "Remove this IFC class from the group's filter"
+    group: bpy.props.StringProperty()
+    index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        clash_set = tool.Clash.get_clash_props().active_clash_set
+        if not clash_set:
+            return {"CANCELLED"}
+        rule = clash_set.get_group_rule(self.group)
+        if 0 <= self.index < len(rule.classes):
+            rule.classes.remove(self.index)
         return {"FINISHED"}
 
 

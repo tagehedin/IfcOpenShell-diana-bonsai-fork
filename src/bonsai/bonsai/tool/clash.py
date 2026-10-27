@@ -52,15 +52,15 @@ class Clash(bonsai.core.tool.Clash):
         base = Path(ifc_path).parent if ifc_path else Path(bpy.path.abspath("//"))
         return base / "clashes" / f"{clash_set_name}.json"
 
-    ClashSourceGroup = Literal["a", "b", "c", "d", "e", "f", "g", "h"]
-    CLASH_SOURCE_GROUP_LITERALS = ("a", "b", "c", "d", "e", "f", "g", "h")
+    ClashSourceGroup = Literal["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]
+    CLASH_SOURCE_GROUP_LITERALS = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l")
 
     @classmethod
     def export_clash_sets(cls) -> list[ifcclash.ClashSet]:
         clash_sets: list[ifcclash.ClashSet] = []
         props = cls.get_clash_props()
         for clash_set in props.clash_sets:
-            groups: dict[str, list[ClashSource]] = {g: [] for g in ("a", "b", "c", "d", "e", "f", "g", "h")}
+            groups: dict[str, list[ClashSource]] = {g: [] for g in cls.CLASH_SOURCE_GROUP_LITERALS}
             for group, group_data in clash_set.get_clash_sources().items():
                 for data in group_data:
                     clash_source: ClashSource = {"file": bpy.path.abspath(data.name)}
@@ -70,9 +70,22 @@ class Clash(bonsai.core.tool.Clash):
                         clash_source["mode"] = data.mode
                     groups[group].append(clash_source)
             clash_set_data: dict = {"name": clash_set.name, "mode": clash_set.mode, "a": groups["a"], "b": groups["b"]}
-            for g in ("c", "d", "e", "f", "g", "h"):
+            for g in cls.CLASH_SOURCE_GROUP_LITERALS[2:]:
                 if groups[g]:
                     clash_set_data[g] = groups[g]
+            rules = {}
+            for g in cls.CLASH_SOURCE_GROUP_LITERALS:
+                rule = clash_set.get_group_rule(g)
+                if not groups[g] or not rule.is_active():
+                    continue
+                rules[g] = {}
+                if rule.filter_mode != "ALL" and len(rule.classes):
+                    rules[g]["mode"] = rule.filter_mode.lower()
+                    rules[g]["classes"] = [c.name for c in rule.classes]
+                if rule.use_clearance:
+                    rules[g]["clearance"] = rule.clearance
+            if rules:
+                clash_set_data["group_rules"] = rules
             if skipped := clash_set.get_skipped_pairs():
                 clash_set_data["skip_pairs"] = sorted(skipped)
             if clash_set.mode == "intersection":
@@ -85,6 +98,40 @@ class Clash(bonsai.core.tool.Clash):
                 clash_set_data["check_all"] = clash_set.check_all
             clash_sets.append(clash_set_data)
         return clash_sets
+
+    @classmethod
+    def apply_clash_set_config(cls, clash_set, data: dict) -> None:
+        """Restore a clash set's settings, group files and group rules from its saved/exported dict
+        (the same dict export_clash_sets writes and Execute Blender Clash saves with the results)."""
+        clash_set.mode = data.get("mode", clash_set.mode)
+        if clash_set.mode == "intersection":
+            clash_set.tolerance = data.get("tolerance", clash_set.tolerance)
+            clash_set.check_all = data.get("check_all", clash_set.check_all)
+        elif clash_set.mode == "collision":
+            clash_set.allow_touching = data.get("allow_touching", clash_set.allow_touching)
+        elif clash_set.mode == "clearance":
+            clash_set.clearance = data.get("clearance", clash_set.clearance)
+            clash_set.check_all = data.get("check_all", clash_set.check_all)
+        clash_set.skipped_pairs = ",".join(data.get("skip_pairs", []))
+        rules = data.get("group_rules", {}) or {}
+        for g in cls.CLASH_SOURCE_GROUP_LITERALS:
+            sources = clash_set.get_clash_sources_group(g)
+            sources.clear()
+            for clash_source in data.get(g) or []:
+                new_source = sources.add()
+                new_source.name = clash_source["file"]
+                if "selector" in clash_source:
+                    tool.Search.import_filter_query(clash_source["selector"], new_source.filter_groups)
+                    new_source.mode = clash_source["mode"]
+            rule = clash_set.get_group_rule(g)
+            saved = rules.get(g) or {}
+            rule.classes.clear()
+            rule.filter_mode = saved.get("mode", "all").upper()
+            for name in saved.get("classes", []):
+                rule.classes.add().name = name
+            rule.use_clearance = "clearance" in saved
+            if "clearance" in saved:
+                rule.clearance = saved["clearance"]
 
     @classmethod
     def get_clash(
@@ -167,18 +214,9 @@ class Clash(bonsai.core.tool.Clash):
         result = tool.Clash.get_clash_set(clash_set.name)
         assert result is not None
 
-        # Restore Group A-H source lists from the saved JSON. export_clash_sets()
-        # writes these into the same dict as the results, but nothing previously
-        # read them back on load - see issue_load_executed_clash_missing_groups.
-        for group in tool.Clash.CLASH_SOURCE_GROUP_LITERALS:
-            group_sources = clash_set.get_clash_sources_group(group)
-            group_sources.clear()
-            for source in result.get(group, []):
-                clash_source = group_sources.add()
-                clash_source.name = source["file"]
-                clash_source.mode = source.get("mode", "a")
-                if selector := source.get("selector"):
-                    tool.Search.import_filter_query(selector, clash_source.filter_groups)
+        # Restore the group files and rules from the saved JSON - export_clash_sets() writes them into
+        # the same dict as the results (see issue_load_executed_clash_missing_groups).
+        tool.Clash.apply_clash_set_config(clash_set, result)
 
         if "clashes" not in result:
             return

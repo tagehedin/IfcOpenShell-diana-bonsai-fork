@@ -41,6 +41,8 @@ from mathutils.bvhtree import BVHTree
 
 import bonsai.tool as tool
 
+GROUPS = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l")
+
 # ---------------------------------------------------------------------------
 # Per-element geometry wrapper
 # ---------------------------------------------------------------------------
@@ -62,6 +64,7 @@ class _ElementGeom:
         "_ws_verts",  # (V, 3) float32 world-space verts for this element (shared ref from cache)
         "_loop_verts",  # (P, 3) int32 triangle indices into _ws_verts (relative to element)
         "_bvh",
+        "_edges",  # (E, 2) unique vertex index pairs, built on first clearance check
     )
 
     def __init__(
@@ -88,6 +91,7 @@ class _ElementGeom:
         self._ws_verts = ws_verts  # may be None if not pre-computed
         self._loop_verts = loop_verts  # may be None if not pre-computed
         self._bvh: Optional[BVHTree] = None
+        self._edges: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
     # Numpy-backed bbox (fast path, used when ws_verts pre-computed)
@@ -438,20 +442,35 @@ class BlenderClasher:
         mode = clash_set.get("mode", "intersection")
         self._log(f"BlenderClash: '{name}' ({mode})")
 
-        clearance = float(clash_set.get("clearance", 0.0)) if mode == "clearance" else 0.0
+        base_clearance = float(clash_set.get("clearance", 0.0)) if mode == "clearance" else 0.0
+        # Per-group rules: {"g": {"mode": "include"|"exclude", "classes": [...], "clearance": 0.05}}
+        rules: dict = clash_set.get("group_rules", {}) or {}
 
         # Collect elements for all non-empty groups
         all_groups: dict[str, list[_ElementGeom]] = {}
-        for group in ("a", "b", "c", "d", "e", "f", "g", "h"):
+        for group in GROUPS:
             sources = clash_set.get(group, [])
             if not sources:
                 continue
             elements: list[_ElementGeom] = []
             for src in sources:
                 elements.extend(self._collect_elements(src))
+            rule = rules.get(group) or {}
+            classes = set(rule.get("classes", []))
+            if rule.get("mode") == "include":
+                elements = [e for e in elements if e.ifc_class in classes]
+            elif rule.get("mode") == "exclude":
+                elements = [e for e in elements if e.ifc_class not in classes]
             if elements:
                 all_groups[group] = elements
-                self._log(f"  Group {group.upper()}: {len(elements)} elements")
+                note = (
+                    f" ({rule['mode']} {', '.join(sorted(classes))})"
+                    if rule.get("mode") in ("include", "exclude")
+                    else ""
+                )
+                if rule.get("clearance"):
+                    note += f", clearance {float(rule['clearance']) * 1000:g} mm"
+                self._log(f"  Group {group.upper()}: {len(elements)} elements{note}")
 
         # If only A has sources, self-clash A vs A
         group_list = list(all_groups.keys())
@@ -463,24 +482,47 @@ class BlenderClasher:
         # Pairs unticked in the clash panel (e.g. architecture vs structure).
         skip_pairs = set(clash_set.get("skip_pairs", []))
 
+        def is_rule_group(g: str) -> bool:
+            return (rules.get(g) or {}).get("mode") in ("include", "exclude") or bool(
+                (rules.get(g) or {}).get("clearance")
+            )
+
+        # Pairs with a filtered/clearance group first: a clash found by both "ceilings vs MEP" and
+        # "architecture vs MEP" is filed under the rule that asked for it, and only once.
+        pairs = [(g1, g2) for i, g1 in enumerate(group_list) for g2 in group_list[i + 1 :]]
+        pairs.sort(key=lambda pair: 0 if any(is_rule_group(g) for g in pair) else 1)
+
         results: dict = {}
-        for i, g1 in enumerate(group_list):
-            for g2 in group_list[i + 1 :]:
-                pair_name = (g1 + g2).replace("_self", g1)
-                same = g1 == g2 or "_self" in (g1, g2)
-                if not same and pair_name in skip_pairs:
-                    self._log(f"  {pair_name.upper()}: skipped (unticked)")
+        found: set[frozenset] = set()
+        for g1, g2 in pairs:
+            pair_name = (g1 + g2).replace("_self", g1)
+            same = g1 == g2 or "_self" in (g1, g2)
+            if not same and pair_name in skip_pairs:
+                self._log(f"  {pair_name.upper()}: skipped (unticked)")
+                continue
+            # A group clearance turns its pairs into clearance checks (the larger one wins).
+            clearances = [float((rules.get(g) or {}).get("clearance") or 0.0) for g in (g1, g2)]
+            pair_clearance = max(clearances + [base_clearance])
+            pair_mode = "clearance" if pair_clearance > 0 or mode == "clearance" else mode
+            elems1, elems2 = all_groups[g1], all_groups[g2]
+            candidates = self._bbox_filter(elems1, elems2, pair_clearance, same)
+            label = pair_name.upper().replace("_SELF", g1.upper())
+            extra = f" (clearance {pair_clearance * 1000:g} mm)" if pair_mode == "clearance" else ""
+            self._log(f"  {label}: {len(candidates)} candidates → BVH check{extra}...")
+            duplicates = 0
+            for ai, bi in candidates:
+                a, b = elems1[ai], elems2[bi]
+                key = frozenset((a.guid, b.guid))
+                if key in found:
+                    duplicates += 1
                     continue
-                elems1, elems2 = all_groups[g1], all_groups[g2]
-                candidates = self._bbox_filter(elems1, elems2, clearance, same)
-                label = pair_name.upper().replace("_SELF", g1.upper())
-                self._log(f"  {label}: {len(candidates)} candidates → BVH check...")
-                for ai, bi in candidates:
-                    a, b = elems1[ai], elems2[bi]
-                    clash = self._check_pair(a, b, mode, clearance)
-                    if clash:
-                        clash["pair"] = pair_name
-                        results[f"{a.guid}-{b.guid}"] = clash
+                clash = self._check_pair(a, b, pair_mode, pair_clearance)
+                if clash:
+                    clash["pair"] = pair_name
+                    results[f"{a.guid}-{b.guid}"] = clash
+                    found.add(key)
+            if duplicates:
+                self._log(f"  {label}: {duplicates} pair(s) already found by an earlier group pair, not repeated")
 
         clash_set["clashes"] = results
         elapsed = time.perf_counter() - t0
@@ -559,26 +601,29 @@ class BlenderClasher:
         mode: str,
         clearance: float,
     ) -> Optional[dict]:
-        if mode in ("intersection", "collision"):
+        if mode in ("intersection", "collision", "clearance"):
             overlaps = a.get_bvh().overlap(b.get_bvh())
-            if not overlaps:
-                return None
-            p1, p2 = self._contact_point(a, b, overlaps)
-            return {
-                "a_global_id": a.guid,
-                "b_global_id": b.guid,
-                "a_ifc_class": a.ifc_class,
-                "b_ifc_class": b.ifc_class,
-                "a_name": a.ifc_name,
-                "b_name": b.ifc_name,
-                "type": "collision",
-                "p1": list(p1),
-                "p2": list(p2),
-                "distance": 0.0,
-            }
-        elif mode == "clearance":
-            return self._check_clearance(a, b, clearance)
+            if overlaps:
+                p1, p2 = self._contact_point(a, b, overlaps)
+                return self._result(a, b, "collision", p1, p2, 0.0)
+            if mode == "clearance":
+                return self._check_clearance(a, b, clearance)
         return None
+
+    @staticmethod
+    def _result(a: _ElementGeom, b: _ElementGeom, kind: str, p1, p2, distance: float) -> dict:
+        return {
+            "a_global_id": a.guid,
+            "b_global_id": b.guid,
+            "a_ifc_class": a.ifc_class,
+            "b_ifc_class": b.ifc_class,
+            "a_name": a.ifc_name,
+            "b_name": b.ifc_name,
+            "type": kind,
+            "p1": list(p1),
+            "p2": list(p2),
+            "distance": distance,
+        }
 
     def _contact_point(
         self,
@@ -596,50 +641,87 @@ class BlenderClasher:
         n = len(sample)
         return sum_a / n, sum_b / n
 
+    _COARSE_MIN = 0.2  # m between first-pass samples along an edge
+    _REFINE = 16  # closest first-pass samples refined per direction
+
     def _check_clearance(
         self,
         a: _ElementGeom,
         b: _ElementGeom,
         clearance: float,
     ) -> Optional[dict]:
-        """Find nearest point from b's vertices to a's mesh surface."""
-        bvh_a = a.get_bvh()
-        min_dist = float("inf")
-        best_p1: Optional[Vector] = None
-        best_p2: Optional[Vector] = None
+        """Closest distance under `clearance` between two elements that don't touch. Measured from
+        points along each element's edges (not only corners) to the other's surface, both ways - two
+        members crossing each other are closest somewhere along their edges, far from any corner.
 
-        if b._ws_verts is not None:
-            for pt_arr in b._ws_verts:
-                pt = Vector((float(pt_arr[0]), float(pt_arr[1]), float(pt_arr[2])))
-                loc, _norm, _idx, dist = bvh_a.find_nearest(pt)
-                if loc is not None and dist < min_dist:
-                    min_dist = dist
-                    best_p1 = loc.copy()
-                    best_p2 = pt.copy()
-        else:
-            mat_b = b.matrix_world
-            mesh_b = b.obj.data
-            polys_b = list(mesh_b.polygons[b.poly_slice]) if b.poly_slice is not None else mesh_b.polygons
-            for vi in {v for p in polys_b for v in p.vertices}:
-                pt = mat_b @ mesh_b.vertices[vi].co
-                loc, _norm, _idx, dist = bvh_a.find_nearest(pt)
-                if loc is not None and dist < min_dist:
-                    min_dist = dist
-                    best_p1 = loc.copy()
-                    best_p2 = pt.copy()
+        Two passes: samples every `coarse` metres, then fine samples around the closest ones. The
+        distance to a surface changes no faster than the point moves, so a spot on an edge within
+        `clearance` always has a first-pass sample within clearance + coarse/2 - none means no clash."""
+        coarse = max(4 * clearance, self._COARSE_MIN)
+        fine = max(clearance / 4, 0.005)
+        best: Optional[tuple[float, Vector, Vector]] = None
+        for src, dst in ((b, a), (a, b)):
+            edges = self._near_edges(src, dst, clearance + coarse / 2)
+            if edges is None:
+                continue
+            p0, vec, length = edges
+            bvh = dst.get_bvh()
 
-        if best_p1 is None or min_dist > clearance:
+            find_nearest = bvh.find_nearest
+
+            def measure(points: np.ndarray, limit: float) -> list:
+                hits = []
+                for i, pt in enumerate(points.tolist()):
+                    loc, _norm, _idx, dist = find_nearest(pt, limit)
+                    if loc is not None:
+                        hits.append((dist, i, loc, pt))
+                return hits
+
+            edge_of, t = self._samples(length, coarse)
+            points = p0[edge_of] + t[:, np.newaxis] * vec[edge_of]
+            # Only the samples in the zone around dst (long edges run far past it)
+            lo = np.array(dst.bbox_min, dtype=np.float32) - (clearance + coarse / 2)
+            hi = np.array(dst.bbox_max, dtype=np.float32) + (clearance + coarse / 2)
+            inside = np.all((points >= lo) & (points <= hi), axis=1)
+            edge_of, t, points = edge_of[inside], t[inside], points[inside]
+            near = sorted(measure(points, clearance + coarse / 2), key=lambda hit: hit[0])
+            for dist, i, loc, pt in near[: self._REFINE]:
+                e = edge_of[i]
+                offsets = np.arange(-coarse / 2, coarse / 2 + fine, fine, dtype=np.float32) / max(length[e], 1e-9)
+                ts = np.clip(t[i] + offsets, 0.0, 1.0)
+                refined = [(dist, i, loc, pt)] + measure(p0[e] + ts[:, np.newaxis] * vec[e], clearance)
+                for d, _i, l, q in refined:
+                    if d <= clearance and (best is None or d < best[0]):
+                        best = (d, l.copy(), Vector(q)) if dst is a else (d, Vector(q), l.copy())
+        if best is None:
             return None
+        return self._result(a, b, "clearance", best[1], best[2], best[0])
 
-        return {
-            "a_global_id": a.guid,
-            "b_global_id": b.guid,
-            "a_ifc_class": a.ifc_class,
-            "b_ifc_class": b.ifc_class,
-            "a_name": a.ifc_name,
-            "b_name": b.ifc_name,
-            "type": "clearance",
-            "p1": list(best_p1),
-            "p2": list(best_p2),
-            "distance": min_dist,
-        }
+    @staticmethod
+    def _samples(length: np.ndarray, step: float) -> tuple[np.ndarray, np.ndarray]:
+        """(edge index, parameter 0..1) for points every `step` along each edge, both ends included."""
+        counts = np.clip(np.ceil(length / step).astype(np.int64), 1, 4000) + 1
+        edge_of = np.repeat(np.arange(len(length)), counts)
+        starts = np.repeat(np.cumsum(counts) - counts, counts)
+        t = (np.arange(counts.sum()) - starts) / np.repeat(counts - 1, counts)
+        return edge_of, t.astype(np.float32)
+
+    @staticmethod
+    def _near_edges(src: _ElementGeom, dst: _ElementGeom, reach: float):
+        """(start, vector, length) of `src`'s triangle edges whose box comes within `reach` of `dst`'s
+        bounding box, or None."""
+        verts, tris = src._ws_verts, src._loop_verts
+        if verts is None or tris is None or not len(tris):
+            return None
+        lo = np.array(dst.bbox_min, dtype=np.float32) - reach
+        hi = np.array(dst.bbox_max, dtype=np.float32) + reach
+        if src._edges is None:
+            edges = np.concatenate((tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]))
+            src._edges = np.unique(np.sort(edges, axis=1), axis=0)
+        edges = src._edges
+        p0, p1 = verts[edges[:, 0]], verts[edges[:, 1]]
+        keep = np.all((np.minimum(p0, p1) <= hi) & (np.maximum(p0, p1) >= lo), axis=1)
+        if not keep.any():
+            return None
+        p0, vec = p0[keep], (p1 - p0)[keep]
+        return p0, vec, np.linalg.norm(vec, axis=1)
