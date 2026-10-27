@@ -97,16 +97,19 @@ def _value(field: str, value: str) -> str:
     return value
 
 
-def _badge(status: str) -> str:
+def status_kind(status: str) -> str:
     s = status.lower()
-    kind = ""
     if any(w in s for w in ("closed", "resolved", "done", "solved", "åtgärda", "stängd", "klar")):
-        kind = "done"
+        return "done"
     elif any(w in s for w in ("progress", "pågå", "active")):
-        kind = "progress"
+        return "progress"
     elif any(w in s for w in ("open", "öppen", "new")):
-        kind = "open"
-    return f'<span class="badge {kind}">{_esc(status)}</span>' if status else ""
+        return "open"
+    return ""
+
+
+def _badge(status: str) -> str:
+    return f'<span class="badge {status_kind(status)}">{_esc(status)}</span>' if status else ""
 
 
 def _ordered(topics, columns) -> list:
@@ -138,6 +141,19 @@ def _snapshots(bcfxml, guid: str) -> list[bytes]:
         if data:
             images.append(data)
     return images
+
+
+def field_rows(topic, titles: dict) -> list[tuple[str, str]]:
+    """(label, value) for every filled-in field of a topic; multi-value fields are one value per line."""
+    rows = [(label, _value(field, getattr(topic, field))) for field, label in FIELDS if getattr(topic, field)]
+    if labels := [l.name for l in topic.labels if l.name]:
+        rows.append(("Labels", ", ".join(labels)))
+    if links := [l.name for l in topic.reference_links if l.name]:
+        rows.append(("Links", "\n".join(links)))
+    if related := [titles.get(r.name, r.name) for r in topic.related_topics]:
+        rows.append(("Related", ", ".join(related)))
+    rows.append(("GUID", topic.name))
+    return rows
 
 
 def _img(data: bytes) -> str:
@@ -183,17 +199,9 @@ def build_report(props, bcfxml, bcf_file: str) -> tuple[str, int, int]:
             else "<p class='none'>No viewpoint snapshot</p>"
         )
         rows = [
-            f"<tr><th>{label}</th><td>{_badge(topic.status) if field == 'status' else _esc(_value(field, getattr(topic, field)))}</td></tr>"
-            for field, label in FIELDS
-            if getattr(topic, field)
+            f"<tr><th>{label}</th><td>{_badge(value) if label == 'Status' else '<br>'.join(_esc(v) for v in value.splitlines())}</td></tr>"
+            for label, value in field_rows(topic, titles)
         ]
-        if labels := [l.name for l in topic.labels if l.name]:
-            rows.append(f"<tr><th>Labels</th><td>{_esc(', '.join(labels))}</td></tr>")
-        if links := [l.name for l in topic.reference_links if l.name]:
-            rows.append("<tr><th>Links</th><td>" + "<br>".join(_esc(l) for l in links) + "</td></tr>")
-        if related := [titles.get(r.name, r.name) for r in topic.related_topics]:
-            rows.append(f"<tr><th>Related</th><td>{_esc(', '.join(related))}</td></tr>")
-        rows.append(f"<tr><th>GUID</th><td>{_esc(topic.name)}</td></tr>")
         parts.append("<table class='fields'>" + "".join(rows) + "</table>")
         if topic.description:
             parts.append(f"<div class='description'>{_esc(topic.description)}</div>")
@@ -323,7 +331,7 @@ class ExportBcf2HtmlReport(bpy.types.Operator, ExportHelper):
 
 class ExportBcf2PdfReport(bpy.types.Operator, ExportHelper):
     """Export every topic of this BCF as one PDF report: overview, then one page per topic with its
-    snapshots and fields. Printed by Microsoft Edge or Google Chrome running in the background"""
+    snapshots and fields. Printed by Edge or Chrome in the background when installed, otherwise written directly"""
 
     bl_idname = "bcf2.export_pdf_report"
     bl_label = "Export PDF Report"
@@ -331,6 +339,12 @@ class ExportBcf2PdfReport(bpy.types.Operator, ExportHelper):
     filename_ext = ".pdf"
     filter_glob: bpy.props.StringProperty(default="*.pdf", options={"HIDDEN"})
     open_after: bpy.props.BoolProperty(name="Open PDF", default=True)
+    use_browser: bpy.props.BoolProperty(
+        name="Print with Edge/Chrome",
+        description="Print the HTML report with Edge or Chrome when one is installed (closest to the HTML look). "
+        "Without one, or with this off, the PDF is written directly",
+        default=True,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -341,25 +355,31 @@ class ExportBcf2PdfReport(bpy.types.Operator, ExportHelper):
         return super().invoke(context, event)
 
     def execute(self, context):
-        browser = find_browser()
-        if not browser:
-            self.report(
-                {"ERROR"}, "No Edge or Chrome found to print the PDF - use Export HTML Report and Print > Save as PDF"
-            )
-            return {"CANCELLED"}
+        from bonsai.bim.module.bcf2 import pdf_report
+
         props = tool.Bcf2.get_bcf_props()
+        bcfxml = bcfstore.Bcf2Store.get_bcfxml()
         bcf_file = bpy.path.abspath(props.bcf_file) if props.bcf_file else ""
-        report, topics, images = build_report(props, bcfstore.Bcf2Store.get_bcfxml(), bcf_file)
         path = bpy.path.ensure_ext(self.filepath, ".pdf")
+        browser = find_browser() if self.use_browser else None
         context.window.cursor_set("WAIT")
         try:
-            error = html_to_pdf(browser, report, path)
+            error = None
+            if browser:
+                report, topics, images = build_report(props, bcfxml, bcf_file)
+                error = html_to_pdf(browser, report, path)
+            if not browser or error:
+                pdf, topics, images = pdf_report.build_pdf(props, bcfxml, bcf_file)
+                Path(path).write_bytes(pdf)
+        except OSError as e:
+            self.report({"ERROR"}, f"Couldn't write the PDF: {e}")
+            return {"CANCELLED"}
         finally:
             context.window.cursor_set("DEFAULT")
+        how = os.path.basename(browser) if browser and not error else "built-in writer"
         if error:
-            self.report({"ERROR"}, f"Couldn't print the PDF ({os.path.basename(browser)}): {error}")
-            return {"CANCELLED"}
-        self.report({"INFO"}, f"BCF PDF report: {topics} topics, {images} images -> {os.path.basename(path)}")
+            how += f" ({os.path.basename(browser)} failed: {error})"
+        self.report({"INFO"}, f"BCF PDF report: {topics} topics, {images} images -> {os.path.basename(path)} via {how}")
         if self.open_after:
             bpy.ops.wm.url_open(url=Path(path).resolve().as_uri())
         return {"FINISHED"}
