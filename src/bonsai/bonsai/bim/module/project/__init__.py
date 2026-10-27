@@ -139,7 +139,7 @@ classes = (
     ui.BIM_UL_filter_categories,
     ui.BIM_UL_links,
     gizmo.ClippingPlane,
-)
+) + query_overlay.classes
 
 addon_keymaps = []
 
@@ -149,8 +149,7 @@ def register():
         bpy.utils.register_tool(workspace.ExploreTool, after={"builtin.transform"}, separator=True, group=False)
     bpy.types.Scene.BIMProjectProperties = bpy.props.PointerProperty(type=prop.BIMProjectProperties)
     bpy.types.Scene.MeasureToolSettings = bpy.props.PointerProperty(type=prop.MeasureToolSettings)
-    if not bpy.app.background:
-        query_overlay.QueryInfoOverlay.install()
+    query_overlay.register()
     bpy.app.handlers.load_post.append(decorator.check_outdated_links_on_load)
     bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
     bpy.app.handlers.load_post.append(decorator.restore_measurement_widgets_on_load)
@@ -203,7 +202,7 @@ def unregister():
         decorator.ClippingPlaneDecorator,
     ):
         dec.uninstall()
-    query_overlay.QueryInfoOverlay.uninstall()
+    query_overlay.unregister()
     del bpy.types.Scene.BIMProjectProperties
     del bpy.types.Scene.MeasureToolSettings
     bpy.app.handlers.load_post.remove(decorator.check_outdated_links_on_load)

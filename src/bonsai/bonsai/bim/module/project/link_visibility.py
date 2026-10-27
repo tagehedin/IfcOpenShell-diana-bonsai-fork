@@ -86,6 +86,7 @@ EMPTY: Spec = {"hidden": frozenset(), "only": None, "only_scope": None}
 # link filepath -> {"ptr", "chunks", "lookup": {guid: (chunk, index)}, "db"}
 _cache: dict[str, dict] = {}
 _specs: dict[str, Spec] = {}
+_labels: dict[str, str] = {}  # token -> label of the change ("BCF viewpoint", "Hide IFC Class IfcWall", ...)
 _current: Spec = EMPTY
 _applied_token: str = ""
 _verified = False
@@ -380,6 +381,7 @@ def _commit(context, spec: Spec, label: str) -> dict:
     stats = _apply(context, spec, previous=_current)
     token = str(uuid.uuid4())
     _specs[token] = spec
+    _labels[token] = label
     tool.Project.get_project_props().link_visibility_token = token
     _applied_token = token
     _current = spec

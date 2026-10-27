@@ -103,6 +103,7 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         # --- Navigation / viewport ---
         row = layout.row(align=True)
         row.operator("bim.query_linked_element", text="Query Object")
+        row.operator("bim.edit_query_info_fields", text="", icon="PRESET")
         row = layout.row(align=True)
         op = row.operator("bim.explore_hotkey", text="Walk Mode")
         op.hotkey = "S_W"
