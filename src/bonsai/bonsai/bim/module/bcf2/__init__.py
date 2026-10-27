@@ -25,6 +25,7 @@ addon_keymaps = []
 
 classes = (
     report.ExportBcf2HtmlReport,
+    report.ExportBcf2PdfReport,
     refresh_snapshots.RefreshBcf2Snapshots,
     operator.ActivateBcfViewpoint,
     operator.AddBcf2BimSnippet,

@@ -27,6 +27,10 @@ import base64
 import datetime
 import html
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -207,6 +211,78 @@ def build_report(props, bcfxml, bcf_file: str) -> tuple[str, int, int]:
     return "".join(parts), len(topics), images
 
 
+def default_path(ext: str) -> str:
+    """'<bcf name> report<ext>' next to the BCF file, or next to the .blend if it isn't saved yet."""
+    props = tool.Bcf2.get_bcf_props()
+    bcf_file = bpy.path.abspath(props.bcf_file) if props.bcf_file else ""
+    folder = os.path.dirname(bcf_file) or bpy.path.abspath("//")
+    stem = Path(bcf_file).stem if bcf_file else (props.name or "BCF")
+    return os.path.join(folder, f"{stem} report{ext}")
+
+
+def find_browser() -> str | None:
+    """A Chromium-based browser that can print HTML to PDF headless - Edge ships with Windows."""
+    names = (
+        "msedge",
+        "chrome",
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+    )
+    for name in names:
+        if found := shutil.which(name):
+            return found
+    candidates = []
+    if sys.platform == "win32":
+        for root in filter(None, (os.environ.get(v) for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"))):
+            candidates += [
+                os.path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+            ]
+    elif sys.platform == "darwin":
+        candidates += [
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
+def html_to_pdf(browser: str, report: str, pdf_path: str) -> str | None:
+    """Prints the report through a headless browser, using the report's print styles. Returns an error or None."""
+    with tempfile.TemporaryDirectory(prefix="bcf_report_") as tmp:
+        source = Path(tmp, "report.html")
+        source.write_text(report, encoding="utf-8")
+        target = Path(tmp, "report.pdf")
+        cmd = [
+            browser,
+            "--headless",
+            "--disable-gpu",
+            "--no-first-run",
+            # Own profile, so a browser the user already has open doesn't swallow the job and exit early
+            f"--user-data-dir={Path(tmp, 'profile')}",
+            "--no-pdf-header-footer",
+            "--print-to-pdf-no-header",  # older Chromium spelling of the flag above
+            f"--print-to-pdf={target}",
+            source.as_uri(),
+        ]
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            run = subprocess.run(cmd, capture_output=True, text=True, timeout=300, creationflags=flags)
+        except subprocess.TimeoutExpired:
+            return "the browser took over 5 minutes"
+        except OSError as e:
+            return str(e)
+        if not target.exists() or not target.stat().st_size:
+            return (run.stderr or run.stdout or f"exit code {run.returncode}").strip().splitlines()[-1][:200]
+        try:
+            shutil.copyfile(target, pdf_path)
+        except OSError as e:
+            return str(e)
+    return None
+
+
 class ExportBcf2HtmlReport(bpy.types.Operator, ExportHelper):
     """Export every topic of this BCF as one HTML report: overview table, then one page per topic with
     its snapshots and fields. Open it in a browser; Print > Save as PDF gives a PDF"""
@@ -226,11 +302,7 @@ class ExportBcf2HtmlReport(bpy.types.Operator, ExportHelper):
         return True
 
     def invoke(self, context, event):
-        props = tool.Bcf2.get_bcf_props()
-        bcf_file = bpy.path.abspath(props.bcf_file) if props.bcf_file else ""
-        folder = os.path.dirname(bcf_file) or bpy.path.abspath("//")
-        stem = Path(bcf_file).stem if bcf_file else (props.name or "BCF")
-        self.filepath = os.path.join(folder, f"{stem} report.html")
+        self.filepath = default_path(".html")
         return super().invoke(context, event)
 
     def execute(self, context):
@@ -244,6 +316,50 @@ class ExportBcf2HtmlReport(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, f"Couldn't write the report: {e}")
             return {"CANCELLED"}
         self.report({"INFO"}, f"BCF report: {topics} topics, {images} images -> {os.path.basename(path)}")
+        if self.open_after:
+            bpy.ops.wm.url_open(url=Path(path).resolve().as_uri())
+        return {"FINISHED"}
+
+
+class ExportBcf2PdfReport(bpy.types.Operator, ExportHelper):
+    """Export every topic of this BCF as one PDF report: overview, then one page per topic with its
+    snapshots and fields. Printed by Microsoft Edge or Google Chrome running in the background"""
+
+    bl_idname = "bcf2.export_pdf_report"
+    bl_label = "Export PDF Report"
+    bl_options = {"REGISTER"}
+    filename_ext = ".pdf"
+    filter_glob: bpy.props.StringProperty(default="*.pdf", options={"HIDDEN"})
+    open_after: bpy.props.BoolProperty(name="Open PDF", default=True)
+
+    @classmethod
+    def poll(cls, context):
+        return ExportBcf2HtmlReport.poll(context)
+
+    def invoke(self, context, event):
+        self.filepath = default_path(".pdf")
+        return super().invoke(context, event)
+
+    def execute(self, context):
+        browser = find_browser()
+        if not browser:
+            self.report(
+                {"ERROR"}, "No Edge or Chrome found to print the PDF - use Export HTML Report and Print > Save as PDF"
+            )
+            return {"CANCELLED"}
+        props = tool.Bcf2.get_bcf_props()
+        bcf_file = bpy.path.abspath(props.bcf_file) if props.bcf_file else ""
+        report, topics, images = build_report(props, bcfstore.Bcf2Store.get_bcfxml(), bcf_file)
+        path = bpy.path.ensure_ext(self.filepath, ".pdf")
+        context.window.cursor_set("WAIT")
+        try:
+            error = html_to_pdf(browser, report, path)
+        finally:
+            context.window.cursor_set("DEFAULT")
+        if error:
+            self.report({"ERROR"}, f"Couldn't print the PDF ({os.path.basename(browser)}): {error}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"BCF PDF report: {topics} topics, {images} images -> {os.path.basename(path)}")
         if self.open_after:
             bpy.ops.wm.url_open(url=Path(path).resolve().as_uri())
         return {"FINISHED"}

@@ -95,7 +95,8 @@ class BIM_PT_bcf2(Panel):
         row.operator("bcf2.save_bcf_project", icon="EXPORT", text="Save Project As...")
         row.operator("bcf2.unload_bcf_project", text="", icon="CANCEL")
         row = layout.row(align=True)
-        row.operator("bcf2.export_html_report", icon="DOCUMENTS")
+        row.operator("bcf2.export_html_report", icon="DOCUMENTS", text="HTML Report")
+        row.operator("bcf2.export_pdf_report", icon="FILE_TEXT", text="PDF Report")
         row.operator("bcf2.refresh_all_snapshots", icon="FILE_REFRESH", text="Refresh All Snapshots")
 
         col = layout.column(align=True)
