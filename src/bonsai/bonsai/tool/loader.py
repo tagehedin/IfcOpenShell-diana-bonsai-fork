@@ -945,9 +945,16 @@ class Loader(bonsai.core.tool.Loader):
         else:
             elements += ifc_file.by_type("IfcSpatialElement")
 
+        # Boolean bodies (CSG / Clipping, e.g. Revit slabs with cuts) make the kernel evaluate
+        # the whole boolean just to read one vertex - 0.2 s on Linux, but a Revit export whose
+        # first candidate was such a slab spent ~180 s in this step on Windows.
+        # Try plain representations first; the stable sort keeps walls-first within each group.
+        elements = [e for e in elements if e.Representation]
+        elements.sort(
+            key=lambda e: any(r.RepresentationType in ("CSG", "Clipping") for r in e.Representation.Representations)
+        )
+
         for element in elements:
-            if not element.Representation:
-                continue
             shape = cls.create_generic_shape(element, is_gross=True)
             if not shape:
                 continue
