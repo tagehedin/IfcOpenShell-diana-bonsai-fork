@@ -23,6 +23,16 @@ import bpy
 import bonsai.tool as tool
 from bonsai.bim.module.project.data import LinksData
 
+# Related tools share a colored-square icon so groups read at a glance in the
+# tool header (Blender can't tint button backgrounds, only pick icons).
+TOOL_GROUP_ICONS = {
+    "MEASURE": "STRIP_COLOR_03",  # yellow - measurement widgets
+    "QUERY": "STRIP_COLOR_02",  # orange - query + hide/isolate
+    "NAV": "STRIP_COLOR_04",  # green - walk, orbit, culling
+    "CLIP": "STRIP_COLOR_05",  # blue - clipping planes and box
+    "OTHER": "STRIP_COLOR_09",  # gray - image/texture helpers
+}
+
 
 class ExploreTool(bpy.types.WorkSpaceTool):
     bl_space_type = "VIEW_3D"
@@ -54,13 +64,13 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         # --- Measurement tools (kept first so they're always visible in header) ---
         prop = tool.Project.get_measure_tool_settings()
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Measure")
+        op = row.operator("bim.explore_hotkey", text="Measure", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_M"
         row.prop(prop, "measurement_type", text="", expand=True, icon_only=True, emboss=True)
         row.operator("bim.clear_measurement", text="", icon="X")
 
         row = layout.row(align=True)
-        row.operator("bim.all_widgets_off", text="ALL OFF")
+        row.operator("bim.all_widgets_off", text="ALL OFF", icon=TOOL_GROUP_ICONS["MEASURE"])
 
         # Text-only color swatches for the measurement tools' number labels —
         # lines/points/markers keep their fixed colors, only the readouts
@@ -76,80 +86,83 @@ class ExploreTool(bpy.types.WorkSpaceTool):
         row.prop(prop, "text_color_white", text="")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Laser")
+        op = row.operator("bim.explore_hotkey", text="Laser", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_L"
         row.operator("bim.delete_last_laser_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Measure XYZ")
+        op = row.operator("bim.explore_hotkey", text="Measure XYZ", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_B"
         row.operator("bim.delete_last_bmeasure_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Aligned Dimension")
+        op = row.operator("bim.explore_hotkey", text="Aligned Dimension", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_D"
         row.operator("bim.delete_last_dim_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="XYZ Point")
+        op = row.operator("bim.explore_hotkey", text="XYZ Point", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_X"
         row.operator("bim.delete_last_xyz_widget", text="", icon="X")
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Elevation")
+        op = row.operator("bim.explore_hotkey", text="Elevation", icon=TOOL_GROUP_ICONS["MEASURE"])
         op.hotkey = "S_Z"
         row.operator("bim.delete_last_z_widget", text="", icon="X")
 
         # --- Navigation / viewport ---
         row = layout.row(align=True)
-        row.operator("bim.query_linked_element", text="Query Object")
+        row.operator("bim.query_linked_element", text="Query Object", icon=TOOL_GROUP_ICONS["QUERY"])
         row.operator("bim.edit_query_info_fields", text="", icon="PRESET")
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Walk Mode")
+        op = row.operator("bim.explore_hotkey", text="Walk Mode", icon=TOOL_GROUP_ICONS["NAV"])
         op.hotkey = "S_W"
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Add Clipping Plane")
+        op = row.operator("bim.explore_hotkey", text="Add Clipping Plane", icon=TOOL_GROUP_ICONS["CLIP"])
         op.hotkey = "S_C"
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Flip Clipping Plane")
+        op = row.operator("bim.explore_hotkey", text="Flip Clipping Plane", icon=TOOL_GROUP_ICONS["CLIP"])
         op.hotkey = "S_F"
         row = layout.row(align=True)
         fill_prop = tool.Project.get_project_props()
         row.operator(
             "bim.toggle_clipping_plane_fill",
             text="Clipping Plane Fill",
+            icon=TOOL_GROUP_ICONS["CLIP"],
             depress=fill_prop.clipping_plane_fill,
         )
         row = layout.row(align=True)
-        row.operator("bim.add_clip_box", text="Add Clip Box")
+        row.operator("bim.add_clip_box", text="Add Clip Box", icon=TOOL_GROUP_ICONS["CLIP"])
         row = layout.row(align=True)
-        row.operator("bim.remove_clip_box", text="Deactivate Clip Box")
+        row.operator("bim.remove_clip_box", text="Deactivate Clip Box", icon=TOOL_GROUP_ICONS["CLIP"])
         row = layout.row(align=True)
-        row.operator("view3d.view_center_pick", text="Set Orbit Center")
+        row.operator("view3d.view_center_pick", text="Set Orbit Center", icon=TOOL_GROUP_ICONS["NAV"])
         row = layout.row(align=True)
         op = row.operator(
-            "bim.explore_hotkey", text="Disable Culling" if LinksData.enable_culling else "Enable Culling"
+            "bim.explore_hotkey",
+            text="Disable Culling" if LinksData.enable_culling else "Enable Culling",
+            icon=TOOL_GROUP_ICONS["NAV"],
         )
         op.hotkey = "A_C"
 
         row = layout.row(align=True)
-        row.operator("bim.hide_queried_linked_element", text="Hide Queried Element")
+        row.operator("bim.hide_queried_linked_element", text="Hide Queried Element", icon=TOOL_GROUP_ICONS["QUERY"])
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Hide All Except")
+        op = row.operator("bim.explore_hotkey", text="Hide All Except", icon=TOOL_GROUP_ICONS["QUERY"])
         op.hotkey = "S_H"
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Unhide All")
+        op = row.operator("bim.explore_hotkey", text="Unhide All", icon=TOOL_GROUP_ICONS["QUERY"])
         op.hotkey = "A_H"
         row = layout.row(align=True)
-        row.operator("bim.hide_queried_element_ifc_class", text="Hide IFC Class")
-        row.operator("bim.isolate_queried_element_ifc_class", text="Isolate IFC Class")
+        row.operator("bim.hide_queried_element_ifc_class", text="Hide IFC Class", icon=TOOL_GROUP_ICONS["QUERY"])
+        row.operator("bim.isolate_queried_element_ifc_class", text="Isolate IFC Class", icon=TOOL_GROUP_ICONS["QUERY"])
 
         row = layout.row(align=True)
-        op = row.operator("bim.explore_hotkey", text="Image Scaling")
+        op = row.operator("bim.explore_hotkey", text="Image Scaling", icon=TOOL_GROUP_ICONS["OTHER"])
         op.hotkey = "S_S"
 
         row = layout.row(align=True)
-        row.operator("bim.generate_uv_map", text="Generate UV Map")
+        row.operator("bim.generate_uv_map", text="Generate UV Map", icon=TOOL_GROUP_ICONS["OTHER"])
 
 
 class ExploreHotkey(bpy.types.Operator):
