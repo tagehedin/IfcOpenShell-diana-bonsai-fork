@@ -88,6 +88,20 @@ def show_all_intersections_update(self: "BIMClashProperties", context: bpy.types
     tool.Blender.update_all_viewports(context)
 
 
+def soft_volume_visibility_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    ClashDecorator.show_soft_volume = self.show_soft_volume_highlight
+    tool.Blender.update_all_viewports(context)
+
+
+def show_all_soft_intersections_update(self: "BIMClashProperties", context: bpy.types.Context) -> None:
+    from bonsai.bim.module.clash.decorator import ClashDecorator
+
+    ClashDecorator.show_all_soft_intersections = self.show_all_soft_intersections
+    tool.Blender.update_all_viewports(context)
+
+
 def ensure_group_colors(props: "BIMClashProperties") -> None:
     existing = {item.name for item in props.group_highlight_colors}
     for name in GROUP_NAMES:
@@ -151,7 +165,7 @@ class BIMGroupColor(PropertyGroup):
     show_highlight: BoolProperty(
         name="Show",
         description="Show this group's clash pairs. Turning this off hides both sides of every "
-        "pair this group is part of, and (unless Show All Intersections is on) their intersections",
+        "pair this group is part of, and (unless Show All Hard/Soft Clashes is on) their clash volumes",
         default=True,
         update=group_show_update,
     )
@@ -278,6 +292,10 @@ class Clash(PropertyGroup):
     p1: FloatVectorProperty(size=3, subtype="XYZ")
     p2: FloatVectorProperty(size=3, subtype="XYZ")
     distance: FloatProperty()
+    # Clearance clashes: the clearance the run used and whether A's zone (else B's) was checked -
+    # for the blue soft clash volume. 0 for hard clashes and results saved before this was stored.
+    clearance: FloatProperty()
+    clearance_grow_a: BoolProperty()
     # Cache for SelectClash.compute_intersection_geometry()'s result - that boolean
     # solve (bmesh cleanup, hole-filling, EXACT solver) is the expensive part of
     # "Activate Clash", not geometry resolution. Persisting it here means it
@@ -308,6 +326,8 @@ class Clash(PropertyGroup):
         p1: tuple[float, float, float]
         p2: tuple[float, float, float]
         distance: float
+        clearance: float
+        clearance_grow_a: bool
         has_cached_intersection: bool
         cached_intersection: bytes
         cached_intersection_verts: bpy.types.bpy_prop_collection_idprop[ClashIntersectionVert]
@@ -576,12 +596,30 @@ class BIMClashProperties(PropertyGroup):
     active_clash_text: StringProperty(name="Active Clash Text")
     last_selected_clash_index: IntProperty(name="Last Selected Clash Index", default=-1)
     group_highlight_colors: CollectionProperty(name="Group Colors", type=BIMGroupColor)
-    show_volume_highlight: BoolProperty(name="Show Volume", default=True, update=volume_visibility_update)
+    show_volume_highlight: BoolProperty(
+        name="Hard Clashes",
+        description="Show the red volumes where clashing elements overlap",
+        default=True,
+        update=volume_visibility_update,
+    )
     show_all_intersections: BoolProperty(
-        name="Show All Intersections",
-        description="Show every intersection volume regardless of clash group visibility",
+        name="Show All Hard Clashes",
+        description="Show every hard clash volume regardless of clash group visibility",
         default=False,
         update=show_all_intersections_update,
+    )
+    show_soft_volume_highlight: BoolProperty(
+        name="Soft Clashes",
+        description="Show the blue volumes of clearance clashes: the part of an element inside "
+        "another element's clearance zone",
+        default=True,
+        update=soft_volume_visibility_update,
+    )
+    show_all_soft_intersections: BoolProperty(
+        name="Show All Soft Clashes",
+        description="Show every soft clash volume regardless of clash group visibility",
+        default=False,
+        update=show_all_soft_intersections_update,
     )
     build_clash_volumes: BoolProperty(
         name="Build Clash Volumes",
@@ -628,6 +666,8 @@ class BIMClashProperties(PropertyGroup):
         group_highlight_colors: bpy.types.bpy_prop_collection_idprop[BIMGroupColor]
         show_volume_highlight: bool
         show_all_intersections: bool
+        show_soft_volume_highlight: bool
+        show_all_soft_intersections: bool
         export_path: str
 
     @property

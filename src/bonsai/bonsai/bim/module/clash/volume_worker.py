@@ -41,6 +41,10 @@ import traceback
 # highlights), so the heartbeat only catches a main Blender that is really gone; on Linux/macOS
 # the parent check below notices that immediately.
 HEARTBEAT_TIMEOUT = 120.0  # seconds
+# A gap this long between two passes of the loop means this process didn't run either: the computer
+# slept (or a chunk was very slow). Main Blender then gets a fresh HEARTBEAT_TIMEOUT to touch the
+# heartbeat again - after waking from sleep its file looks as old as the sleep was long.
+SUSPEND_GAP = 10.0  # seconds
 
 
 def retry(fn, *args, attempts: int = 40, delay: float = 0.05):
@@ -74,9 +78,10 @@ def log(message: str) -> None:
 
 def build_chunk(builder, items) -> list:
     results = []
-    for key, geometry_a, geometry_b in items:
+    for key, *args in items:
         try:
-            volume = builder.build(geometry_a, geometry_b)
+            # (geometry_a, geometry_b) for a hard clash, build_clearance's arguments for a clearance one
+            volume = builder.build_clearance(*args) if len(args) > 2 else builder.build(*args)
         except Exception:
             log(f"boolean failed:\n{traceback.format_exc()}")
             volume = None
@@ -98,14 +103,19 @@ def main() -> str:
     heartbeat = os.path.join(job_dir, "heartbeat")
     finished: set[str] = set()  # chunks done whose inbox file couldn't be deleted yet
     chunks = clashes = failed = 0
+    last_pass = resumed = time.time()
     log("started")
 
     with volumes.VolumeBuilder() as builder:
         while True:
             if os.path.exists(os.path.join(job_dir, "stop")):
                 return f"job finished or cancelled (stop file) after {chunks} chunk(s), {clashes} clash(es), {failed} failed"
+            now = time.time()
+            if now - last_pass > SUSPEND_GAP:
+                resumed = now
+            last_pass = now
             try:
-                stale = time.time() - os.path.getmtime(heartbeat)
+                stale = now - max(os.path.getmtime(heartbeat), resumed)
             except OSError:
                 return f"job folder removed after {chunks} chunk(s)"
             if stale > HEARTBEAT_TIMEOUT:

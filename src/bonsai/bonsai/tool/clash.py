@@ -232,6 +232,8 @@ class Clash(bonsai.core.tool.Clash):
             blender_clash.p1 = clash["p1"]
             blender_clash.p2 = clash["p2"]
             blender_clash.distance = clash["distance"]
+            blender_clash.clearance = clash.get("clearance", 0.0)
+            blender_clash.clearance_grow_a = clash.get("clearance_side") == "a"
 
             old = old_cache.get((blender_clash.a_global_id, blender_clash.b_global_id))
             if (

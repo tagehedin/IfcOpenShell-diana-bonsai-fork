@@ -1015,6 +1015,49 @@ class SelectClash(bpy.types.Operator):
         return None, None
 
     @staticmethod
+    def clearance_spec(clash_set, clash_prop) -> Union[tuple[float, bool], None]:
+        """``(clearance, grow_a)`` for a clearance clash's blue volume, None for a hard clash.
+
+        The element whose group asked for the larger clearance is grown (B when the clash set's own
+        clearance applies) - stored with the clash by the run. Results saved before that fall back
+        to the current settings, the same "larger wins" as the engine; if those no longer reach the
+        measured distance (changed since the run) it is 0, which gives a marker instead of a volume."""
+        if clash_prop is None or clash_prop.clash_type != "clearance":
+            return None
+        if clash_prop.clearance > 0:
+            return clash_prop.clearance, clash_prop.clearance_grow_a
+        rules = [getattr(clash_set, f"rule_{g}", None) for g in (clash_prop.clash_pair or "ab")[:2]]
+        c1, c2 = (rule.clearance if rule and rule.use_clearance else 0.0 for rule in rules)
+        base = clash_set.clearance if clash_set.mode == "clearance" else 0.0
+        clearance = max(c1, c2, base)
+        return (clearance if clearance > clash_prop.distance else 0.0), c1 > c2 and c1 >= base
+
+    @staticmethod
+    def compute_clash_volume(geometry_a, geometry_b, clash_set, clash_prop):
+        """compute_intersection_geometry for a hard clash, the blue clearance volume (or its
+        marker) for a clearance one - see volumes.VolumeBuilder.build_clearance."""
+        if (spec := SelectClash.clearance_spec(clash_set, clash_prop)) is None:
+            return SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
+        args = volumes.clearance_args(geometry_a, geometry_b, *spec, tuple(clash_prop.p1), tuple(clash_prop.p2))
+        with volumes.VolumeBuilder() as builder:
+            return builder.build_clearance(*args)
+
+    @staticmethod
+    def volume_todo(pair: str, idx: int, a_highlight, b_highlight, clash_set, clash_prop) -> dict:
+        """One VolumeJob item (see VolumeJob.start)."""
+        item = {
+            "pair": pair,
+            "idx": idx,
+            "a": ClashDecorator._normalize_highlight(a_highlight),
+            "b": ClashDecorator._normalize_highlight(b_highlight),
+            "key": (clash_prop.a_global_id, clash_prop.b_global_id),
+            "p1": tuple(clash_prop.p1),
+        }
+        if (spec := SelectClash.clearance_spec(clash_set, clash_prop)) is not None:
+            item.update(clearance=spec[0], grow_a=spec[1], p2=tuple(clash_prop.p2))
+        return item
+
+    @staticmethod
     def compute_intersection_geometry(geometry_a, geometry_b):
         """Compute the boolean intersection volume of two world-space meshes,
         each given as ``(positions, triangle_indices)``. Returns the
@@ -1106,14 +1149,14 @@ class SelectClash(bpy.types.Operator):
                 # background job (volume_jobs.py), only if asked for.
                 if build_volumes and highlights[0] and highlights[1]:
                     todo.append(
-                        {
-                            "pair": g1 + g2,
-                            "idx": len(pair_highlights[g1 + g2]),
-                            "a": ClashDecorator._normalize_highlight(highlights[0]),
-                            "b": ClashDecorator._normalize_highlight(highlights[1]),
-                            "key": (clash_prop.a_global_id, clash_prop.b_global_id),
-                            "p1": tuple(clash_prop.p1),
-                        }
+                        self.volume_todo(
+                            g1 + g2,
+                            len(pair_highlights[g1 + g2]),
+                            highlights[0],
+                            highlights[1],
+                            active_clash_set,
+                            clash_prop,
+                        )
                     )
             else:
                 log(f"[Bonsai Clash]     Resolving geometry...")
@@ -1126,14 +1169,21 @@ class SelectClash(bpy.types.Operator):
                 if geometries[0] and geometries[1]:
                     log(f"[Bonsai Clash]     Computing intersection volume...")
                     _ti = time.time()
-                    intersection = self.compute_intersection_geometry(geometries[0], geometries[1])
+                    intersection = self.compute_clash_volume(geometries[0], geometries[1], active_clash_set, clash_prop)
                     log(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
                     if intersection is not None:
                         tool.Clash.write_cached_intersection(clash_prop, intersection)
                 else:
                     log(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
-            pair_highlights[g1 + g2].append({"a": highlights[0], "b": highlights[1], "intersection": intersection})
+            pair_highlights[g1 + g2].append(
+                {
+                    "a": highlights[0],
+                    "b": highlights[1],
+                    "intersection": intersection,
+                    "soft": clash_prop.clash_type == "clearance",
+                }
+            )
 
         first_clash = clash_props[0]
         print(f"[Bonsai Clash]   Installing decorator...")
@@ -1419,14 +1469,14 @@ class SelectSmartGroup(bpy.types.Operator):
                         intersection = tool.Clash.read_cached_intersection(cached_clash_prop)
                     elif build_volumes and a_highlight and b_highlight:
                         todo.append(
-                            {
-                                "pair": g1 + g2,
-                                "idx": len(pair_highlights[g1 + g2]),
-                                "a": ClashDecorator._normalize_highlight(a_highlight),
-                                "b": ClashDecorator._normalize_highlight(b_highlight),
-                                "key": (cached_clash_prop.a_global_id, cached_clash_prop.b_global_id),
-                                "p1": tuple(cached_clash_prop.p1),
-                            }
+                            SelectClash.volume_todo(
+                                g1 + g2,
+                                len(pair_highlights[g1 + g2]),
+                                a_highlight,
+                                b_highlight,
+                                props.active_clash_set,
+                                cached_clash_prop,
+                            )
                         )
             else:
                 log(f"[Bonsai Clash]     Resolving geometry...")
@@ -1445,14 +1495,23 @@ class SelectSmartGroup(bpy.types.Operator):
                     else:
                         log(f"[Bonsai Clash]     Computing intersection volume...")
                         _ti = time.time()
-                        intersection = SelectClash.compute_intersection_geometry(geometry_a, geometry_b)
+                        intersection = SelectClash.compute_clash_volume(
+                            geometry_a, geometry_b, props.active_clash_set, cached_clash_prop
+                        )
                         log(f"[Bonsai Clash]     Intersection done in {time.time() - _ti:.2f}s")
                         if intersection is not None and cached_clash_prop is not None:
                             tool.Clash.write_cached_intersection(cached_clash_prop, intersection)
                 else:
                     log(f"[Bonsai Clash]     Skipping intersection (geometry missing for one or both sides)")
 
-            pair_highlights[g1 + g2].append({"a": a_highlight, "b": b_highlight, "intersection": intersection})
+            pair_highlights[g1 + g2].append(
+                {
+                    "a": a_highlight,
+                    "b": b_highlight,
+                    "intersection": intersection,
+                    "soft": cached_clash_prop is not None and cached_clash_prop.clash_type == "clearance",
+                }
+            )
 
         if not resolved_any:
             print(f"[Bonsai Clash] No clashes resolved — nothing to display.")

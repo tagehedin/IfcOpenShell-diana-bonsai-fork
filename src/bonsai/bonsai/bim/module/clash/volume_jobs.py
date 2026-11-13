@@ -54,6 +54,8 @@ REDRAW_EVERY = 0.5  # seconds - redrawing thousands of highlights is expensive
 SLICE = 0.03  # seconds of work per slice - keeps the UI responsive
 CHUNK = 50  # clashes per worker chunk
 WORKER_MIN = 300  # fewer clashes than this are built in-process, no workers
+MAX_REPLACEMENTS = 4  # workers started to replace ones that stopped early, per job
+SUSPEND_GAP = 10.0  # seconds between ticks counted as not working (computer asleep, Blender busy)
 
 
 def _retry(fn, *args, attempts: int = 10, delay: float = 0.02):
@@ -79,7 +81,8 @@ class VolumeJob:
     @classmethod
     def start(cls, clash_set_name: str, todo: list[dict]) -> None:
         """``todo`` items: {"pair", "idx" (position in ClashDecorator.pair_highlights[pair]),
-        "a", "b" (normalised highlights), "key" ((a_global_id, b_global_id)), "p1"}."""
+        "a", "b" (normalised highlights), "key" ((a_global_id, b_global_id)), "p1"}; clearance
+        clashes also have "clearance", "grow_a" (grow A instead of B) and "p2"."""
         cls.cancel()
         if todo:
             cls.active = VolumeJob(clash_set_name, todo)
@@ -106,6 +109,9 @@ class VolumeJob:
         self.done = 0
         self.built = 0
         self.started = time.time()
+        self.working = 0.0  # seconds actually spent, without sleep - see _tick
+        self.last_tick = self.started
+        self.replaced = 0
         self.next_report = max(1, self.total // 10)
         self.items: dict[int, dict] = {}  # id(item) -> item, for clashes handed to workers and not back yet
         self.owned: dict[str, tuple[int, list[int]]] = {}  # chunk name -> (worker pid, item ids)
@@ -142,8 +148,8 @@ class VolumeJob:
             return list(todo)
         return sorted(todo, key=lambda item: (Vector(item["p1"]) - eye).length_squared)
 
-    def _start_workers(self) -> None:
-        count = max(1, min(8, (os.cpu_count() or 2) // 2))
+    def _start_workers(self, count: int = 0) -> None:
+        count = count or max(1, min(8, (os.cpu_count() or 2) // 2))
         try:
             if not self.job_dir:
                 self.job_dir = tempfile.mkdtemp(prefix="bonsai_clash_volumes_")
@@ -168,6 +174,9 @@ class VolumeJob:
                 self.logs.append(log)
                 self.inboxes.append(inbox)
         except OSError as e:
+            if self.workers:
+                print(f"[Bonsai Clash] Couldn't start a volume worker ({e}) - continuing with {len(self.workers)}.")
+                return
             print(f"[Bonsai Clash] Couldn't start volume workers ({e}) - building in Blender instead.")
             self._stop_workers()
 
@@ -186,6 +195,10 @@ class VolumeJob:
         if ClashDecorator.pair_highlights is not self.shown:
             self._finish(cancelled=True)
             return None
+        now = time.time()
+        if now - self.last_tick < SUSPEND_GAP:
+            self.working += now - self.last_tick
+        self.last_tick = now
         try:
             if self.workers:
                 self._handle_dead_workers()
@@ -213,17 +226,29 @@ class VolumeJob:
         # numpy arrays, read per mesh once and cached (shared with the decorator's drawing)
         return [fast_geometry.resolve(item[side]) for side in ("a", "b")]
 
+    def _build_args(self, item: dict) -> Optional[tuple]:
+        """VolumeBuilder arguments for one clash - build()'s for a hard clash, build_clearance()'s
+        for a clearance one - or None when an element's geometry is missing."""
+        geometry_a, geometry_b = self._geometry(item)
+        if geometry_a is None or geometry_b is None:
+            return None
+        if (clearance := item.get("clearance")) is None:
+            return geometry_a, geometry_b
+        return volumes.clearance_args(geometry_a, geometry_b, clearance, item["grow_a"], item["p1"], item["p2"])
+
+    @staticmethod
+    def _build(builder, args: Optional[tuple]):
+        if args is None:
+            return None
+        return builder.build_clearance(*args) if len(args) > 2 else builder.build(*args)
+
     def _build_here(self, deadline: float) -> None:
         if not self.queue:
             return
         with volumes.VolumeBuilder() as builder:
             while self.queue and time.perf_counter() < deadline:
                 item = self.queue.pop(0)
-                geometry_a, geometry_b = self._geometry(item)
-                volume = (
-                    builder.build(geometry_a, geometry_b) if geometry_a is not None and geometry_b is not None else None
-                )
-                self._apply(item, volume)
+                self._apply(item, self._build(builder, self._build_args(item)))
 
     def _load(self, i: int) -> int:
         pid = self.workers[i].pid
@@ -235,13 +260,12 @@ class VolumeJob:
             self.queue and min(self._load(i) for i in range(len(self.workers))) < 2 and time.perf_counter() < deadline
         ):
             item = self.queue.pop(0)
-            geometry_a, geometry_b = self._geometry(item)
-            if geometry_a is None or geometry_b is None:
+            if (args := self._build_args(item)) is None:
                 self._apply(item, None)
                 continue
             item_id = id(item)
             self.items[item_id] = item
-            self.pending_chunk.append((item_id, geometry_a, geometry_b))  # numpy pickles compactly
+            self.pending_chunk.append((item_id, *args))  # numpy pickles compactly
             if len(self.pending_chunk) >= CHUNK or not self.queue:
                 self._write_chunk()
         if self.pending_chunk and not self.queue:
@@ -256,7 +280,7 @@ class VolumeJob:
         with open(tmp, "wb") as f:
             pickle.dump(self.pending_chunk, f)
         _retry(os.replace, tmp, os.path.join(self.inboxes[i], name), attempts=100)
-        self.owned[name] = (self.workers[i].pid, [item_id for item_id, _, _ in self.pending_chunk])
+        self.owned[name] = (self.workers[i].pid, [entry[0] for entry in self.pending_chunk])
         self.pending_chunk = []
 
     def _requeue(self, item_ids: list[int]) -> None:
@@ -323,7 +347,12 @@ class VolumeJob:
             self.retired_logs.append(self.logs.pop(i))
             shutil.rmtree(self.inboxes.pop(i), ignore_errors=True)
         if self.workers:
-            print(f"[Bonsai Clash] {len(dead)} volume worker(s) stopped - {len(self.workers)} left.")
+            if self.replaced < MAX_REPLACEMENTS:
+                self.replaced += len(dead)
+                print(f"[Bonsai Clash] {len(dead)} volume worker(s) stopped - starting replacement(s).")
+                self._start_workers(len(dead))
+            else:
+                print(f"[Bonsai Clash] {len(dead)} volume worker(s) stopped - {len(self.workers)} left.")
             return
         # All gone: their clashes are back in the queue (nearest first as before). Restart the
         # workers once - or, the second time, build the rest in Blender.
@@ -353,7 +382,7 @@ class VolumeJob:
                 tool.Clash.write_cached_intersection(clash, volume)
             ClashDecorator.set_intersection(item["pair"], item["idx"], volume)
         if self.done >= self.next_report or self.done == self.total:
-            elapsed = time.time() - self.started
+            elapsed = self.working
             print(
                 f"[Bonsai Clash]   volumes {self.done}/{self.total} ({100 * self.done // self.total}%), "
                 f"{self.built} with a volume, {elapsed:.0f}s",
@@ -380,7 +409,7 @@ class VolumeJob:
         self._stop_workers()
         if VolumeJob.active is self:
             VolumeJob.active = None
-        elapsed = time.time() - self.started
+        elapsed = self.working
         what = "Stopped building" if cancelled else "Built"
         print(
             f"[Bonsai Clash] {what} clash volumes: {self.done}/{self.total} done, {self.built} with a volume, {elapsed:.0f}s"

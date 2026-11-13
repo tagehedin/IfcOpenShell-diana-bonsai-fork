@@ -104,15 +104,18 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         ("draw_text", "POST_PIXEL"),
         ("draw_geometry", "POST_VIEW"),
     )
-    # {"cd": [{"a": highlight, "b": highlight, "intersection": (positions, tris) | None}, ...], ...}
+    # {"cd": [{"a": highlight, "b": highlight, "intersection": (positions, tris) | None, "soft": bool}, ...], ...}
+    # "soft": a clearance clash - its volume is drawn blue instead of red.
     # Keyed by 2-letter pair (e.g. "cd") so highlights and the intersection volume for
     # one clash can all be gated together on both member groups being visible.
     pair_highlights: dict = {}
     group_colors: dict = {}  # {"a": (r,g,b), ...}
     show_groups: dict = {}  # {"a": True, ...} - pair-level gate: off hides both sides + intersections
     show_own_objects: dict = {}  # {"a": True, ...} - solo gate: off hides only this group's own objects
-    show_volume = True
-    show_all_intersections = False  # bypass per-pair group gating for intersections only
+    show_volume = True  # hard clash (red) volumes
+    show_all_intersections = False  # bypass per-pair group gating for hard volumes only
+    show_soft_volume = True  # soft (clearance) clash (blue) volumes
+    show_all_soft_intersections = False
     _geom_cache: dict = {}  # highlight -> (positions, triangle_indices) world-space, unclipped
     _batch_cache: dict = {}  # (highlight, clip_key) -> GPUBatch
     # Merged drawing: per pair, one batch for all group-1 highlights, one for group-2, and the
@@ -136,6 +139,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         cls.show_own_objects = {item.name: item.show_own_objects for item in props.group_highlight_colors}
         cls.show_volume = props.show_volume_highlight
         cls.show_all_intersections = props.show_all_intersections
+        cls.show_soft_volume = props.show_soft_volume_highlight
+        cls.show_all_soft_intersections = props.show_all_soft_intersections
         super().install(context)
 
     @classmethod
@@ -160,7 +165,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         either ``None``, a ``bpy.types.Object``, or a ``(bpy.types.Object, guid)`` tuple
         identifying a single element's geometry within a linked model's chunked mesh)
         and ``"intersection"`` (a static ``(positions, triangle_indices)`` tuple in
-        world space describing the clash's overlapping volume, or ``None``).
+        world space describing the clash's overlapping volume, or ``None``), and optionally
+        ``"soft"`` (True for a clearance clash).
         """
         cls._geom_cache.clear()
         cls._batch_cache.clear()
@@ -173,6 +179,7 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
                     "a": cls._normalize_highlight(entry.get("a")),
                     "b": cls._normalize_highlight(entry.get("b")),
                     "intersection": entry.get("intersection"),
+                    "soft": bool(entry.get("soft")),
                 }
                 for entry in entries
             ]
@@ -187,7 +194,8 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         if not entries or idx >= len(entries):
             return
         entries[idx]["intersection"] = geometry
-        merged = ("__m__", "c", pair, idx // cls.VOLUME_BUCKET)
+        side = "s" if entries[idx]["soft"] else "c"
+        merged = ("__m__", side, pair, idx // cls.VOLUME_BUCKET)
         cls._merged_geom.pop(merged, None)
         for key in [k for k in cls._batch_cache if k[0] == merged]:
             del cls._batch_cache[key]
@@ -274,8 +282,10 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
         _, side, pair, bucket = merged
         entries = cls.pair_highlights.get(pair, [])
         parts = []
-        if side == "c":
+        if side in ("c", "s"):  # hard / soft (clearance) volumes
             for entry in entries[bucket * cls.VOLUME_BUCKET : (bucket + 1) * cls.VOLUME_BUCKET]:
+                if entry["soft"] != (side == "s"):
+                    continue
                 if (volume := entry["intersection"]) is not None and len(volume[0]) and len(volume[1]):
                     parts.append((np.array(volume[0], dtype=np.float32), np.array(volume[1], dtype=np.int32)))
         else:
@@ -430,9 +440,13 @@ class ClashDecorator(tool.Blender.ViewportDecorator):
                         self.draw_merged(("__m__", "a", pair, 0), color_a, draw_planes, draw_key)
                     if self.show_own_objects.get(g2, True):
                         self.draw_merged(("__m__", "b", pair, 0), color_b, draw_planes, draw_key)
+                buckets = range((len(entries) + self.VOLUME_BUCKET - 1) // self.VOLUME_BUCKET)
                 if self.show_volume and (both_visible or self.show_all_intersections):
-                    for bucket in range((len(entries) + self.VOLUME_BUCKET - 1) // self.VOLUME_BUCKET):
+                    for bucket in buckets:
                         self.draw_merged(("__m__", "c", pair, bucket), (1.0, 0.1, 0.1, 0.4), draw_planes, draw_key)
+                if self.show_soft_volume and (both_visible or self.show_all_soft_intersections):
+                    for bucket in buckets:
+                        self.draw_merged(("__m__", "s", pair, bucket), (0.1, 0.4, 1.0, 0.5), draw_planes, draw_key)
             gpu.state.depth_test_set(previous_depth_test)
 
 

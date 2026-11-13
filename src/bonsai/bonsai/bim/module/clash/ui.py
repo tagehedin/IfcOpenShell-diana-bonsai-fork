@@ -168,9 +168,12 @@ class BIM_PT_ifcclash(Panel):
         if clash_set.clashes_loaded:
             row = layout.row(align=True)
             icon_v = "HIDE_OFF" if props.show_volume_highlight else "HIDE_ON"
-            row.prop(props, "show_volume_highlight", text="Intersection Volume", icon=icon_v, toggle=True)
+            row.prop(props, "show_volume_highlight", text="Hard Clashes", icon=icon_v, toggle=True)
+            icon_v = "HIDE_OFF" if props.show_soft_volume_highlight else "HIDE_ON"
+            row.prop(props, "show_soft_volume_highlight", text="Soft Clashes", icon=icon_v, toggle=True)
             row = layout.row(align=True)
-            row.prop(props, "show_all_intersections", text="Show All Intersections", icon="OVERLAY", toggle=True)
+            row.prop(props, "show_all_intersections", text="Show All Hard Clashes", icon="OVERLAY", toggle=True)
+            row.prop(props, "show_all_soft_intersections", text="Show All Soft Clashes", icon="OVERLAY", toggle=True)
 
             row = layout.row()
             row.prop(props, "use_link_color_override", toggle=True, icon="MATERIAL")

@@ -18,7 +18,8 @@
 #
 # This file was generated with the assistance of an AI coding tool.
 
-"""Clash intersection volumes (the blue boolean A-intersect-B), built fast.
+"""Clash intersection volumes (the boolean A-intersect-B: red for hard clashes, blue for
+clearance clashes - see build_clearance), built fast.
 
 Measured on a real project (60 clashes, ~230 input triangles each):
 - The old way - temporary objects in the user's scene, a fresh mesh datablock per
@@ -82,6 +83,43 @@ def is_watertight(bm: bmesh.types.BMesh) -> bool:
     return all(len(e.link_faces) == 2 for e in bm.edges)
 
 
+def grow(geometry: Geometry, distance: float, max_shell: float = 3.0) -> Geometry:
+    """``geometry`` grown outward by ``distance``: each vertex moves along its normal, scaled so flat
+    faces move exactly ``distance`` - an even offset, exact for boxes, slabs, ducts and pipes;
+    concave parts (e.g. ceiling grids) can fold over themselves, which the boolean then rejects."""
+    bm = preclose_bmesh(*geometry)
+    try:
+        bm.normal_update()
+        # recalc_face_normals makes the normals consistent, not necessarily outward
+        sign = 1.0 if bm.calc_volume(signed=True) >= 0 else -1.0
+        moves = [(v, v.normal * (distance * min(v.calc_shell_factor(), max_shell) * sign)) for v in bm.verts]
+        for v, move in moves:
+            v.co += move
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        bm.verts.index_update()
+        return [v.co.copy() for v in bm.verts], [tuple(v.index for v in f.verts) for f in bm.faces]
+    finally:
+        bm.free()
+
+
+def marker(p1, p2, size: float = 0.03) -> Geometry:
+    """A small box around the gap between two closest points - stands in for a clearance volume
+    that can't be built, so the clash still shows where it is."""
+    lo = [min(a, b) - size / 2 for a, b in zip(p1, p2)]
+    hi = [max(a, b) + size / 2 for a, b in zip(p1, p2)]
+    # vertex index = 4 * x + 2 * y + z, each 0 (lo) or 1 (hi)
+    positions = [Vector((x, y, z)) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+    quads = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+    return positions, [t for a, b, c, d in quads for t in ((a, b, c), (a, c, d))]
+
+
+def clearance_args(geometry_a, geometry_b, clearance: float, grow_a: bool, p1, p2) -> tuple:
+    """build_clearance() arguments for clash elements A and B (``p1`` lies on A, ``p2`` on B)."""
+    if grow_a:
+        return geometry_b, geometry_a, clearance, p2, p1, p2
+    return geometry_a, geometry_b, clearance, p1, p1, p2
+
+
 class VolumeBuilder:
     """Context manager owning the private scene; build() any number of volumes inside it.
 
@@ -91,6 +129,7 @@ class VolumeBuilder:
 
     def __enter__(self) -> "VolumeBuilder":
         self.stats = {"manifold": 0, "exact": 0, "fallback": 0, "hole_tolerant": 0, "failed": 0, "empty": 0}
+        self.stats.update(misplaced=0, marker=0)  # clearance volumes only
         self.scene = bpy.data.scenes.new(SCENE_NAME)
         self.mesh_a = bpy.data.meshes.new(SCENE_NAME + "_A")
         self.mesh_b = bpy.data.meshes.new(SCENE_NAME + "_B")
@@ -172,6 +211,28 @@ class VolumeBuilder:
             self.stats["failed"] += 1
             return None
         return self._non_empty(result)
+
+    def build_clearance(self, geometry_keep, geometry_grow, clearance: float, near, p1, p2) -> Geometry:
+        """Clearance (soft) clash volume: the part of ``geometry_keep`` inside the free zone of
+        ``geometry_grow``, i.e. intersected with it grown by ``clearance``. Never None: a marker
+        between ``p1`` and ``p2`` stands in when no volume can be built, or when the result doesn't
+        reach ``near`` (the measured closest point on the kept element)."""
+        volume = None
+        if clearance > 0 and geometry_keep is not None and geometry_grow is not None:
+            geometry_grow = [x.tolist() if hasattr(x, "tolist") else x for x in geometry_grow]
+            volume = self.build(geometry_keep, grow(geometry_grow, clearance))
+            if volume is not None:
+                # A failed boolean can leave a crumb or a partial piece elsewhere - a real result
+                # contains the closest point (3 of 1074 in the ceiling test were 6-7 cm off).
+                bounds = _bounds(volume[0])
+                margin = max(0.02, clearance)
+                if not all(bounds[i] - margin <= near[i] <= bounds[i + 3] + margin for i in range(3)):
+                    self.stats["misplaced"] += 1
+                    volume = None
+        if volume is None:
+            self.stats["marker"] += 1
+            return marker(p1, p2)
+        return volume
 
     def _non_empty(self, result: Geometry) -> Optional[Geometry]:
         if not result[0] or not result[1]:

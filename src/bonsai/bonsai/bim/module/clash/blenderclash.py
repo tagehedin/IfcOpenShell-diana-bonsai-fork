@@ -519,6 +519,12 @@ class BlenderClasher:
                 clash = self._check_pair(a, b, pair_mode, pair_clearance)
                 if clash:
                     clash["pair"] = pair_name
+                    if clash["type"] == "clearance":
+                        # For the blue soft clash volume: the clearance used and whose zone it is
+                        # (the group asking for the larger one; B for the clash set's own clearance).
+                        clash["clearance"] = pair_clearance
+                        grow_a = clearances[0] > clearances[1] and clearances[0] >= base_clearance
+                        clash["clearance_side"] = "a" if grow_a else "b"
                     results[f"{a.guid}-{b.guid}"] = clash
                     found.add(key)
             if duplicates:
