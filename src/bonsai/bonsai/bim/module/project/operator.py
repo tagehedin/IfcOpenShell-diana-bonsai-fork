@@ -3470,6 +3470,24 @@ class QueryLinkedElement(bpy.types.Operator):
         return self.execute(context)
 
 
+class DeselectQueriedLinkedElement(bpy.types.Operator):
+    bl_idname = "bim.deselect_queried_linked_element"
+    bl_label = "Deselect Queried Element"
+    bl_description = "Clear the queried linked element: its highlight and its info (ESC in the Explore Tool)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context) -> set["rna_enums.OperatorReturnItems"]:
+        if not tool.Project.get_project_props().queried_obj:
+            return {"CANCELLED"}
+        tool.Project.Link.deselect_queried_linked_element()
+        LinksData.linked_data = {}
+        assert context.screen
+        for area in context.screen.areas:
+            if area.type in {"VIEW_3D", "PROPERTIES"}:
+                area.tag_redraw()
+        return {"FINISHED"}
+
+
 class HideQueriedLinkedElement(bpy.types.Operator):
     bl_idname = "bim.hide_queried_linked_element"
     bl_label = "Hide Queried Linked Element"

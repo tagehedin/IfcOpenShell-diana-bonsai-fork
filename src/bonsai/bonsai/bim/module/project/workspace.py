@@ -44,6 +44,7 @@ class ExploreTool(bpy.types.WorkSpaceTool):
     bl_widget = None
     bl_keymap = (
         ("bim.query_linked_element", {"type": "RIGHTMOUSE", "value": "PRESS"}, None),
+        ("bim.deselect_queried_linked_element", {"type": "ESC", "value": "PRESS"}, None),
         ("bim.explore_hotkey", {"type": "W", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_W")]}),
         ("bim.explore_hotkey", {"type": "C", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_C")]}),
         ("bim.explore_hotkey", {"type": "F", "value": "PRESS", "shift": True}, {"properties": [("hotkey", "S_F")]}),
