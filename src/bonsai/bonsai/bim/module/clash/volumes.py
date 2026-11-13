@@ -129,7 +129,7 @@ class VolumeBuilder:
 
     def __enter__(self) -> "VolumeBuilder":
         self.stats = {"manifold": 0, "exact": 0, "fallback": 0, "hole_tolerant": 0, "failed": 0, "empty": 0}
-        self.stats.update(misplaced=0, marker=0)  # clearance volumes only
+        self.stats.update(misplaced=0, other_side=0, marker=0)  # clearance volumes only
         self.scene = bpy.data.scenes.new(SCENE_NAME)
         self.mesh_a = bpy.data.meshes.new(SCENE_NAME + "_A")
         self.mesh_b = bpy.data.meshes.new(SCENE_NAME + "_B")
@@ -214,24 +214,36 @@ class VolumeBuilder:
 
     def build_clearance(self, geometry_keep, geometry_grow, clearance: float, near, p1, p2) -> Geometry:
         """Clearance (soft) clash volume: the part of ``geometry_keep`` inside the free zone of
-        ``geometry_grow``, i.e. intersected with it grown by ``clearance``. Never None: a marker
-        between ``p1`` and ``p2`` stands in when no volume can be built, or when the result doesn't
-        reach ``near`` (the measured closest point on the kept element)."""
+        ``geometry_grow``, i.e. intersected with it grown by ``clearance``. Never None: if that fails,
+        the other element is grown instead (the same violation from its side - e.g. a wall grown
+        against a duct passing through it fails, the duct grown against the wall works), and a marker
+        between ``p1`` and ``p2`` stands in when neither gives a volume reaching the measured closest
+        point (``near`` on the kept element, the other one of ``p1``/``p2`` on the grown one)."""
         volume = None
         if clearance > 0 and geometry_keep is not None and geometry_grow is not None:
-            geometry_grow = [x.tolist() if hasattr(x, "tolist") else x for x in geometry_grow]
-            volume = self.build(geometry_keep, grow(geometry_grow, clearance))
-            if volume is not None:
-                # A failed boolean can leave a crumb or a partial piece elsewhere - a real result
-                # contains the closest point (3 of 1074 in the ceiling test were 6-7 cm off).
-                bounds = _bounds(volume[0])
-                margin = max(0.02, clearance)
-                if not all(bounds[i] - margin <= near[i] <= bounds[i + 3] + margin for i in range(3)):
-                    self.stats["misplaced"] += 1
-                    volume = None
+            volume = self._clearance_volume(geometry_keep, geometry_grow, clearance, near)
+            if volume is None:
+                other = p2 if tuple(near) == tuple(p1) else p1
+                volume = self._clearance_volume(geometry_grow, geometry_keep, clearance, other)
+                if volume is not None:
+                    self.stats["other_side"] += 1
         if volume is None:
             self.stats["marker"] += 1
             return marker(p1, p2)
+        return volume
+
+    def _clearance_volume(self, geometry_keep, geometry_grow, clearance: float, near) -> Optional[Geometry]:
+        geometry_grow = [x.tolist() if hasattr(x, "tolist") else x for x in geometry_grow]
+        volume = self.build(geometry_keep, grow(geometry_grow, clearance))
+        if volume is None:
+            return None
+        # A failed boolean can leave a crumb or a partial piece elsewhere - a real result contains
+        # the closest point (3 of 1074 in the ceiling test were 6-7 cm off).
+        bounds = _bounds(volume[0])
+        margin = max(0.02, clearance)
+        if not all(bounds[i] - margin <= near[i] <= bounds[i + 3] + margin for i in range(3)):
+            self.stats["misplaced"] += 1
+            return None
         return volume
 
     def _non_empty(self, result: Geometry) -> Optional[Geometry]:

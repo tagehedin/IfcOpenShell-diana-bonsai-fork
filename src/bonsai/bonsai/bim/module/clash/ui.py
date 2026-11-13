@@ -207,15 +207,29 @@ class BIM_PT_ifcclash(Panel):
         if pairs:
             skipped = clash_set.get_skipped_pairs()
             layout.label(text="Check Group Pairs:")
-            grid = layout.grid_flow(row_major=True, columns=6, even_columns=True, align=True)
+            mode_names = {"HARD": "Hard Only", "CLEARANCE": "Clearance"}
             for pair in pairs:
                 is_checked = pair not in skipped
-                grid.operator(
+                row = layout.row(align=True)
+                row.operator(
                     "bim.toggle_clash_group_pair",
                     text=pair.upper(),
                     icon="CHECKBOX_HLT" if is_checked else "CHECKBOX_DEHLT",
                     depress=is_checked,
                 ).pair = pair
+                # How the pair is checked: what the set and groups give it, or its own rule.
+                sub = row.row(align=True)
+                sub.active = is_checked
+                rule = clash_set.get_pair_rule(pair)
+                mode = rule.mode if rule else "DEFAULT"
+                if mode == "DEFAULT":
+                    default = clash_set.get_default_pair_clearance(pair)
+                    text = f"Default: {default * 1000:g} mm" if default else "Default: Hard"
+                else:
+                    text = mode_names[mode]
+                sub.operator_menu_enum("bim.set_clash_group_pair_mode", "mode", text=text).pair = pair
+                if mode == "CLEARANCE":
+                    sub.prop(rule, "clearance", text="")
 
         row = layout.row()
         row.operator("bim.execute_blender_clash", icon="MESH_DATA")

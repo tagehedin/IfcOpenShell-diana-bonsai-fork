@@ -445,6 +445,8 @@ class BlenderClasher:
         base_clearance = float(clash_set.get("clearance", 0.0)) if mode == "clearance" else 0.0
         # Per-group rules: {"g": {"mode": "include"|"exclude", "classes": [...], "clearance": 0.05}}
         rules: dict = clash_set.get("group_rules", {}) or {}
+        # Per-pair rules, overriding the above for one pair: {"ad": {"mode": "hard"|"clearance", "clearance": 0.3}}
+        pair_rules: dict = clash_set.get("pair_rules", {}) or {}
 
         # Collect elements for all non-empty groups
         all_groups: dict[str, list[_ElementGeom]] = {}
@@ -487,13 +489,23 @@ class BlenderClasher:
                 (rules.get(g) or {}).get("clearance")
             )
 
-        # Pairs with a filtered/clearance group first: a clash found by both "ceilings vs MEP" and
-        # "architecture vs MEP" is filed under the rule that asked for it, and only once.
+        # The most specific rule first: a clash found by both "ceilings vs MEP" and "architecture vs
+        # MEP" is filed under the rule that asked for it, and only once - pairs with a class-filtered
+        # group, then pairs with a clearance (group or pair rule), then the rest.
+        def specificity(pair: tuple[str, str]) -> int:
+            if any((rules.get(g) or {}).get("mode") in ("include", "exclude") for g in pair):
+                return 0
+            return 1 if any(is_rule_group(g) for g in pair) or "".join(pair) in pair_rules else 2
+
         pairs = [(g1, g2) for i, g1 in enumerate(group_list) for g2 in group_list[i + 1 :]]
-        pairs.sort(key=lambda pair: 0 if any(is_rule_group(g) for g in pair) else 1)
+        pairs.sort(key=specificity)
 
         results: dict = {}
         found: set[frozenset] = set()
+        # Group pairs already done, as (GlobalIds of one group, of the other): every element pair between
+        # them belongs to that more specific pair's rule, clash or not, at any distance - "ceilings vs
+        # ventilation 20 mm" isn't overridden by "architecture vs ventilation 50 mm".
+        done: list[tuple[set[str], set[str]]] = []
         for g1, g2 in pairs:
             pair_name = (g1 + g2).replace("_self", g1)
             same = g1 == g2 or "_self" in (g1, g2)
@@ -504,6 +516,14 @@ class BlenderClasher:
             clearances = [float((rules.get(g) or {}).get("clearance") or 0.0) for g in (g1, g2)]
             pair_clearance = max(clearances + [base_clearance])
             pair_mode = "clearance" if pair_clearance > 0 or mode == "clearance" else mode
+            # The pair's own rule wins over the set and group clearances.
+            pair_rule = pair_rules.get(pair_name) or {}
+            if pair_rule.get("mode") == "hard":
+                pair_clearance = 0.0
+                pair_mode = "collision" if mode == "clearance" else mode
+            elif pair_rule.get("mode") == "clearance":
+                pair_clearance = float(pair_rule.get("clearance") or 0.0)
+                pair_mode = "clearance"
             elems1, elems2 = all_groups[g1], all_groups[g2]
             candidates = self._bbox_filter(elems1, elems2, pair_clearance, same)
             label = pair_name.upper().replace("_SELF", g1.upper())
@@ -513,7 +533,9 @@ class BlenderClasher:
             for ai, bi in candidates:
                 a, b = elems1[ai], elems2[bi]
                 key = frozenset((a.guid, b.guid))
-                if key in found:
+                if key in found or any(
+                    (a.guid in s1 and b.guid in s2) or (a.guid in s2 and b.guid in s1) for s1, s2 in done
+                ):
                     duplicates += 1
                     continue
                 clash = self._check_pair(a, b, pair_mode, pair_clearance)
@@ -523,12 +545,14 @@ class BlenderClasher:
                         # For the blue soft clash volume: the clearance used and whose zone it is
                         # (the group asking for the larger one; B for the clash set's own clearance).
                         clash["clearance"] = pair_clearance
-                        grow_a = clearances[0] > clearances[1] and clearances[0] >= base_clearance
+                        # A pair rule's clearance is the pair's, not one group's: B, like the set's.
+                        grow_a = not pair_rule and clearances[0] > clearances[1] and clearances[0] >= base_clearance
                         clash["clearance_side"] = "a" if grow_a else "b"
                     results[f"{a.guid}-{b.guid}"] = clash
                     found.add(key)
+            done.append(({e.guid for e in elems1}, {e.guid for e in elems2}))
             if duplicates:
-                self._log(f"  {label}: {duplicates} pair(s) already found by an earlier group pair, not repeated")
+                self._log(f"  {label}: {duplicates} pair(s) already checked by an earlier group pair, not repeated")
 
         clash_set["clashes"] = results
         elapsed = time.perf_counter() - t0

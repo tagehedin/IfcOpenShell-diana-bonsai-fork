@@ -34,6 +34,7 @@ import bonsai.tool as tool
 from bonsai.bim.ifc import IfcStore
 from bonsai.bim.module.clash import storage, volumes
 from bonsai.bim.module.clash.decorator import ClashDecorator
+from bonsai.bim.module.clash.prop import PAIR_MODE_ITEMS
 from bonsai.bim.module.clash.volume_jobs import VolumeJob
 from bonsai.bim.module.project import clipping_plane_fill
 
@@ -190,6 +191,25 @@ class ToggleClashGroupPair(bpy.types.Operator):
         skipped = clash_set.get_skipped_pairs()
         skipped ^= {self.pair}
         clash_set.skipped_pairs = ",".join(sorted(skipped))
+        return {"FINISHED"}
+
+
+class SetClashGroupPairMode(bpy.types.Operator):
+    bl_idname = "bim.set_clash_group_pair_mode"
+    bl_label = "Set Group Pair Check"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = "How these two groups are checked against each other"
+    pair: bpy.props.StringProperty(options={"HIDDEN"})
+    mode: bpy.props.EnumProperty(items=PAIR_MODE_ITEMS)
+
+    def execute(self, context):
+        clash_set = tool.Clash.get_clash_props().active_clash_set
+        if not clash_set:
+            return {"CANCELLED"}
+        if not (rule := clash_set.get_pair_rule(self.pair)):
+            rule = clash_set.pair_rules.add()
+            rule.name = self.pair
+        rule.mode = self.mode
         return {"FINISHED"}
 
 

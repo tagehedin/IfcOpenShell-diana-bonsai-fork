@@ -463,6 +463,25 @@ class SmartClashGroup(PropertyGroup):
         global_ids: bpy.types.bpy_prop_collection_idprop[StrProperty]
 
 
+PAIR_MODE_ITEMS = [
+    ("DEFAULT", "Default", "The clash set mode and the groups' clearances decide"),
+    ("HARD", "Hard Only", "Only overlapping elements - no clearance check for this pair"),
+    ("CLEARANCE", "Clearance", "Also report elements closer than this pair's own clearance"),
+]
+
+
+class ClashPairRule(PropertyGroup):
+    """How one pair of groups is checked (``name`` is the pair, e.g. "ad") - overrides the clash set
+    mode and the groups' clearances for that pair only."""
+
+    mode: EnumProperty(name="Check", items=PAIR_MODE_ITEMS, default="DEFAULT")
+    clearance: FloatProperty(name="Clearance", default=0.05, min=0.0, soft_max=1.0, subtype="DISTANCE")
+
+    if TYPE_CHECKING:
+        mode: Literal["DEFAULT", "HARD", "CLEARANCE"]
+        clearance: float
+
+
 class ClashSet(PropertyGroup):
     mode: EnumProperty(
         items=[
@@ -536,12 +555,14 @@ class ClashSet(PropertyGroup):
         smart_clash_groups: bpy.types.bpy_prop_collection_idprop[SmartClashGroup]
         active_smart_group_index: int
         skipped_pairs: str
+        pair_rules: bpy.types.bpy_prop_collection_idprop[ClashPairRule]
 
     smart_clash_groups: CollectionProperty(name="Smart Clash Groups", type=SmartClashGroup)
     active_smart_group_index: IntProperty(name="Active Smart Group Index")
     # Group pairs the user unticked above "Execute Blender Clash", e.g. "ab,cd" - stored as the
     # skipped ones so every pair (also one appearing when a group gets files) is checked by default.
     skipped_pairs: StringProperty(name="Skipped Group Pairs", default="")
+    pair_rules: CollectionProperty(name="Group Pair Rules", type=ClashPairRule)
 
     @property
     def active_smart_group(self) -> Union["SmartClashGroup", None]:
@@ -567,6 +588,16 @@ class ClashSet(PropertyGroup):
 
     def get_skipped_pairs(self) -> set[str]:
         return {p for p in self.skipped_pairs.split(",") if p}
+
+    def get_pair_rule(self, pair: str) -> Union[ClashPairRule, None]:
+        return self.pair_rules.get(pair)
+
+    def get_default_pair_clearance(self, pair: str) -> float:
+        """The clearance a pair gets without its own rule: the larger of its groups' and the set's."""
+        clearances = [rule.clearance for g in pair if (rule := self.get_group_rule(g)).use_clearance]
+        if self.mode == "clearance":
+            clearances.append(self.clearance)
+        return max(clearances, default=0.0)
 
 
 class BIMClashProperties(PropertyGroup):

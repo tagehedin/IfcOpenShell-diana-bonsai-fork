@@ -88,6 +88,14 @@ class Clash(bonsai.core.tool.Clash):
                 clash_set_data["group_rules"] = rules
             if skipped := clash_set.get_skipped_pairs():
                 clash_set_data["skip_pairs"] = sorted(skipped)
+            pair_rules = {}
+            for rule in clash_set.pair_rules:
+                if rule.mode == "HARD":
+                    pair_rules[rule.name] = {"mode": "hard"}
+                elif rule.mode == "CLEARANCE":
+                    pair_rules[rule.name] = {"mode": "clearance", "clearance": rule.clearance}
+            if pair_rules:
+                clash_set_data["pair_rules"] = pair_rules
             if clash_set.mode == "intersection":
                 clash_set_data["tolerance"] = clash_set.tolerance
                 clash_set_data["check_all"] = clash_set.check_all
@@ -113,6 +121,13 @@ class Clash(bonsai.core.tool.Clash):
             clash_set.clearance = data.get("clearance", clash_set.clearance)
             clash_set.check_all = data.get("check_all", clash_set.check_all)
         clash_set.skipped_pairs = ",".join(data.get("skip_pairs", []))
+        clash_set.pair_rules.clear()
+        for pair, saved in (data.get("pair_rules") or {}).items():
+            rule = clash_set.pair_rules.add()
+            rule.name = pair
+            rule.mode = saved.get("mode", "default").upper()
+            if "clearance" in saved:
+                rule.clearance = saved["clearance"]
         rules = data.get("group_rules", {}) or {}
         for g in cls.CLASH_SOURCE_GROUP_LITERALS:
             sources = clash_set.get_clash_sources_group(g)
