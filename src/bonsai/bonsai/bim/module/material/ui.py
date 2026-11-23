@@ -28,6 +28,7 @@ import bonsai.bim.helper
 import bonsai.tool as tool
 from bonsai.bim.helper import draw_attributes, prop_with_search
 from bonsai.bim.module.material.data import MaterialsData, ObjectMaterialData
+from bonsai.bim.module.material.prop import NO_EXISTING_MATERIAL_SET
 
 if TYPE_CHECKING:
     from bonsai.bim.module.material.prop import BIMMaterialProperties, Material
@@ -197,7 +198,7 @@ class BIM_PT_object_material(Panel):
         row = self.layout.row(align=True)
         prop_with_search(row, self.props, "existing_material_set", text="")
         sub = row.row(align=True)
-        sub.enabled = bool(self.props.existing_material_set)
+        sub.enabled = self.props.existing_material_set not in ("", NO_EXISTING_MATERIAL_SET)
         sub.operator("bim.assign_existing_material_set", icon="LINKED", text="Assign Existing")
 
     def draw_material_ui(self):

@@ -2710,10 +2710,16 @@ class Geometry(bonsai.core.tool.Geometry):
         bpy.ops.mesh.separate(type="LOOSE")
         bpy.ops.object.mode_set(mode="OBJECT")
 
+        # Read the separated parts from the view layer, not context.selected_objects:
+        # a caller's temp_override(selected_objects=...) would otherwise make us
+        # delete the caller's (source) object instead of the temporary parts.
+        parts = [o for o in bpy.context.view_layer.objects if o.select_get()]
         results = []
-        for obj in bpy.context.selected_objects:
-            results.append(obj.data)
-            bpy.data.objects.remove(obj)
+        for part in parts:
+            if part == obj:
+                continue  # Never delete the source object.
+            results.append(part.data)
+            bpy.data.objects.remove(part)
 
         # Preserve original selection.
         tool.Blender.set_objects_selection(*selection)

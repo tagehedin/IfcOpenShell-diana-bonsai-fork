@@ -65,10 +65,19 @@ def get_object_material_type(self, context):
 # garbage/blank. Cache the last result here to keep those strings referenced.
 _existing_material_sets_cache: list[tuple[str, str, str]] = []
 
+# Shown when there is nothing to pick. An empty items list makes Blender log
+# "current value '0' matches no enum" on every redraw of the dropdown.
+NO_EXISTING_MATERIAL_SET = "-"
+_NO_EXISTING_MATERIAL_SET_ITEM = (NO_EXISTING_MATERIAL_SET, "No other sets", "No other set of this kind exists")
+
 
 def get_existing_material_sets(self, context):
     global _existing_material_sets_cache
+    _existing_material_sets_cache = _get_existing_material_sets(self) or [_NO_EXISTING_MATERIAL_SET_ITEM]
+    return _existing_material_sets_cache
 
+
+def _get_existing_material_sets(self) -> list[tuple[str, str, str]]:
     # If a set is already assigned, offer alternatives of the same class.
     # Otherwise, fall back to the class chosen in the "Material Type" dropdown.
     set_type = None
@@ -80,20 +89,17 @@ def get_existing_material_sets(self, context):
         set_type = self.material_type
 
     if set_type not in ("IfcMaterialLayerSet", "IfcMaterialProfileSet", "IfcMaterialConstituentSet"):
-        _existing_material_sets_cache = []
-        return _existing_material_sets_cache
+        return []
     ifc_file = tool.Ifc.get()
     if not ifc_file:
-        _existing_material_sets_cache = []
-        return _existing_material_sets_cache
+        return []
     results = []
     for material_set in ifc_file.by_type(set_type):
         if material_set.id() == current_set_id:
             continue
         name = getattr(material_set, "LayerSetName", None) or getattr(material_set, "Name", None) or "Unnamed"
         results.append((str(material_set.id()), name, ""))
-    _existing_material_sets_cache = sorted(results, key=lambda x: x[1])
-    return _existing_material_sets_cache
+    return sorted(results, key=lambda x: x[1])
 
 
 def get_material_types(self, context):

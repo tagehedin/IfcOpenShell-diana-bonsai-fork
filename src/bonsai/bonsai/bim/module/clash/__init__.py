@@ -121,7 +121,8 @@ def register():
     bpy.app.handlers.exit_pre.append(volume_jobs.cancel_on_exit)
     bpy.types.STATUSBAR_HT_header.append(volume_jobs.draw_status)
     _init_group_colors()
-    _reload_icons_if_needed()
+    # Don't build the icon collection here: modules register before bonsai.bim.register()
+    # creates bim.icons, which would then overwrite (and leak) ours. load_post covers reloads.
 
 
 def unregister():

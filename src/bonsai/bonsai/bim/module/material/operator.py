@@ -30,6 +30,7 @@ import bonsai.bim.helper
 import bonsai.bim.module.model.profile as model_profile
 import bonsai.core.material as core
 import bonsai.tool as tool
+from bonsai.bim.module.material.prop import NO_EXISTING_MATERIAL_SET
 from bonsai.bim.module.model import slab, wall
 
 if TYPE_CHECKING:
@@ -354,7 +355,7 @@ class AssignExistingMaterialSet(bpy.types.Operator, tool.Ifc.Operator):
             self.report({"ERROR"}, "No active object.")
             return {"CANCELLED"}
         omprops = tool.Material.get_object_material_props(active_obj)
-        if not omprops.existing_material_set:
+        if omprops.existing_material_set in ("", NO_EXISTING_MATERIAL_SET):
             self.report({"ERROR"}, "No existing set selected.")
             return {"CANCELLED"}
         material_set = tool.Ifc.get().by_id(int(omprops.existing_material_set))

@@ -1166,9 +1166,15 @@ class Blender(bonsai.core.tool.Blender):
     ) -> None:
         if clear_previous_selection:
             for obj in context.selected_objects:
-                obj.select_set(False)
+                if obj is not None:
+                    obj.select_set(False)
+        # Skip objects removed since the selection was captured (stale references).
+        valid = set(context.view_layer.objects)
         for obj in selected_objects:
-            obj.select_set(True)
+            if obj is not None and obj in valid:
+                obj.select_set(True)
+        if active_object is not None and active_object not in valid:
+            active_object = None
         context.view_layer.objects.active = active_object
         if active_object:
             active_object.select_set(True)
